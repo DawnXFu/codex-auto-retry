@@ -476,8 +476,8 @@ func needsAttentionCount(retries []ManagedRetry) int {
 	return count
 }
 
-// formatCountdown renders a reset countdown as HH:MM:SS. Durations beyond a
-// day collapse to a fixed marker because the tray tip has limited space.
+// formatCountdown renders a reset countdown as HH:MM:SS. Hours are uncapped:
+// weekly quota windows legitimately exceed a day.
 func formatCountdown(seconds int64) string {
 	if seconds < 0 {
 		seconds = 0

@@ -514,6 +514,16 @@ func (d *daemon) reconcileAwaitingLifecycle(ctx context.Context, now time.Time) 
 			reason := controllerFailureReason(DispatchResult{}, err)
 			d.controllerState = reason
 			nextFailures := awaiting.DispatchFailures + 1
+			if awaiting.QuotaRecovery {
+				// A quota probe hitting a transport failure returns to
+				// RESET_DUE: the spec waits for the endpoint rather than
+				// stopping the thread on controller churn.
+				wait := *awaiting
+				wait.DispatchFailures = nextFailures
+				d.parkAwaitingQuotaLocked(candidate.threadID, thread, wait, now)
+				d.mu.Unlock()
+				continue
+			}
 			if controllerFailureNeedsAction(reason) || nextFailures >= d.config.ControllerFailureLimit {
 				d.stopAwaitingForControllerLocked(candidate.threadID, thread, now, reason)
 				d.mu.Unlock()
@@ -624,10 +634,6 @@ func (d *daemon) advanceInactiveAwaitingLocked(threadID string, thread ThreadSta
 		ConsecutiveRetry: nextConsecutive, MaxConsecutive: awaiting.MaxConsecutive,
 		DispatchFailures: awaiting.DispatchFailures, ParentNotified: awaiting.ParentNotified,
 		GoalLimitRestart: awaiting.GoalLimitRestart,
-		QuotaRecovery:    awaiting.QuotaRecovery,
-	}
-	if awaiting.QuotaRecovery && !isQuotaStopReason(status) {
-		thread.RecoveryStartedAt = now
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry lifecycle rescheduled thread=%s status=%s attempt=%d consecutive_retry=%d", shortThreadID(threadID), status, nextAttempt, nextConsecutive)
@@ -681,10 +687,6 @@ func (d *daemon) rescheduleAwaitingWithPolicyLocked(threadID string, thread Thre
 		DispatchFailures:    dispatchFailures,
 		ParentNotified:      awaiting.ParentNotified,
 		GoalLimitRestart:    awaiting.GoalLimitRestart,
-		QuotaRecovery:       awaiting.QuotaRecovery,
-	}
-	if awaiting.QuotaRecovery && !isQuotaStopReason(reason) {
-		thread.RecoveryStartedAt = now
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry rescheduled thread=%s reason=%s delay_seconds=%d", shortThreadID(threadID), reason, int(delay.Seconds()))
@@ -805,6 +807,10 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 	// transient recovery forever.
 	d.pruneStaleBindingLocked()
 	suspended := d.quotaSuspendedLocked()
+	// A persisted probe marker whose thread already left the queue (cancel,
+	// abort, controller stop) would gate election forever; clear it here so
+	// the drain can elect a fresh probe.
+	d.clearOrphanProbeLocked()
 	if available == 0 {
 		return jobs
 	}

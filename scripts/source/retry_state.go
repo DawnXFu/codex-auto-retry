@@ -485,6 +485,13 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		if d.state.Quota != nil {
 			snapshot = d.state.Quota.Snapshot
 		}
+		if snapshot != nil && snapshot.Credits != nil && !snapshot.Credits.HasCredits && !snapshot.Credits.Unlimited {
+			// The account is out of credits regardless of the error text:
+			// a wall automation cannot cross, so fail closed now instead of
+			// parking against a window that will not clear on its own.
+			d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, key, item.Event.TurnID, item.Event.Timestamp, originTurnStartedAt, decision.Class, item.Root.CodexHome, item.RolloutPath, now, stopReasonQuotaCreditWall)
+			return
+		}
 		window, selection := selectBindingWindow(snapshot, now)
 		switch selection {
 		case bindingFound:
@@ -660,17 +667,4 @@ func (d *daemon) resetRetryStateLocked(threadID string, thread ThreadState) {
 	thread.Stopped = nil
 	thread.GoalStop = nil
 	d.state.Threads[threadID] = thread
-}
-
-// isQuotaStopReason reports whether a stop reason belongs to the quota
-// recovery layer rather than the transient chain.
-func isQuotaStopReason(reason string) bool {
-	switch reason {
-	case stopReasonQuotaCreditWall, stopReasonQuotaAuthWall,
-		stopReasonQuotaUntrustworthy, stopReasonQuotaRelimit,
-		stopReasonQuotaNoResetAttempts:
-		return true
-	default:
-		return false
-	}
 }

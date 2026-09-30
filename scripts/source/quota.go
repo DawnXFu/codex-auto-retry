@@ -686,6 +686,23 @@ func (d *daemon) pruneStaleBindingLocked() {
 	d.logger.Printf("quota binding cleared reason=no_parked_threads")
 }
 
+// clearOrphanProbeLocked drops a persisted probe marker whose named thread is
+// no longer in the quota queue (cancelled, aborted, or stopped by the
+// controller while a dispatch was in flight). The marker gates election, so
+// without this a dead probe strands every parked sibling forever.
+func (d *daemon) clearOrphanProbeLocked() {
+	quota := d.state.Quota
+	if quota == nil || quota.Binding == nil || quota.Binding.ProbeThreadID == "" {
+		return
+	}
+	thread, ok := d.state.Threads[quota.Binding.ProbeThreadID]
+	if ok && (thread.QuotaWait != nil || (thread.Awaiting != nil && thread.Awaiting.QuotaRecovery)) {
+		return
+	}
+	d.logger.Printf("quota probe marker cleared thread=%s reason=probe_left_queue", shortThreadID(quota.Binding.ProbeThreadID))
+	quota.Binding.ProbeThreadID = ""
+}
+
 // rebindParkedLocked moves every parked thread's schedule to a new window
 // after a probe re-limit: the whole window re-parks on the fresh resets_at
 // instead of letting each follower dispatch into the live wall.

@@ -652,3 +652,27 @@ func TestUnboundQuotaAwaitingFallsBackToPending(t *testing.T) {
 		t.Fatalf("unbound quota dispatch did not fall back to pending: %+v", thread.Pending)
 	}
 }
+
+// Issue #4/#6: a persisted probe marker whose thread left the queue (cancel,
+// abort, controller stop) must not gate election forever.
+func TestOrphanedProbeMarkerClearsForNewElection(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	deadProbe := "019f0000-0000-7000-8000-0000000000c0"
+	parkedID := "019f0000-0000-7000-8000-0000000000c1"
+	d.state.Quota = &QuotaState{Binding: &BindingWindow{Since: now.Add(-time.Hour),
+		ProbeThreadID: deadProbe,
+		Window:        QuotaWindow{Key: "primary", UsedPercent: 100, ResetsAt: now.Add(-time.Minute)}}}
+	d.state.Threads[parkedID] = ThreadState{QuotaWait: &QuotaWait{
+		EventKey: "key-p", FailedTurnID: "turn-p", Class: classRateLimit,
+		DueAt: now.Add(-time.Minute), WaitUntil: now.Add(-time.Minute),
+		CodexHome: `C:\quota-home`,
+	}}
+	jobs := d.dispatchDueLocked(now)
+	if d.state.Quota.Binding.ProbeThreadID != parkedID {
+		t.Fatalf("orphan probe marker was not cleared for re-election: %+v", d.state.Quota.Binding)
+	}
+	if len(jobs) != 1 || jobs[0].ThreadID != parkedID {
+		t.Fatalf("parked thread was not elected after marker cleared: %+v", jobs)
+	}
+}
