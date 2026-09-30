@@ -52,6 +52,12 @@ const (
 	menuTogglePause  = 1002
 	menuExit         = 1003
 	trayTimerID      = 1
+
+	// menuQuotaCommandBase starts the dynamic per-thread command range for
+	// Waiting For Reset rows: a resume-now and a cancel command per thread.
+	menuQuotaCommandBase = 2000
+	// quotaMenuRowLimit caps how many parked threads appear in the menu.
+	quotaMenuRowLimit = 10
 )
 
 type trayPoint struct{ X, Y int32 }
@@ -125,6 +131,13 @@ var (
 	trayApps                sync.Map
 )
 
+// quotaMenuCommand decodes one dynamic quota menu selection back into the
+// thread command it should queue.
+type quotaMenuCommand struct {
+	threadID string
+	cancel   bool
+}
+
 type trayApp struct {
 	hwnd                uintptr
 	dataDir             string
@@ -138,6 +151,7 @@ type trayApp struct {
 	lastGoalStopped     int
 	lastGoalFailed      int
 	lastRestartRequired int
+	quotaCommands       map[uint16]quotaMenuCommand
 	lastCodexStopped    int
 	lastSharedDisabled  int
 	initialized         bool
@@ -265,7 +279,7 @@ func registerTaskbarCreatedMessage() (uint32, error) {
 
 func (a *trayApp) addIcon() bool {
 	data := notifyIconData{Size: uint32(unsafe.Sizeof(notifyIconData{})), HWnd: a.hwnd, ID: 1, Flags: nifMessage | nifIcon | nifTip, CallbackMessage: wmAppTray, Icon: a.icons["running"]}
-	copyUTF16(data.Tip[:], "Codex Auto Retry")
+	copyUTF16(data.Tip[:], "Codex Auto Resume")
 	result, _, _ := procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&data)))
 	return result != 0
 }
@@ -298,41 +312,58 @@ func restoreTrayIcon(add func() bool, remove func(), refresh func()) bool {
 func (a *trayApp) refresh() {
 	snapshot, err := a.service.snapshot(time.Now().UTC())
 	if err != nil {
-		a.setTip("Codex Auto Retry - 状态读取失败")
+		a.setTip("Codex Auto Resume - 状态读取失败")
 		return
 	}
-	tip := "Codex Auto Retry - 运行中"
+	tip := "Codex Auto Resume - 运行中"
 	iconState := "running"
 	if snapshot.ControllerState == "codex_restart_required" {
-		tip = "Codex Auto Retry - 当前为官方后台；请通过安全启动入口接入共享通道"
+		tip = "Codex Auto Resume - 当前为官方后台；请通过安全启动入口接入共享通道"
 		iconState = "paused"
 	} else if snapshot.ControllerState == "codex_not_running" && snapshot.StoppedRetries > 0 {
-		tip = "Codex Auto Retry - Codex 已退出，重试已停止"
+		tip = "Codex Auto Resume - Codex 已退出，重试已停止"
 		iconState = "stopped"
 	} else if snapshot.ControllerState == "shared_app_server_disabled" {
-		tip = "Codex Auto Retry - 共享后台已关闭，重试未执行"
+		tip = "Codex Auto Resume - 共享后台已关闭，重试未执行"
 		iconState = "paused"
 	} else if snapshot.ControllerState == "shared_app_server_port_reserved" {
-		tip = "Codex Auto Retry - 共享端口被 Windows 保留，重试未执行"
+		tip = "Codex Auto Resume - 共享端口被 Windows 保留，重试未执行"
 		iconState = "stopped"
 	} else if snapshot.ControllerState == "shared_app_server_port_conflict" {
-		tip = fmt.Sprintf("Codex Auto Retry - 首选端口不可用，当前端口 %d", snapshot.SharedAppServerPort)
+		tip = fmt.Sprintf("Codex Auto Resume - 首选端口不可用，当前端口 %d", snapshot.SharedAppServerPort)
 		iconState = "paused"
 	} else if snapshot.ControllerState == "shared_app_server_migration_deferred" {
-		tip = "Codex Auto Retry - 等待 Codex 关闭后完成后台迁移"
+		tip = "Codex Auto Resume - 等待 Codex 关闭后完成后台迁移"
 		iconState = "paused"
+	} else if seconds, ok := quotaWaitSeconds(snapshot.Retries); ok {
+		countdown := formatCountdown(seconds)
+		pausedMark := ""
+		if snapshot.Paused {
+			pausedMark = " [已暂停]"
+		}
+		tip = fmt.Sprintf("Codex Auto Resume - Waiting for Reset %s%s | 配额等待 %s", countdown, pausedMark, countdown)
+		iconState = "waiting"
 	} else if snapshot.Paused {
-		tip = "Codex Auto Retry - 已暂停"
+		tip = "Codex Auto Resume - 已暂停"
 		iconState = "paused"
 	} else if snapshot.ActiveRetries > 0 {
-		tip = fmt.Sprintf("Codex Auto Retry - 正在重试 %d 个任务", snapshot.ActiveRetries)
+		tip = fmt.Sprintf("Codex Auto Resume - 正在重试 %d 个任务", snapshot.ActiveRetries)
 		iconState = "active"
 	} else if seconds, ok := nextRetrySeconds(snapshot.Retries); ok {
-		tip = fmt.Sprintf("Codex Auto Retry - %d 秒后自动重试", seconds)
+		tip = fmt.Sprintf("Codex Auto Resume - %d 秒后自动重试", seconds)
 		iconState = "waiting"
-	} else if snapshot.StoppedRetries > 0 {
-		tip = fmt.Sprintf("Codex Auto Retry - %d 个任务已停止重试", snapshot.StoppedRetries)
+	} else if needsAttention := needsAttentionCount(snapshot.Retries); needsAttention > 0 {
+		tip = fmt.Sprintf("Codex Auto Resume - %d 个任务需要关注 Needs Attention", needsAttention)
 		iconState = "stopped"
+	} else if snapshot.StoppedRetries > 0 {
+		tip = fmt.Sprintf("Codex Auto Resume - %d 个任务已停止重试", snapshot.StoppedRetries)
+		iconState = "stopped"
+	}
+	if snapshot.Quota != nil {
+		tip += fmt.Sprintf(" · 配额 %0.f%%", snapshot.Quota.UsedPercent)
+		if resetsAt, err := time.Parse(time.RFC3339Nano, snapshot.Quota.ResetsAt); err == nil && !resetsAt.IsZero() {
+			tip += fmt.Sprintf(" %s", resetsAt.Local().Format("15:04"))
+		}
 	}
 	a.setVisual(iconState, tip)
 	goalStopped := goalEmptyResponseStoppedCount(snapshot.Retries)
@@ -421,6 +452,39 @@ func nextRetrySeconds(retries []ManagedRetry) (int64, bool) {
 	return seconds, found
 }
 
+func quotaWaitSeconds(retries []ManagedRetry) (int64, bool) {
+	var seconds int64
+	found := false
+	for _, retry := range retries {
+		if retry.State != managedStateWaitingForReset && retry.State != managedStateResetDue {
+			continue
+		}
+		if !found || retry.SecondsRemaining < seconds {
+			seconds, found = retry.SecondsRemaining, true
+		}
+	}
+	return seconds, found
+}
+
+func needsAttentionCount(retries []ManagedRetry) int {
+	count := 0
+	for _, retry := range retries {
+		if retry.State == managedStateNeedsAttention {
+			count++
+		}
+	}
+	return count
+}
+
+// formatCountdown renders a reset countdown as HH:MM:SS. Durations beyond a
+// day collapse to a fixed marker because the tray tip has limited space.
+func formatCountdown(seconds int64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", seconds/3600, seconds%3600/60, seconds%60)
+}
+
 func (a *trayApp) setTip(tip string) {
 	a.setVisual(a.lastIcon, tip)
 }
@@ -455,23 +519,44 @@ func (a *trayApp) notify(title, text string) {
 
 func (a *trayApp) showMenu() {
 	snapshot, _ := a.service.snapshot(time.Now().UTC())
+	a.quotaCommands = map[uint16]quotaMenuCommand{}
 	menu, _, _ := procCreatePopupMenu.Call()
 	if menu == 0 {
 		return
 	}
 	defer procDestroyMenu.Call(menu)
 	status := a.lastTip
-	if strings.HasPrefix(status, "Codex Auto Retry - ") {
-		status = strings.TrimPrefix(status, "Codex Auto Retry - ")
+	if strings.HasPrefix(status, "Codex Auto Resume - ") {
+		status = strings.TrimPrefix(status, "Codex Auto Resume - ")
 	}
 	appendTrayMenu(menu, mfGrayed, 0, status)
 	appendTrayMenu(menu, mfSeparator, 0, "")
 	appendTrayMenu(menu, mfString, menuOpenSettings, "打开设置…")
-	pauseText := "暂停自动重试"
+	pauseText := "暂停自动恢复 Pause auto-resume"
 	if snapshot.Paused {
-		pauseText = "恢复自动重试"
+		pauseText = "恢复自动恢复 Resume auto-resume"
 	}
 	appendTrayMenu(menu, mfString, menuTogglePause, pauseText)
+	rows := 0
+	for _, retry := range snapshot.Retries {
+		if rows >= quotaMenuRowLimit {
+			break
+		}
+		if retry.State != managedStateWaitingForReset && retry.State != managedStateResetDue {
+			continue
+		}
+		if rows == 0 {
+			appendTrayMenu(menu, mfSeparator, 0, "")
+		}
+		resumeID := uint16(menuQuotaCommandBase + rows*2)
+		cancelID := resumeID + 1
+		a.quotaCommands[resumeID] = quotaMenuCommand{threadID: retry.ThreadID}
+		a.quotaCommands[cancelID] = quotaMenuCommand{threadID: retry.ThreadID, cancel: true}
+		label := shortThreadID(retry.ThreadID)
+		appendTrayMenu(menu, mfString, resumeID, fmt.Sprintf("立即恢复 Resume Now %s", label))
+		appendTrayMenu(menu, mfString, cancelID, fmt.Sprintf("取消配额恢复 Cancel Pending Resume %s", label))
+		rows++
+	}
 	appendTrayMenu(menu, mfSeparator, 0, "")
 	appendTrayMenu(menu, mfString, menuExit, "退出")
 	var point trayPoint
@@ -481,6 +566,7 @@ func (a *trayApp) showMenu() {
 	if command != 0 {
 		a.handleCommand(uint16(command))
 	}
+	a.quotaCommands = nil
 	procPostMessage.Call(a.hwnd, wmNull, 0, 0)
 }
 
@@ -493,6 +579,15 @@ func appendTrayMenu(menu uintptr, flags uint32, id uint16, label string) {
 }
 
 func (a *trayApp) handleCommand(command uint16) {
+	if quota, ok := a.quotaCommands[command]; ok {
+		if quota.cancel {
+			_, _ = a.service.cancelRetry(quota.threadID, time.Now().UTC())
+		} else {
+			_, _ = a.service.retryNow(quota.threadID, time.Now().UTC())
+		}
+		a.refresh()
+		return
+	}
 	switch command {
 	case menuOpenSettings:
 		a.openSettings()

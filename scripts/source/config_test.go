@@ -19,7 +19,7 @@ func TestSharedPreferenceMigration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.SharedAppServerRequested != enabled || cfg.ConfigVersion != 11 {
+		if cfg.SharedAppServerRequested != enabled || cfg.ConfigVersion != currentConfigVersion {
 			t.Fatalf("migration changed user preference: %+v", cfg)
 		}
 		cfg.SharedAppServerRequested = true

@@ -9,11 +9,12 @@ const maxAutomaticRecoveryDuration = 30 * time.Minute
 
 func (d *daemon) reconcileStartupState(now time.Time) {
 	for threadID, thread := range d.state.Threads {
-		if thread.Awaiting == nil || thread.Awaiting.RetryTurnID != "" {
+		if thread.Awaiting == nil || thread.Awaiting.RetryTurnID != "" || thread.Awaiting.QuotaRecovery {
 			continue
 		}
 		awaiting := thread.Awaiting
 		thread.Awaiting = nil
+		thread.QuotaWait = nil
 		thread.Pending = &PendingRetry{
 			EventKey:            awaiting.EventKey,
 			FailedTurnID:        awaiting.FailedTurnID,
@@ -85,6 +86,7 @@ func (d *daemon) stopPendingRetryLocked(threadID string, thread ThreadState, now
 	}
 	thread.Pending = nil
 	thread.Awaiting = nil
+	thread.QuotaWait = nil
 	completedAttempts := completedRetryCount(pending.Attempt)
 	completedConsecutive := completedRetryCount(pending.ConsecutiveRetry)
 	thread.RecoveryAttempts = completedAttempts
@@ -115,6 +117,12 @@ func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time
 	}
 	switch command.Action {
 	case commandRetryNow:
+		if thread.QuotaWait != nil {
+			thread.QuotaWait.DueAt = now
+			d.state.Threads[command.ThreadID] = thread
+			d.logger.Printf("retry expedited thread=%s", shortThreadID(command.ThreadID))
+			return
+		}
 		if thread.Pending == nil {
 			d.logger.Printf("control command ignored thread=%s reason=retry_not_pending", shortThreadID(command.ThreadID))
 			return
@@ -123,6 +131,16 @@ func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time
 		d.state.Threads[command.ThreadID] = thread
 		d.logger.Printf("retry expedited thread=%s", shortThreadID(command.ThreadID))
 	case commandCancelRetry:
+		if thread.QuotaWait != nil {
+			thread.QuotaWait = nil
+			thread.RecoveryAttempts = 0
+			thread.ConsecutiveRetries = 0
+			thread.CurrentTurnProgress = false
+			thread.GoalStop = nil
+			d.state.Threads[command.ThreadID] = thread
+			d.logger.Printf("retry cancelled thread=%s reason=manual_cancel", shortThreadID(command.ThreadID))
+			return
+		}
 		if thread.Pending == nil {
 			d.logger.Printf("control command ignored thread=%s reason=retry_not_pending", shortThreadID(command.ThreadID))
 			return
@@ -146,6 +164,7 @@ func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time
 		thread.Stopped = nil
 		thread.GoalStop = nil
 		thread.GoalHeld = false
+		thread.QuotaWait = nil
 		thread.RecoveryAttempts = 1
 		thread.ConsecutiveRetries = 1
 		thread.RecoveryStartedAt = now
@@ -185,9 +204,11 @@ func (d *daemon) handleEventLocked(item scannedEvent, now time.Time) {
 	case "task_user_input":
 		d.handleTaskUserInputLocked(item.ThreadID, event, thread)
 	case "task_progress":
-		d.handleTaskProgressLocked(item.ThreadID, event, thread)
+		d.handleTaskProgressLocked(item.ThreadID, event, now, thread)
 	case "task_complete":
 		d.handleTaskCompleteLocked(item, key, now, thread)
+	case "token_count":
+		d.handleQuotaEventLocked(event)
 	case "turn_aborted":
 		d.handleTurnAbortedLocked(item.ThreadID, event, thread)
 	case "thread_goal_updated":
@@ -246,11 +267,18 @@ func (d *daemon) handleTaskStartedLocked(threadID string, event RelevantEvent, t
 				DispatchFailures: pending.DispatchFailures, ParentNotified: pending.ParentNotified,
 				GoalLimitRestart: pending.GoalLimitRestart, DispatchStartedAt: event.Timestamp,
 				StartedAt: event.Timestamp, CodexHome: pending.CodexHome, RolloutPath: pending.RolloutPath,
+				QuotaRecovery: pending.QuotaRecovery,
 			}
 			d.state.Threads[threadID] = thread
 			d.logger.Printf("automatic retry turn adopted thread=%s action=%s attempt=%d", shortThreadID(threadID), action, pending.Attempt)
 			return
 		}
+		thread.LastExternalTurnID = event.TurnID
+		thread.LastExternalTurnAt = event.Timestamp
+		d.cancelRetryLocked(threadID, thread, "manual_task_started")
+		return
+	}
+	if thread.QuotaWait != nil {
 		thread.LastExternalTurnID = event.TurnID
 		thread.LastExternalTurnAt = event.Timestamp
 		d.cancelRetryLocked(threadID, thread, "manual_task_started")
@@ -280,12 +308,12 @@ func (d *daemon) handleTaskUserInputLocked(threadID string, event RelevantEvent,
 		d.cancelRetryLocked(threadID, thread, "manual_task_input")
 		return
 	}
-	if thread.Pending != nil && turnID != "" && turnID == thread.LastStartedTurnID {
+	if (thread.Pending != nil || thread.QuotaWait != nil) && turnID != "" && turnID == thread.LastStartedTurnID {
 		d.cancelRetryLocked(threadID, thread, "manual_task_input")
 	}
 }
 
-func (d *daemon) handleTaskProgressLocked(threadID string, event RelevantEvent, thread ThreadState) {
+func (d *daemon) handleTaskProgressLocked(threadID string, event RelevantEvent, now time.Time, thread ThreadState) {
 	// Progress matters only for the automatic retry turn currently correlated
 	// in state. This prevents a late record from an older or manual turn from
 	// resetting the no-progress guard for a different retry.
@@ -296,6 +324,7 @@ func (d *daemon) handleTaskProgressLocked(threadID string, event RelevantEvent, 
 	}
 	thread.CurrentTurnProgress = true
 	d.state.Threads[threadID] = thread
+	d.verifyQuotaProbeLocked(threadID, thread, now)
 }
 
 func (d *daemon) handleTurnAbortedLocked(threadID string, event RelevantEvent, thread ThreadState) {
@@ -313,9 +342,11 @@ func (d *daemon) handleTurnAbortedLocked(threadID string, event RelevantEvent, t
 		cancel()
 	}
 	hadRetry := thread.Pending != nil || thread.Awaiting != nil || thread.Stopped != nil ||
+		thread.QuotaWait != nil ||
 		thread.RecoveryAttempts > 0 || thread.ConsecutiveRetries > 0
 	thread.Pending = nil
 	thread.Awaiting = nil
+	thread.QuotaWait = nil
 	thread.Stopped = nil
 	thread.GoalStop = nil
 	thread.RecoveryAttempts = 0
@@ -347,7 +378,37 @@ func (d *daemon) handleTaskCompleteLocked(item scannedEvent, key string, now tim
 		}
 		if completionSucceeded(event) {
 			d.logger.Printf("retry chain recovered thread=%s recovery_attempt=%d consecutive_retry=%d", shortThreadID(item.ThreadID), awaiting.Attempt, awaiting.ConsecutiveRetry)
+			d.verifyQuotaProbeLocked(item.ThreadID, thread, now)
 			d.resetRetryStateLocked(item.ThreadID, thread)
+			return
+		}
+		quotaDispatch := awaiting.QuotaRecovery
+		wait := QuotaWait{
+			EventKey:            awaiting.EventKey,
+			FailedTurnID:        awaiting.FailedTurnID,
+			FailedAt:            awaiting.FailedAt,
+			OriginTurnStartedAt: awaiting.OriginTurnStartedAt,
+			Class:               awaiting.Class,
+			CodexHome:           awaiting.CodexHome,
+			RolloutPath:         awaiting.RolloutPath,
+			ParentNotified:      awaiting.ParentNotified,
+			DispatchFailures:    awaiting.DispatchFailures,
+		}
+		decision := classifyCompletionFailure(item.Event, d.config)
+		if quotaDispatch && decision.Retry && decision.Class == classRateLimit {
+			d.handleQuotaDispatchFailureLocked(item, key, now, thread, wait, awaiting.OriginTurnStartedAt, awaiting.ParentNotified)
+			return
+		}
+		if quotaDispatch && decision.Retry {
+			// The wall cleared without verification and the failure is not a
+			// re-limit: release the rest of the queue and let this thread
+			// rejoin the ordinary transient chain with a fresh budget.
+			d.releaseQuotaFollowersLocked(now)
+			thread.RecoveryAttempts = 0
+			thread.ConsecutiveRetries = 0
+			thread.CurrentTurnProgress = false
+			thread.RecoveryStartedAt = now
+			d.scheduleFailureLocked(item, key, now, thread, 1, 1, awaiting.OriginTurnStartedAt, awaiting.ParentNotified)
 			return
 		}
 		nextConsecutive := awaiting.ConsecutiveRetry + 1
@@ -392,6 +453,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		} else if !heldConversationAllowed(thread.GoalStatus, thread.GoalUpdatedAt, originTurnStartedAt) {
 			thread.Pending = nil
 			thread.Awaiting = nil
+			thread.QuotaWait = nil
 			thread.RecoveryAttempts = 0
 			thread.ConsecutiveRetries = 0
 			thread.CurrentTurnProgress = false
@@ -402,10 +464,36 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		}
 	}
 	decision := classifyCompletionFailure(item.Event, d.config)
+	if reason := quotaHardWallReason(item.Event.ErrorText); reason != "" {
+		d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, key, item.Event.TurnID, item.Event.Timestamp, originTurnStartedAt, decision.Class, item.Root.CodexHome, item.RolloutPath, now, reason)
+		return
+	}
 	if !decision.Retry {
 		d.resetRetryStateLocked(item.ThreadID, thread)
 		d.logger.Printf("retry skipped thread=%s category=non_retryable reason=%s", shortThreadID(item.ThreadID), decision.Reason)
 		return
+	}
+	if decision.Class == classAuthLimited {
+		// Permanent-authentication walls require sign-in or credential repair
+		// by the user: fail closed to Needs Attention instead of burning the
+		// bounded auth budget against a wall automation cannot cross.
+		d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, key, item.Event.TurnID, item.Event.Timestamp, originTurnStartedAt, decision.Class, item.Root.CodexHome, item.RolloutPath, now, stopReasonQuotaAuthWall)
+		return
+	}
+	if decision.Class == classRateLimit {
+		var snapshot *QuotaSnapshot
+		if d.state.Quota != nil {
+			snapshot = d.state.Quota.Snapshot
+		}
+		window, selection := selectBindingWindow(snapshot, now)
+		switch selection {
+		case bindingFound:
+			d.parkForQuotaLocked(item, key, now, thread, decision, window, originTurnStartedAt, parentNotified)
+			return
+		case bindingUntrustworthy:
+			d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, key, item.Event.TurnID, item.Event.Timestamp, originTurnStartedAt, decision.Class, item.Root.CodexHome, item.RolloutPath, now, stopReasonQuotaUntrustworthy)
+			return
+		}
 	}
 	recoveryLimit, consecutiveLimit := retryLimitsForDecision(decision, d.config)
 	timeLimitExceeded := now.Sub(thread.RecoveryStartedAt) > maxAutomaticRecoveryDuration
@@ -419,8 +507,15 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		if decision.Class == classEmptyResponse && thread.GoalStatus == "active" {
 			reason = goalEmptyResponseStopReason
 		}
+		if decision.Class == classRateLimit {
+			thread.RecoveryAttempts = completedAttempts
+			thread.ConsecutiveRetries = completedConsecutive
+			d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, key, item.Event.TurnID, item.Event.Timestamp, originTurnStartedAt, decision.Class, item.Root.CodexHome, item.RolloutPath, now, stopReasonQuotaNoResetAttempts)
+			return
+		}
 		thread.Pending = nil
 		thread.Awaiting = nil
+		thread.QuotaWait = nil
 		thread.RecoveryAttempts = completedAttempts
 		thread.ConsecutiveRetries = completedConsecutive
 		thread.CurrentTurnProgress = false
@@ -443,6 +538,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 	delay := retryDelay(consecutiveRetry, d.config)
 	thread.RecoveryAttempts = recoveryAttempt
 	thread.ConsecutiveRetries = consecutiveRetry
+	thread.QuotaWait = nil
 	thread.CurrentTurnProgress = false
 	thread.LastFailureAt = item.Event.Timestamp
 	thread.Awaiting = nil
@@ -544,6 +640,7 @@ func (d *daemon) cancelRetryLocked(threadID string, thread ThreadState, reason s
 	}
 	thread.Pending = nil
 	thread.Awaiting = nil
+	thread.QuotaWait = nil
 	thread.RecoveryAttempts = 0
 	thread.ConsecutiveRetries = 0
 	thread.CurrentTurnProgress = false
@@ -556,10 +653,24 @@ func (d *daemon) cancelRetryLocked(threadID string, thread ThreadState, reason s
 func (d *daemon) resetRetryStateLocked(threadID string, thread ThreadState) {
 	thread.Pending = nil
 	thread.Awaiting = nil
+	thread.QuotaWait = nil
 	thread.RecoveryAttempts = 0
 	thread.ConsecutiveRetries = 0
 	thread.CurrentTurnProgress = false
 	thread.Stopped = nil
 	thread.GoalStop = nil
 	d.state.Threads[threadID] = thread
+}
+
+// isQuotaStopReason reports whether a stop reason belongs to the quota
+// recovery layer rather than the transient chain.
+func isQuotaStopReason(reason string) bool {
+	switch reason {
+	case stopReasonQuotaCreditWall, stopReasonQuotaAuthWall,
+		stopReasonQuotaUntrustworthy, stopReasonQuotaRelimit,
+		stopReasonQuotaNoResetAttempts:
+		return true
+	default:
+		return false
+	}
 }

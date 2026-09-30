@@ -66,8 +66,9 @@ Source code lives under `scripts/source`.
 | `tray_windows.go` | Native notification-area icon, live tooltip/countdown, menu controls, and graphical settings-process lifecycle. |
 | `process_windows.go` | Windows process-liveness verification, Codex Desktop detection, hidden inherited-console attributes, and owned process-tree cleanup. |
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, parent-to-child recovery-event routing, rollout paths, and mirrored-session detection. |
-| `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, and the plugin's fixed subagent recovery event. |
-| `classifier.go` | Provider-independent retry decisions, empty-response classification, and limited authentication budgets. |
+| `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, token_count quota events, and the plugin's fixed subagent recovery event. |
+| `quota.go` | Reset-aware quota recovery: token_count rate-limit parsing, Binding Window selection with the resets_at clamp, Waiting For Reset parking, probe-first drain, suspension helpers, and terminal Needs Attention walls. |
+| `classifier.go` | Provider-independent retry decisions, empty-response classification, bounded no-reset rate-limit fallback, and limited authentication budgets. |
 | `runner.go` | Controller result validation, privacy-safe failure codes, runtime shared-backend fail-open handling, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup, exact-thread rollout discovery, and allowlisted validation of the latest per-task context and applied thread settings used during resume. |
 | `app_server_rpc.go` | Loopback JSON-RPC WebSocket transport, initialization, request correlation, and fail-closed handling of interactive server requests. |

@@ -435,6 +435,37 @@ until a watchdog tick consumes them. The management MCP server and tray
 settings process can therefore run concurrently with the watchdog without
 becoming additional writers for `state.json`.
 
+## Quota Recovery Lifecycle
+
+`token_count` rollout events carry the account's Quota Windows
+(`used_percent`, `window_duration_mins`, `resets_at`) and are folded into a
+fresh `QuotaSnapshot` on every scan. When a task fails on an exhausted window
+with a trustworthy `resets_at`, the thread parks in Waiting For Reset
+(`QuotaWait`, state `waiting_for_reset`/`reset_due`) instead of consuming
+transient retry budget; waits compare absolute epochs, so sleep or hibernation
+cannot overshoot. The exhausted window with the latest `resets_at` becomes the
+Binding Window: while a binding is active, transient dispatches are deferred
+(not failed) and breaker expiry during suspension stops threads normally. A
+binding with no parked threads and no in-flight quota dispatch is cleared as
+residue so a fully drained queue cannot suspend the account forever.
+
+At RESET_DUE exactly one parked thread is elected probe (earliest `DueAt`),
+preserving the original thread's working directory, model, and permissions.
+Verified progress (task_started plus progress or a clean completion) releases
+the queue back into the transient chain with a fresh 30-minute recovery
+deadline; a probe re-limit re-parks the whole window on the fresh `resets_at`,
+and `quota_relimit_limit` consecutive probe re-limits escalate the window to
+Needs Attention. Walls automation cannot cross - credits/spend/billing, auth
+walls, untrustworthy reset times, and relimit-cap exhaustion - park the thread
+in terminal Needs Attention (`needs_attention`), never auto-retried, with
+`quota_*` stop reasons. A rate-limit failure with no trustworthy `resets_at`
+falls back to bounded transient retries (`quota_no_reset_attempt_limit` caps
+that fallback). `quota_grace_seconds` (default 30) is the fixed delay after
+`resets_at` before a reset counts as due. `status.json` and the management
+snapshot expose `quota`, `waiting_for_reset`, and per-thread `wait_until`
+fields; `retry_now` pulls a parked wait forward to dispatch immediately and
+`cancel_retry` releases a parked thread without touching its siblings.
+
 ## Privacy And Security
 
 - Lifecycle scanning parses only start, completion, abort, explicit user-input,

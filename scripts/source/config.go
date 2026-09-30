@@ -34,6 +34,7 @@ type Config struct {
 	MemoryLimitMB                int      `json:"memory_limit_mb"`
 	SharedAppServerMemoryLimitMB int      `json:"shared_app_server_memory_limit_mb"`
 	RetryPrompt                  string   `json:"retry_prompt"`
+	QuotaGraceSeconds            int      `json:"quota_grace_seconds"`
 	ShowNotifications            bool     `json:"show_notifications"`
 }
 
@@ -53,7 +54,7 @@ const (
 )
 
 const (
-	currentConfigVersion             = 11
+	currentConfigVersion             = 12
 	legacyDefaultSharedAppServerPort = 49321
 	defaultSharedAppServerPort       = 49621
 )
@@ -86,6 +87,7 @@ func defaultConfig() Config {
 		MemoryLimitMB:                1024,
 		SharedAppServerMemoryLimitMB: 4096,
 		RetryPrompt:                  defaultRetryPrompt,
+		QuotaGraceSeconds:            30,
 		ShowNotifications:            true,
 	}
 }
@@ -136,6 +138,7 @@ func loadOrCreateConfigUnlocked(path string) (Config, error) {
 	// a bounded private-memory guard for the watchdog process. Version 10 adds
 	// a monitor-only memory limit for the optional shared Codex app-server.
 	// Version 11 separates user preference from temporary backend availability.
+	// Version 12 adds the reset grace for quota recovery.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -183,6 +186,10 @@ func loadOrCreateConfigUnlocked(path string) (Config, error) {
 		}
 		if _, found := fields["controller_failure_limit"]; !found {
 			cfg.ControllerFailureLimit = defaultConfig().ControllerFailureLimit
+			changed = true
+		}
+		if _, found := fields["quota_grace_seconds"]; !found {
+			cfg.QuotaGraceSeconds = defaultConfig().QuotaGraceSeconds
 			changed = true
 		}
 		if _, found := fields["shared_app_server_enabled"]; !found {
@@ -269,6 +276,9 @@ func (c Config) validate() error {
 	}
 	if c.SharedAppServerMemoryLimitMB < minSharedServerMemoryLimitMB || c.SharedAppServerMemoryLimitMB > maxSharedServerMemoryLimitMB {
 		return fmt.Errorf("shared_app_server_memory_limit_mb must be between %d and %d", minSharedServerMemoryLimitMB, maxSharedServerMemoryLimitMB)
+	}
+	if c.QuotaGraceSeconds < 0 || c.QuotaGraceSeconds > 86400 {
+		return errors.New("quota_grace_seconds must be between 0 and 86400")
 	}
 	return nil
 }

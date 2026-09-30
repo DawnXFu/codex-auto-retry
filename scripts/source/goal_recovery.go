@@ -77,7 +77,7 @@ func (d *daemon) handleGoalUpdatedLocked(threadID string, event RelevantEvent, t
 		d.state.Threads[threadID] = thread
 		return
 	}
-	hadRetry := thread.Pending != nil || thread.Awaiting != nil
+	hadRetry := thread.Pending != nil || thread.Awaiting != nil || thread.QuotaWait != nil
 	if _, active := d.active[threadID]; active {
 		hadRetry = true
 	}
@@ -86,6 +86,7 @@ func (d *daemon) handleGoalUpdatedLocked(threadID string, event RelevantEvent, t
 	}
 	thread.Pending = nil
 	thread.Awaiting = nil
+	thread.QuotaWait = nil
 	thread.RecoveryAttempts = 0
 	thread.ConsecutiveRetries = 0
 	thread.CurrentTurnProgress = false

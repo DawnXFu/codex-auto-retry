@@ -571,6 +571,13 @@ func (d *daemon) advanceInactiveAwaitingLocked(threadID string, thread ThreadSta
 	if thread.CurrentTurnProgress {
 		nextConsecutive = 1
 	}
+	if awaiting.QuotaRecovery {
+		// An inactive probe/follower is not a re-limit and not a transient
+		// failure: return the thread to RESET_DUE and let the window elect a
+		// new probe on the next drain.
+		d.parkAwaitingQuotaLocked(threadID, thread, *awaiting, now)
+		return
+	}
 	if nextAttempt > awaiting.MaxAttempts || nextConsecutive > awaiting.MaxConsecutive {
 		completedAttempts := completedRetryCount(nextAttempt)
 		completedConsecutive := completedRetryCount(nextConsecutive)
@@ -617,6 +624,10 @@ func (d *daemon) advanceInactiveAwaitingLocked(threadID string, thread ThreadSta
 		ConsecutiveRetry: nextConsecutive, MaxConsecutive: awaiting.MaxConsecutive,
 		DispatchFailures: awaiting.DispatchFailures, ParentNotified: awaiting.ParentNotified,
 		GoalLimitRestart: awaiting.GoalLimitRestart,
+		QuotaRecovery:    awaiting.QuotaRecovery,
+	}
+	if awaiting.QuotaRecovery && !isQuotaStopReason(status) {
+		thread.RecoveryStartedAt = now
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry lifecycle rescheduled thread=%s status=%s attempt=%d consecutive_retry=%d", shortThreadID(threadID), status, nextAttempt, nextConsecutive)
@@ -634,6 +645,15 @@ func (d *daemon) rescheduleAwaitingWithPolicyLocked(threadID string, thread Thre
 	dispatchFailures := awaiting.DispatchFailures
 	if countFailure {
 		dispatchFailures++
+	}
+	if awaiting.QuotaRecovery {
+		// A quota drain that could not deliver stays parked: RESET_DUE must
+		// never degrade into a transient pending (the binding suspends it
+		// forever) or a terminal stop (the spec waits for the endpoint).
+		wait := *awaiting
+		wait.DispatchFailures = dispatchFailures
+		d.parkAwaitingQuotaLocked(threadID, thread, wait, now)
+		return
 	}
 	if controllerFailureNeedsAction(reason) || (countFailure && dispatchFailures >= d.config.ControllerFailureLimit) {
 		d.stopAwaitingForControllerLocked(threadID, thread, now, reason)
@@ -661,6 +681,10 @@ func (d *daemon) rescheduleAwaitingWithPolicyLocked(threadID string, thread Thre
 		DispatchFailures:    dispatchFailures,
 		ParentNotified:      awaiting.ParentNotified,
 		GoalLimitRestart:    awaiting.GoalLimitRestart,
+		QuotaRecovery:       awaiting.QuotaRecovery,
+	}
+	if awaiting.QuotaRecovery && !isQuotaStopReason(reason) {
+		thread.RecoveryStartedAt = now
 	}
 	d.state.Threads[threadID] = thread
 	d.logger.Printf("retry rescheduled thread=%s reason=%s delay_seconds=%d", shortThreadID(threadID), reason, int(delay.Seconds()))
@@ -673,6 +697,7 @@ func (d *daemon) stopAwaitingForControllerLocked(threadID string, thread ThreadS
 	}
 	thread.Pending = nil
 	thread.Awaiting = nil
+	thread.QuotaWait = nil
 	thread.GoalStop = nil
 	thread.RecoveryAttempts = completedRetryCount(awaiting.Attempt)
 	thread.ConsecutiveRetries = completedRetryCount(awaiting.ConsecutiveRetry)
@@ -698,6 +723,7 @@ func (d *daemon) stopPendingForControllerLocked(threadID string, thread ThreadSt
 		!thread.LastAutoRetryAt.After(pending.FailedAt)
 	thread.Pending = nil
 	thread.Awaiting = nil
+	thread.QuotaWait = nil
 	thread.GoalStop = nil
 	thread.RecoveryAttempts = completedRetryCount(pending.Attempt)
 	thread.ConsecutiveRetries = completedRetryCount(pending.ConsecutiveRetry)
@@ -774,6 +800,11 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		jobs = append(jobs, job)
 		available--
 	}
+	// A binding with no parked threads and no in-flight quota dispatch is
+	// residue of cancelled/aborted waits: clear it before it can suspend
+	// transient recovery forever.
+	d.pruneStaleBindingLocked()
+	suspended := d.quotaSuspendedLocked()
 	if available == 0 {
 		return jobs
 	}
@@ -793,9 +824,83 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 			if thread.Pending == nil || thread.Pending.DueAt.After(now) || thread.Awaiting != nil {
 				continue
 			}
+			if suspended {
+				// A Binding Window is active: defer transient dispatches
+				// instead of parking them on a known wall.
+				continue
+			}
 			d.stopPendingForControllerLocked(threadID, thread, now, stopReason)
 		}
 		return jobs
+	}
+	endpointReady := d.controllerState == "ready" || d.controllerState == "official_ipc_ready"
+	if suspended && endpointReady && d.state.Quota.Binding.ProbeThreadID == "" {
+		// RESET_DUE drain: exactly one parked thread resumes first as the
+		// probe. Its verified progress releases the rest of the window's
+		// queue through the normal dispatch path.
+		var probeID string
+		var probeWait *QuotaWait
+		for threadID, thread := range d.state.Threads {
+			wait := thread.QuotaWait
+			if wait == nil || wait.DueAt.After(now) || thread.Awaiting != nil || thread.Pending != nil {
+				continue
+			}
+			if _, active := d.active[threadID]; active {
+				continue
+			}
+			if probeWait == nil || wait.DueAt.Before(probeWait.DueAt) {
+				probeID = threadID
+				probeWait = wait
+			}
+		}
+		if probeWait != nil {
+			thread := d.state.Threads[probeID]
+			thread.QuotaWait = nil
+			thread.LastAutoRetryAt = now
+			thread.Awaiting = &AwaitingRetry{
+				EventKey:            probeWait.EventKey,
+				FailedTurnID:        probeWait.FailedTurnID,
+				FailedAt:            probeWait.FailedAt,
+				OriginTurnStartedAt: probeWait.OriginTurnStartedAt,
+				Class:               probeWait.Class,
+				Action:              actionDispatching,
+				Attempt:             1,
+				MaxAttempts:         d.config.MaxRecoveryAttempts,
+				ConsecutiveRetry:    1,
+				MaxConsecutive:      d.config.MaxConsecutiveRetries,
+				DispatchFailures:    probeWait.DispatchFailures,
+				ParentNotified:      probeWait.ParentNotified,
+				QuotaRecovery:       true,
+				DispatchStartedAt:   now,
+				StartDeadline:       now.Add(time.Duration(d.config.StartAckTimeoutSeconds) * time.Second),
+				CodexHome:           probeWait.CodexHome,
+				RolloutPath:         probeWait.RolloutPath,
+			}
+			d.state.Threads[probeID] = thread
+			d.state.Quota.Binding.ProbeThreadID = probeID
+			job := RetryJob{
+				Kind:                jobRecovery,
+				ThreadID:            probeID,
+				FailedTurnID:        probeWait.FailedTurnID,
+				FailedAt:            probeWait.FailedAt,
+				OriginTurnStartedAt: probeWait.OriginTurnStartedAt,
+				EventKey:            probeWait.EventKey,
+				Class:               probeWait.Class,
+				CodexHome:           probeWait.CodexHome,
+				RolloutPath:         probeWait.RolloutPath,
+				Attempt:             1,
+				MaxAttempts:         d.config.MaxRecoveryAttempts,
+				ConsecutiveRetry:    1,
+				MaxConsecutive:      d.config.MaxConsecutiveRetries,
+				DispatchFailures:    probeWait.DispatchFailures,
+				ParentNotified:      probeWait.ParentNotified,
+				RecoveryEventID:     recoveryEventID(probeID, probeWait.EventKey),
+			}
+			d.active[probeID] = job
+			jobs = append(jobs, job)
+			available--
+			d.logger.Printf("quota recovery probe dispatched thread=%s", shortThreadID(probeID))
+		}
 	}
 	type candidate struct {
 		threadID string
@@ -807,6 +912,7 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 			if thread.Pending != nil || thread.Awaiting != nil {
 				thread.Pending = nil
 				thread.Awaiting = nil
+				thread.QuotaWait = nil
 				thread.RecoveryAttempts = 0
 				thread.ConsecutiveRetries = 0
 				thread.CurrentTurnProgress = false
@@ -823,6 +929,10 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		}
 		if !thread.RecoveryStartedAt.IsZero() && now.Sub(thread.RecoveryStartedAt) > maxAutomaticRecoveryDuration {
 			d.stopPendingForControllerLocked(threadID, thread, now, "recovery_time_limit")
+			continue
+		}
+		if suspended {
+			// Defer transient dispatches while a Binding Window is active.
 			continue
 		}
 		candidates = append(candidates, candidate{threadID: threadID, pending: *thread.Pending})
@@ -849,6 +959,7 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 			Action:              actionDispatching,
 			Attempt:             item.pending.Attempt,
 			MaxAttempts:         item.pending.MaxAttempts,
+			QuotaRecovery:       item.pending.QuotaRecovery,
 			ConsecutiveRetry:    item.pending.ConsecutiveRetry,
 			MaxConsecutive:      item.pending.MaxConsecutive,
 			DispatchFailures:    item.pending.DispatchFailures,
@@ -945,6 +1056,7 @@ func (d *daemon) runJob(ctx context.Context, job RetryJob) {
 		thread.CurrentTurnProgress = false
 		thread.Pending = nil
 		thread.Awaiting = nil
+		thread.QuotaWait = nil
 		thread.Stopped = nil
 		thread.GoalStop = nil
 		if status, held := goalHoldStatusForReason(result.Reason); held {
@@ -982,12 +1094,16 @@ func (d *daemon) writeStatus(running bool) error {
 func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 	pending := 0
 	active := 0
+	waiting := 0
 	for _, thread := range d.state.Threads {
 		if thread.Pending != nil {
 			pending++
 		}
 		if thread.Awaiting != nil {
 			active++
+		}
+		if thread.QuotaWait != nil {
+			waiting++
 		}
 	}
 	if !running {
@@ -1012,6 +1128,8 @@ func (d *daemon) writeStatusLocked(running bool, rootCount int) error {
 		LastScanAt:                          d.lastScan,
 		WatchedRoots:                        rootCount,
 		PendingRetries:                      pending,
+		WaitingForReset:                     waiting,
+		Quota:                               quotaSummary(d.state.Quota, waiting),
 		ActiveRetries:                       active,
 		Paused:                              d.paused,
 		SharedAppServerEnabled:              d.config.SharedAppServerEnabled,

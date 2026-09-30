@@ -15,7 +15,7 @@ func TestClassifyFailure(t *testing.T) {
 		max       int
 	}{
 		{"cockpit auth pool", "unexpected status 503 Service Unavailable: auth_unavailable: no auth available", true, classServer, 0},
-		{"rate limit", "HTTP 429 Too Many Requests", true, classRateLimit, 0},
+		{"rate limit", "HTTP 429 Too Many Requests", true, classRateLimit, quotaNoResetFallbackAttempts},
 		{"network reset", "error sending request: connection reset by peer", true, classTransient, 0},
 		{"stream stopped", "stream disconnected before response.completed", true, classTransient, 0},
 		{"temporary auth", "authentication service unavailable, try again later", true, classAuthTransient, 0},

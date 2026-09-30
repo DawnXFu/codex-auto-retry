@@ -7,14 +7,13 @@ import (
 	"time"
 )
 
-func TestAuthLimitIsConfigurableAndKeepsHistoricalCount(t *testing.T) {
+func TestAuthWallNeedsAttentionWithoutRetry(t *testing.T) {
 	if got := classifyFailure("auth_unavailable: no auth available", defaultConfig()); !got.Retry || got.Class != classAuthTransient {
 		t.Fatalf("temporary auth outage was not classified as retryable: %+v", got)
 	}
 	cfg := isolatedConfig(t.TempDir())
 	cfg.MaxRecoveryAttempts = 1000
 	cfg.MaxConsecutiveRetries = 100
-	cfg.AuthMaxAttempts = 6
 	now := time.Now().UTC()
 	d := newTestDaemon(t, cfg, successfulRunner())
 	threadID := "019fa94e-0103-7183-b405-36bd307b6dca"
@@ -27,11 +26,11 @@ func TestAuthLimitIsConfigurableAndKeepsHistoricalCount(t *testing.T) {
 	event.Event.ErrorText = "401 unauthorized: login required"
 	d.scheduleFailureLocked(event, "auth-limit-event", now, thread, 20, 20, now.Add(-30*time.Second), false)
 	stopped := d.state.Threads[threadID].Stopped
-	if stopped == nil || stopped.Reason != "auth_attempt_limit" {
-		t.Fatalf("auth-specific stop reason missing: %+v", stopped)
+	if stopped == nil || stopped.Reason != stopReasonQuotaAuthWall || !stopped.NeedsAttention {
+		t.Fatalf("auth wall did not park in Needs Attention: %+v", stopped)
 	}
-	if stopped.Attempts != 19 || stopped.MaxAttempts != 6 || stopped.ConsecutiveRetries != 19 || stopped.MaxConsecutive != 6 {
-		t.Fatalf("historical counters were clamped or limits were wrong: %+v", stopped)
+	if stopped.Attempts != 19 || stopped.ConsecutiveRetries != 19 {
+		t.Fatalf("historical counters were lost: %+v", stopped)
 	}
 }
 

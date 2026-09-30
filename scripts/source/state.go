@@ -49,6 +49,9 @@ func loadState(path string) (RuntimeState, error) {
 	if state.ProcessedEvents == nil {
 		state.ProcessedEvents = make(map[string]time.Time)
 	}
+	if state.Quota == nil {
+		state.Quota = &QuotaState{}
+	}
 	migrateCodex153ThreadIDs(&state)
 	state.Version = 5
 	for id, thread := range state.Threads {
@@ -134,7 +137,10 @@ func (s *RuntimeState) prune(now time.Time) {
 		if thread.GoalStop != nil && thread.GoalStop.RequestedAt.After(lastActivity) {
 			lastActivity = thread.GoalStop.RequestedAt
 		}
-		if thread.Pending == nil && thread.Awaiting == nil && !lastActivity.IsZero() && lastActivity.Before(threadCutoff) {
+		if thread.QuotaWait != nil && thread.QuotaWait.DueAt.After(lastActivity) {
+			lastActivity = thread.QuotaWait.DueAt
+		}
+		if thread.Pending == nil && thread.Awaiting == nil && thread.QuotaWait == nil && !lastActivity.IsZero() && lastActivity.Before(threadCutoff) {
 			delete(s.Threads, id)
 		}
 	}
@@ -200,7 +206,7 @@ func trimInactiveThreads(threads map[string]ThreadState, limit int, now time.Tim
 	entries := make([]entry, 0, len(threads))
 	for id, thread := range threads {
 		// Never discard a retry that can still run or a recent stopped entry.
-		if thread.Pending != nil || thread.Awaiting != nil {
+		if thread.Pending != nil || thread.Awaiting != nil || thread.QuotaWait != nil {
 			continue
 		}
 		at := thread.LastFailureAt
@@ -218,6 +224,9 @@ func trimInactiveThreads(threads map[string]ThreadState, limit int, now time.Tim
 		}
 		if thread.GoalStop != nil && thread.GoalStop.RequestedAt.After(at) {
 			at = thread.GoalStop.RequestedAt
+		}
+		if thread.QuotaWait != nil && thread.QuotaWait.DueAt.After(at) {
+			at = thread.QuotaWait.DueAt
 		}
 		if thread.Stopped != nil && !thread.Stopped.Historical &&
 			(thread.Stopped.StoppedAt.IsZero() || now.Sub(thread.Stopped.StoppedAt) <= stoppedRetryDisplayWindow) {

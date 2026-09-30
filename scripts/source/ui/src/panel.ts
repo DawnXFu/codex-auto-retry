@@ -30,7 +30,7 @@ type FailureClass =
 type ManagedRetry = {
   thread_id: string;
   label: string;
-  state: "pending" | "starting" | "running" | "stopped";
+  state: "pending" | "starting" | "running" | "stopped" | "waiting_for_reset" | "reset_due" | "needs_attention";
   class: FailureClass;
   due_at?: string;
   seconds_remaining: number;
@@ -43,8 +43,9 @@ type ManagedRetry = {
   can_cancel: boolean;
   can_restart: boolean;
   stop_reason?: string;
+  wait_until?: string;
+  needs_attention?: boolean;
 };
-
 type ManagementSnapshot = {
   version: string;
   running: boolean;
@@ -307,7 +308,7 @@ function renderMetrics(next: ManagementSnapshot): void {
   const total = next.pending_retries + next.active_retries + next.stopped_retries;
   elements.queueCount.textContent = String(total);
   const pending = next.retries
-    .filter((retry) => retry.state === "pending" && retry.due_at)
+    .filter((retry) => (retry.state === "pending" || retry.state === "waiting_for_reset" || retry.state === "reset_due") && retry.due_at)
     .sort((a, b) => Date.parse(a.due_at ?? "") - Date.parse(b.due_at ?? ""));
   if (next.paused && pending.length > 0) {
     elements.nextRetry.textContent = "等待恢复";
@@ -350,8 +351,9 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
   const main = document.createElement("div");
   main.className = "queue-main";
   const queueIcon = document.createElement("span");
-  queueIcon.className = `queue-icon${retry.state === "pending" ? "" : retry.state === "stopped" ? " stopped" : " active"}`;
-  queueIcon.append(icon(retry.state === "pending" ? "clock" : retry.state === "stopped" ? "x" : "refresh-cw"));
+  const quotaWait = retry.state === "waiting_for_reset" || retry.state === "reset_due";
+  queueIcon.className = `queue-icon${retry.state === "pending" || quotaWait ? "" : retry.state === "stopped" || retry.state === "needs_attention" ? " stopped" : " active"}`;
+  queueIcon.append(icon(retry.state === "pending" || quotaWait ? "clock" : retry.state === "stopped" || retry.state === "needs_attention" ? "x" : "refresh-cw"));
   const copy = document.createElement("div");
   copy.className = "queue-copy";
   const title = document.createElement("div");
@@ -368,9 +370,15 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
     : `连续无进展 ${retry.consecutive_retry}`;
   const stateLabel = retry.state === "pending"
     ? "等待中"
-    : retry.state === "stopped"
-      ? stoppedStateLabel(retry)
-      : actionLabel(retry.action);
+    : retry.state === "waiting_for_reset"
+      ? "配额等待中"
+      : retry.state === "reset_due"
+        ? "重置已就绪"
+        : retry.state === "needs_attention"
+          ? "需要关注"
+          : retry.state === "stopped"
+            ? stoppedStateLabel(retry)
+            : actionLabel(retry.action);
   meta.append(
     textSpan(classLabel(retry.class)),
     textSpan(recovery),
@@ -384,10 +392,13 @@ function createQueueItem(retry: ManagedRetry, paused: boolean): HTMLElement {
   state.className = "queue-state";
   const primary = document.createElement("strong");
   const secondary = document.createElement("span");
-  if (retry.state === "pending" && retry.due_at) {
+  if ((retry.state === "pending" || quotaWait) && retry.due_at) {
     primary.dataset.dueAt = retry.due_at;
     updateCountdownElement(primary);
-    secondary.textContent = paused ? "恢复后执行" : "后重试";
+    secondary.textContent = paused ? "恢复后执行" : retry.state === "pending" ? "后重试" : "后恢复";
+  } else if (retry.state === "needs_attention") {
+    primary.textContent = "需要关注";
+    secondary.textContent = stopReasonLabel(retry);
   } else if (retry.state === "stopped") {
     primary.textContent = "已停止";
     secondary.textContent = stopReasonLabel(retry);
@@ -535,6 +546,21 @@ function stopReasonLabel(retry: ManagedRetry): string {
   }
   if (retry.stop_reason === "goal_empty_response_limit") {
     return `目标连续空回复达到上限，目标恢复已停止`;
+  }
+  if (retry.stop_reason === "quota_credit_or_billing_wall") {
+    return "额度或账单限制已达到，需人工处理";
+  }
+  if (retry.stop_reason === "quota_auth_wall") {
+    return "登录状态需要人工处理后才能继续";
+  }
+  if (retry.stop_reason === "quota_untrustworthy_reset") {
+    return "重置时间不可信，已停止等待";
+  }
+  if (retry.stop_reason === "quota_relimit_limit") {
+    return "重置后仍连续触发限流，已停止";
+  }
+  if (retry.stop_reason === "quota_no_reset_attempt_limit") {
+    return "限流未提供重置时间，重试达到上限";
   }
   if (retry.stop_reason === "consecutive_retry_limit") {
     return `无进展 ${retry.consecutive_retry}/${retry.max_consecutive_retries ?? retry.consecutive_retry} 达上限`;

@@ -29,6 +29,8 @@ type ManagedRetry struct {
 	CanCancel             bool         `json:"can_cancel" jsonschema:"whether the pending retry can be cancelled"`
 	CanRestart            bool         `json:"can_restart" jsonschema:"whether an exhausted retry can be restarted with a fresh budget"`
 	StopReason            string       `json:"stop_reason,omitempty" jsonschema:"privacy-safe reason why retries stopped"`
+	WaitUntil             string       `json:"wait_until,omitempty" jsonschema:"scheduled quota wake time in RFC 3339 format"`
+	NeedsAttention        bool         `json:"needs_attention,omitempty" jsonschema:"whether the stopped task needs manual attention"`
 }
 
 // Stopped entries are useful immediately after a limit is reached because
@@ -72,11 +74,22 @@ type ManagementSnapshot struct {
 	PendingRetries                      int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
 	ActiveRetries                       int            `json:"active_retries" jsonschema:"number of retries starting or running"`
 	StoppedRetries                      int            `json:"stopped_retries" jsonschema:"number of currently visible retry chains that have stopped"`
+	WaitingForReset                     int            `json:"waiting_for_reset" jsonschema:"number of tasks parked waiting for a quota reset"`
 	WatchedRoots                        int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
 	LastError                           string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
 	ControllerState                     string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
 	Notice                              string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
 	Retries                             []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
+	Quota                               *ManagedQuota  `json:"quota,omitempty" jsonschema:"latest account quota usage summary"`
+}
+
+// ManagedQuota is the privacy-safe account quota summary for the tray: the
+// binding window when one is active, otherwise the most-used reported window.
+type ManagedQuota struct {
+	UsedPercent float64 `json:"used_percent"`
+	ResetsAt    string  `json:"resets_at,omitempty"`
+	Binding     bool    `json:"binding"`
+	Waiting     int     `json:"waiting"`
 }
 
 type managementService struct {
@@ -133,18 +146,22 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 	running := statusFound && status.Running && !heartbeatStale
 	retries := managedRetries(state, now)
 	visibleRetries := retries[:0]
-	pending, active, stopped := 0, 0, 0
+	pending, active, stopped, waiting := 0, 0, 0, 0
 	for _, retry := range retries {
-		if !running && retry.State != "stopped" {
+		if !running && retry.State != "stopped" && retry.State != managedStateNeedsAttention {
 			continue
 		}
 		visibleRetries = append(visibleRetries, retry)
-		if retry.State == "pending" {
+		switch retry.State {
+		case "pending", managedStateWaitingForReset, managedStateResetDue:
 			pending++
-		} else if retry.State == "stopped" {
+		case "stopped", managedStateNeedsAttention:
 			stopped++
-		} else {
+		default:
 			active++
+		}
+		if retry.State == managedStateWaitingForReset || retry.State == managedStateResetDue {
+			waiting++
 		}
 	}
 	retries = visibleRetries
@@ -176,8 +193,10 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		PendingRetries:               pending,
 		ActiveRetries:                active,
 		StoppedRetries:               stopped,
+		WaitingForReset:              waiting,
 		Retries:                      retries,
 	}
+	snapshot.Quota = quotaSummary(state.Quota, waiting)
 	if statusFound {
 		if running {
 			snapshot.Version = status.Version
@@ -217,6 +236,31 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		}
 	}
 	return snapshot, nil
+}
+
+// quotaSummary condenses persisted quota state into the privacy-safe display
+// shape shared by the management snapshot and the watchdog status heartbeat:
+// the binding window while one is active, otherwise the most-used window.
+func quotaSummary(quota *QuotaState, waiting int) *ManagedQuota {
+	if quota == nil || (quota.Snapshot == nil && quota.Binding == nil) {
+		return nil
+	}
+	summary := &ManagedQuota{Binding: quota.Binding != nil, Waiting: waiting}
+	window := QuotaWindow{}
+	if quota.Binding != nil {
+		window = quota.Binding.Window
+	} else {
+		for _, candidate := range quota.Snapshot.Windows {
+			if candidate.UsedPercent > window.UsedPercent {
+				window = candidate
+			}
+		}
+	}
+	summary.UsedPercent = window.UsedPercent
+	if !window.ResetsAt.IsZero() {
+		summary.ResetsAt = window.ResetsAt.Format(time.RFC3339Nano)
+	}
+	return summary
 }
 
 func (m *managementService) setSharedAppServerEnabled(enabled bool, now time.Time) (ManagementSnapshot, error) {
@@ -424,7 +468,7 @@ func (m *managementService) queueThreadCommand(action ControlCommandAction, thre
 	}
 	thread, found := state.Threads[threadID]
 	if !found || (action == commandRestartRetry && thread.Stopped == nil) ||
-		(action != commandRestartRetry && thread.Pending == nil) {
+		(action != commandRestartRetry && thread.Pending == nil && thread.QuotaWait == nil) {
 		return ManagementSnapshot{}, errors.New("该任务当前没有可执行的重试操作")
 	}
 	if _, err := queueControlCommand(m.commandDir, action, threadID, now); err != nil {
@@ -481,6 +525,28 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 				CanCancel:             true,
 			})
 		}
+		if thread.QuotaWait != nil {
+			wait := thread.QuotaWait
+			remaining := int64(0)
+			if duration := wait.DueAt.Sub(now); duration > 0 {
+				remaining = int64((duration + time.Second - 1) / time.Second)
+			}
+			stateName := managedStateWaitingForReset
+			if !wait.DueAt.After(now) {
+				stateName = managedStateResetDue
+			}
+			retries = append(retries, ManagedRetry{
+				ThreadID:         threadID,
+				Label:            "任务 " + shortThreadID(threadID),
+				State:            stateName,
+				Class:            wait.Class,
+				DueAt:            wait.DueAt.Format(time.RFC3339Nano),
+				SecondsRemaining: remaining,
+				WaitUntil:        wait.WaitUntil.Format(time.RFC3339Nano),
+				CanRetryNow:      true,
+				CanCancel:        true,
+			})
+		}
 		if thread.Awaiting != nil {
 			stateName := "starting"
 			if thread.Awaiting.RetryTurnID != "" {
@@ -498,11 +564,15 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 				Action:                thread.Awaiting.Action,
 			})
 		}
-		if thread.Stopped != nil && stoppedRetryIsVisible(thread.Stopped, now) {
+		if thread.Stopped != nil && (thread.Stopped.NeedsAttention || stoppedRetryIsVisible(thread.Stopped, now)) {
+			stateName := "stopped"
+			if thread.Stopped.NeedsAttention {
+				stateName = managedStateNeedsAttention
+			}
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
 				Label:                 "任务 " + shortThreadID(threadID),
-				State:                 "stopped",
+				State:                 stateName,
 				Class:                 thread.Stopped.Class,
 				RecoveryAttempt:       thread.Stopped.Attempts,
 				MaxRecoveryAttempts:   thread.Stopped.MaxAttempts,
@@ -510,6 +580,7 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 				MaxConsecutiveRetries: thread.Stopped.MaxConsecutive,
 				CanRestart:            true,
 				StopReason:            thread.Stopped.Reason,
+				NeedsAttention:        thread.Stopped.NeedsAttention,
 			})
 		}
 	}

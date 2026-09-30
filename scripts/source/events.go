@@ -66,7 +66,8 @@ func parseRelevantEvent(line []byte) (RelevantEvent, bool) {
 			!bytes.Contains(line, []byte(`"task_complete"`)) &&
 			!bytes.Contains(line, []byte(`"turn_aborted"`)) &&
 			!bytes.Contains(line, []byte(`"user_message"`)) &&
-			!bytes.Contains(line, []byte(`"thread_goal_updated"`))) {
+			!bytes.Contains(line, []byte(`"thread_goal_updated"`)) &&
+			!bytes.Contains(line, []byte(`"token_count"`))) {
 		return RelevantEvent{}, false
 	}
 	var envelope eventEnvelope
@@ -77,15 +78,18 @@ func parseRelevantEvent(line []byte) (RelevantEvent, bool) {
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return RelevantEvent{}, false
 	}
+	timestamp, err := time.Parse(time.RFC3339Nano, envelope.Timestamp)
+	if err != nil {
+		timestamp = time.Now().UTC()
+	}
+	if payload.Type == "token_count" {
+		return parseQuotaEvent(envelope.Payload, timestamp)
+	}
 	if payload.Type != "task_started" && payload.Type != "task_complete" &&
 		payload.Type != "turn_aborted" &&
 		payload.Type != "user_message" &&
 		payload.Type != "thread_goal_updated" {
 		return RelevantEvent{}, false
-	}
-	timestamp, err := time.Parse(time.RFC3339Nano, envelope.Timestamp)
-	if err != nil {
-		timestamp = time.Now().UTC()
 	}
 	event := RelevantEvent{
 		Kind:        payload.Type,

@@ -43,7 +43,7 @@ func classifyFailure(errorText string, cfg Config) RetryDecision {
 	case status == 408 || status == 425:
 		return RetryDecision{Retry: true, Class: classTransient, Reason: "temporary HTTP status"}
 	case status == 429:
-		return RetryDecision{Retry: true, Class: classRateLimit, Reason: "rate limited"}
+		return RetryDecision{Retry: true, Class: classRateLimit, MaxAttempts: quotaNoResetFallbackAttempts, Reason: "rate limited"}
 	case status >= 500 && status <= 599:
 		return RetryDecision{Retry: true, Class: classServer, Reason: "provider server error"}
 	case status == 400 || status == 404 || status == 405 || status == 409 || status == 410 || status == 413 || status == 415 || status == 422:
@@ -60,8 +60,9 @@ func classifyFailure(errorText string, cfg Config) RetryDecision {
 
 	if containsAny(text,
 		"rate limit", "too many requests", "quota temporarily", "capacity", "overloaded", "try again later",
+		"usage limit", "rate_limit_reached", "reached your usage",
 	) {
-		return RetryDecision{Retry: true, Class: classRateLimit, Reason: "provider capacity or rate limit"}
+		return RetryDecision{Retry: true, Class: classRateLimit, MaxAttempts: quotaNoResetFallbackAttempts, Reason: "provider capacity or rate limit"}
 	}
 
 	if containsAny(text,
