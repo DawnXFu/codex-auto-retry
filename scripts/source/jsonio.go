@@ -22,7 +22,7 @@ func writeJSONAtomic(path string, value any) error {
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(path), ".codex-auto-retry-*.tmp")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".codex-auto-resume-*.tmp")
 	if err != nil {
 		return err
 	}

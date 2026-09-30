@@ -1,9 +1,9 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title Codex Auto Retry Uninstaller
+title Codex Auto Resume Uninstaller
 echo.
-echo Codex Auto Retry - one-click uninstaller
+echo Codex Auto Resume - one-click uninstaller
 echo Existing retry settings and state will be preserved.
 echo.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall-release.ps1"

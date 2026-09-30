@@ -2,8 +2,11 @@
 
 [![CI](https://github.com/sybxxx/codex-auto-retry/actions/workflows/ci.yml/badge.svg)](https://github.com/sybxxx/codex-auto-retry/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/sybxxx/codex-auto-retry?label=latest%20release)](https://github.com/sybxxx/codex-auto-retry/releases/latest)
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue.svg)](#)
+
+> **Codex Auto Resume** is a minimal-diff fork of [sybxxx/codex-auto-retry](https://github.com/sybxxx/codex-auto-retry) (see [ADR-0001](docs/adr/0001-fork-strategy.md)) that adds reset-aware quota recovery and ships under the "Codex Auto Resume" product identity. The Codex plugin/MCP integration surface intentionally keeps the `codex-auto-retry` name.
 
 [English] | [中文说明](README_zh.md)
 

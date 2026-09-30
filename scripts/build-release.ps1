@@ -21,7 +21,7 @@ $safeCodexLauncher = ([string][char]0x5b89) + ([char]0x5168) + ([char]0x542f) + 
 $pluginManifestPath = Join-Path $pluginRoot '.codex-plugin\plugin.json'
 $pluginManifest = Read-JsonDocument -Path $pluginManifestPath
 if ($null -eq $pluginManifest -or [string]$pluginManifest.name -ne 'codex-auto-retry') {
-    throw 'The Codex Auto Retry plugin manifest is missing or invalid.'
+    throw 'The Codex Auto Resume plugin manifest is missing or invalid.'
 }
 $pluginVersion = [string]$pluginManifest.version
 $packageVersion = ($pluginVersion -split '\+', 2)[0]
@@ -45,7 +45,7 @@ if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'build.ps1') | Out-Host
 }
 
-$watchdog = Join-Path $pluginRoot 'scripts\bin\codex-auto-retry.exe'
+$watchdog = Join-Path $pluginRoot 'scripts\bin\codex-auto-resume.exe'
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 Assert-CodexBuildProvenance -Root $pluginRoot
 $mcp = Join-Path $pluginRoot 'scripts\bin\codex-auto-retry-mcp.exe'
@@ -89,7 +89,7 @@ try {
     $unexpectedSourceBinFiles = @(Get-ChildItem -LiteralPath $sourceBin -File -Recurse -Force |
         Where-Object {
             $_.DirectoryName -ne $sourceBin -or
-            @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe') -notcontains $_.Name
+            @('codex-auto-resume.exe', 'codex-auto-retry-mcp.exe') -notcontains $_.Name
         })
     if ($unexpectedSourceBinFiles.Count -gt 0) {
         $names = ($unexpectedSourceBinFiles.FullName | Sort-Object) -join ', '
@@ -97,7 +97,7 @@ try {
     }
 
     $stagedBin = Join-Path $payloadRoot 'scripts\bin'
-    $allowedBinFiles = @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe')
+    $allowedBinFiles = @('codex-auto-resume.exe', 'codex-auto-retry-mcp.exe')
     $unexpectedBinEntries = @(Get-ChildItem -LiteralPath $stagedBin -Force |
         Where-Object { $allowedBinFiles -notcontains $_.Name })
     foreach ($entry in $unexpectedBinEntries) {
@@ -106,7 +106,7 @@ try {
 
     $releaseManifest = [pscustomobject][ordered]@{
         schemaVersion = 1
-        product = 'Codex Auto Retry'
+        product = 'Codex Auto Resume'
         packageVersion = $packageVersion
         pluginName = 'codex-auto-retry'
         pluginVersion = $pluginVersion

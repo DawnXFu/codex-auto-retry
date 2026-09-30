@@ -18,7 +18,7 @@ function Backup-UpgradeRuntime {
     Assert-UpgradePlainPath $TransactionRoot
     $backup = Join-Path $TransactionRoot 'runtime-backup'
     New-Item -ItemType Directory -Path $backup | Out-Null
-    $files = foreach ($name in @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')) {
+    $files = foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')) {
         $path = Join-Path $RuntimePath $name
         Assert-UpgradePlainPath $path
         $present = Test-Path -LiteralPath $path -PathType Leaf
@@ -48,7 +48,7 @@ function Restore-UpgradeRuntime {
     $backup = Join-Path $TransactionRoot 'runtime-backup'
     $record = Read-JsonDocument (Join-Path $backup 'snapshot.json')
     if ($null -eq $record -or $record.schema_version -ne 1) { throw 'Runtime rollback snapshot is missing or invalid.' }
-    $names = @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')
+    $names = @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')
     if (@($record.files).Count -ne $names.Count) { throw 'Runtime rollback file list is invalid.' }
     # Verify every backup before changing any target. Never guess after damage.
     foreach ($name in $names) {
@@ -71,7 +71,7 @@ function Restore-UpgradeRuntime {
             if (Test-Path -LiteralPath $target) { throw 'New runtime file could not be retired.' }
         }
     }
-    $desired = '"{0}" supervise' -f (Join-Path $RuntimePath 'codex-auto-retry.exe')
+    $desired = '"{0}" supervise' -f (Join-Path $RuntimePath 'codex-auto-resume.exe')
     $key = Open-CodexAutoRetryRunKey -Writable $true
     try {
         $current = $key.GetValue($RunName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)

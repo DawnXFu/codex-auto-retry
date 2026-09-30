@@ -54,7 +54,7 @@ function Invoke-UpgradeFixture {
     Write-JsonAtomic $marketplacePath ([pscustomobject]@{name='personal';plugins=@()})
     $marketplace = Read-OrCreateMarketplace $marketplacePath
     $marketplace = Ensure-MarketplaceEntry $marketplace
-    foreach ($file in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
+    foreach ($file in @('codex-auto-resume.exe','codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
         [IO.File]::WriteAllText((Join-Path $runtimePath $file), 'old runtime')
     }
     foreach ($file in @('config.json','state.json','control.json')) {
@@ -73,7 +73,7 @@ function Stop-CodexAutoRetrySharedServerIfUnused { param($DataDir) $script:share
         if (-not $fullPlugin.StartsWith((Get-FullPath $scenarioRoot) + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe fixture path.' }
         Remove-Item -LiteralPath $fullPlugin -Recurse -Force
         Remove-Item -LiteralPath $marketplacePath -Force
-        foreach ($file in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) { Remove-Item -LiteralPath (Join-Path $runtimePath $file) }
+        foreach ($file in @('codex-auto-resume.exe','codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) { Remove-Item -LiteralPath (Join-Path $runtimePath $file) }
         $script:runValue = $null; $script:approvalBytes = $null
     }
     function Test-CodexDesktopRunning { return $Scenario -eq 'desktop-reopened' -and $script:installCalls -gt 0 }
@@ -81,8 +81,9 @@ function Stop-CodexAutoRetrySharedServerIfUnused { param($DataDir) $script:share
     function Install-Runtime {
         param($PluginPath,$EnableSharedAppServer)
         $script:installCalls++
-        foreach ($file in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) { [IO.File]::WriteAllText((Join-Path $runtimePath $file), 'new runtime') }
-        $script:runValue = '"{0}" supervise' -f (Join-Path $runtimePath 'codex-auto-retry.exe')
+        foreach ($file in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe','settings.ps1')) { [IO.File]::WriteAllText((Join-Path $runtimePath $file), 'new runtime') }
+        Remove-Item -LiteralPath (Join-Path $runtimePath 'codex-auto-retry.exe') -Force -ErrorAction SilentlyContinue
+        $script:runValue = '"{0}" supervise' -f (Join-Path $runtimePath 'codex-auto-resume.exe')
         $script:approvalBytes = [byte[]](2,0,0,0,0,0,0,0,0,0,0,0)
         if ($Scenario -eq 'foreign-startup') { $script:runValue = 'foreign.exe' }
         if ($Scenario -eq 'foreign-approval') { $script:approvalBytes = [byte[]](7,0,0,0,0,0,0,0,0,0,0,0) }
@@ -124,7 +125,8 @@ function Stop-CodexAutoRetrySharedServerIfUnused { param($DataDir) $script:share
     if ($Scenario -eq 'success-with-warning') {
         if ($failure -or $script:installedVersion -ne 'new' -or $script:installCalls -ne 1 -or
             (Test-Path -LiteralPath $upgradeJournalPath)) { throw "Successful install with warning was rolled back: $failure" }
-        foreach ($file in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
+        if (Test-Path -LiteralPath (Join-Path $runtimePath 'codex-auto-retry.exe')) { throw 'Successful install left the legacy watchdog executable behind.' }
+        foreach ($file in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
             if ([IO.File]::ReadAllText((Join-Path $runtimePath $file)) -ne 'new runtime') { throw 'Successful runtime was replaced by old files.' }
         }
         return
@@ -138,13 +140,13 @@ function Stop-CodexAutoRetrySharedServerIfUnused { param($DataDir) $script:share
     if ($Scenario -eq 'desktop-reopened') {
         if ($script:stopCalls -ne 1) { throw 'Rollback stopped a service after Desktop reopened.' }
     } elseif ($Scenario -eq 'fresh-failure') {
-        foreach ($file in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
+        foreach ($file in @('codex-auto-resume.exe','codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
             if (Test-Path -LiteralPath (Join-Path $runtimePath $file)) { throw 'Fresh-install runtime remained after rollback.' }
         }
         if ((Test-Path -LiteralPath $pluginTarget) -or (Test-Path -LiteralPath $marketplacePath) -or
             $null -ne $script:runValue -or $null -ne $script:approvalBytes) { throw 'Fresh-install registration remained after rollback.' }
     } elseif ($Scenario -ne 'corrupt-backup') {
-        foreach ($file in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
+        foreach ($file in @('codex-auto-resume.exe','codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
             if ([IO.File]::ReadAllText((Join-Path $runtimePath $file)) -ne 'old runtime') { throw 'Runtime was not restored.' }
         }
         $old = Read-JsonDocument (Join-Path $pluginTarget '.codex-plugin\plugin.json')

@@ -6,7 +6,7 @@ try {
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'scripts\bin'))
     $source = Join-Path $root 'scripts\source\main.go'
     [IO.File]::WriteAllText($source,'package main')
-    foreach ($name in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe')) { [IO.File]::WriteAllText((Join-Path $root ('scripts\bin\'+$name)), 'fixture only') }
+    foreach ($name in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe')) { [IO.File]::WriteAllText((Join-Path $root ('scripts\bin\'+$name)), 'fixture only') }
     $rejected = $false
     try { Assert-CodexBuildProvenance $root } catch { $rejected = $true }
     if (-not $rejected) { throw 'Missing provenance accepted.' }
@@ -17,7 +17,7 @@ try {
     try { Assert-CodexBuildProvenance $root } catch { $rejected = $true }
     if (-not $rejected) { throw 'Changed source accepted.' }
     Write-CodexBuildProvenance $root
-    [IO.File]::WriteAllText((Join-Path $root 'scripts\bin\codex-auto-retry.exe'), 'stale binary')
+    [IO.File]::WriteAllText((Join-Path $root 'scripts\bin\codex-auto-resume.exe'), 'stale binary')
     $rejected = $false
     try { Assert-CodexBuildProvenance $root } catch { $rejected = $true }
     if (-not $rejected) { throw 'Stale binary accepted.' }

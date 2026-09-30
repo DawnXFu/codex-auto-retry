@@ -2,7 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-$binary = Join-Path $PSScriptRoot 'bin\codex-auto-retry.exe'
+$binary = Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe'
 $testRoot = Join-Path $env:TEMP ("codex-auto-retry-tray-" + [guid]::NewGuid().ToString('N'))
 $dataDir = Join-Path $testRoot 'data'
 $process = $null

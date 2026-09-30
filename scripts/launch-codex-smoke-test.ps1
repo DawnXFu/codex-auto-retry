@@ -38,18 +38,18 @@ try {
     Assert-LaunchTest ((Get-CodexLaunchRoute $root).Reason -eq 'legacy_or_missing_status') 'legacy schema falls back'
     Write-Fixture 'status.json' $status
     Assert-LaunchTest ((Get-CodexLaunchRoute $root).Mode -eq 'official') 'missing worker executable falls back'
-    [IO.File]::WriteAllText((Join-Path $root 'codex-auto-retry.exe'), 'test fixture, not executable')
+    [IO.File]::WriteAllText((Join-Path $root 'codex-auto-resume.exe'), 'test fixture, not executable')
     Assert-LaunchTest ((Get-CodexLaunchRoute $root).Mode -eq 'official') 'dead worker falls back'
-    $script:mockProcess = [pscustomobject]@{ ExecutablePath = Join-Path $root 'codex-auto-retry.exe';
-        CommandLine = 'codex-auto-retry.exe run'; CreationDate = [DateTime]::UtcNow }
+    $script:mockProcess = [pscustomobject]@{ ExecutablePath = Join-Path $root 'codex-auto-resume.exe';
+        CommandLine = 'codex-auto-resume.exe run'; CreationDate = [DateTime]::UtcNow }
     Write-Fixture 'shared-server.json' @{ fixture = $true }
     Assert-LaunchTest ((Get-CodexLaunchRoute $root).Mode -eq 'shared') 'healthy shared route without startup registry dependency'
     $script:mockProcess.CreationDate = [DateTime]::UtcNow.AddHours(-1)
     Assert-LaunchTest ((Get-CodexLaunchRoute $root).Mode -eq 'official') 'reused worker PID refused'
     $script:mockProcess.CreationDate = [DateTime]::UtcNow
-    $script:mockProcess.CommandLine = 'codex-auto-retry.exe mcp'
+    $script:mockProcess.CommandLine = 'codex-auto-resume.exe mcp'
     Assert-LaunchTest ((Get-CodexLaunchRoute $root).Mode -eq 'official') 'wrong worker command refused'
-    $script:mockProcess.CommandLine = 'codex-auto-retry.exe run'
+    $script:mockProcess.CommandLine = 'codex-auto-resume.exe run'
     $status.last_scan_at = [DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('o')
     Write-Fixture 'status.json' $status
     Assert-LaunchTest ((Get-CodexLaunchRoute $root).Mode -eq 'official') 'stale heartbeat falls back'

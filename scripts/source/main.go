@@ -94,7 +94,7 @@ func main() {
 		mode = arguments[0]
 		arguments = arguments[1:]
 	}
-	flags := flag.NewFlagSet("codex-auto-retry", flag.ContinueOnError)
+	flags := flag.NewFlagSet("codex-auto-resume", flag.ContinueOnError)
 	dataDirFlag := flags.String("data-dir", "", "runtime data directory")
 	settingsFileFlag := flags.String("settings-file", "", "settings payload path")
 	actionFlag := flags.String("action", "", "retry control action")
@@ -132,7 +132,7 @@ func main() {
 	}
 	if mode == "mcp" {
 		if err := runManagementMCP(dataDir); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, "Codex Auto Retry MCP server stopped:", err)
+			_, _ = fmt.Fprintln(os.Stderr, "Codex Auto Resume MCP server stopped:", err)
 		}
 		return
 	}

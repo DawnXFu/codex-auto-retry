@@ -1,6 +1,6 @@
 # Security Policy
 
-Codex Auto Retry runs locally and observes Codex lifecycle metadata. It can
+Codex Auto Resume runs locally and observes Codex lifecycle metadata. It can
 start a plugin-owned loopback recovery backend when the user explicitly enables
 that mode, so process ownership, endpoint routing, credential handling, and
 rollback behavior are security-sensitive.

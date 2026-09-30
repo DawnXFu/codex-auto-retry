@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping improve Codex Auto Retry. Contributions should preserve
+Thank you for helping improve Codex Auto Resume. Contributions should preserve
 the project's central boundary: recover the existing Codex task safely without
 replaying completed work, changing global Codex routing, or creating a second
 task or backend accidentally.

@@ -4,11 +4,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$watchdogSource = Join-Path $PSScriptRoot 'bin\codex-auto-retry.exe'
+$watchdogSource = Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe'
 $mcpSource = Join-Path $PSScriptRoot 'bin\codex-auto-retry-mcp.exe'
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
-$watchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
-$mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
+$watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
+$legacyWatchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
 $supervisorStop = Join-Path $installDir 'supervisor.stop'
@@ -42,7 +42,8 @@ function Test-OwnedStartupValue {
     else {
         $executable = ($trimmed -split '[\s\t]', 2)[0]
     }
-    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
+    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($executable, $legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Set-SupervisedStartupEntry {
@@ -70,8 +71,9 @@ function Stop-OwnedProcessPath {
 }
 
 function Stop-InstalledRuntime {
+    $watchdogPaths = @($watchdogTarget, $legacyWatchdogTarget)
     $existing = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) })
+        Where-Object { $_.ExecutablePath -and $watchdogPaths -contains $_.ExecutablePath })
     if ($existing.Count -gt 0) {
         New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
         New-Item -ItemType File -Force -Path $stopSignal | Out-Null
@@ -79,7 +81,7 @@ function Stop-InstalledRuntime {
         do {
             Start-Sleep -Milliseconds 250
             $existing = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) })
+                Where-Object { $_.ExecutablePath -and $watchdogPaths -contains $_.ExecutablePath })
         } while ($existing.Count -gt 0 -and (Get-Date) -lt $deadline)
         if ($existing.Count -gt 0) { throw 'The watchdog did not stop gracefully. Runtime installation was cancelled.' }
     }
@@ -180,7 +182,7 @@ function Recover-IncompleteInstall {
         throw 'The incomplete runtime install is missing its backup directory; refusing a guessed rollback.'
     }
     Stop-InstalledRuntime
-    foreach ($name in @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')) {
+    foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')) {
         $target = Join-Path $installDir $name
         $backup = Join-Path $backupRoot $name
         $recorded = $journal.files.PSObject.Properties[$name]
@@ -246,7 +248,7 @@ function Set-ConfigSharedMode {
                 $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
             }
             catch {
-                throw "The existing Codex Auto Retry configuration is invalid and was not overwritten: $configPath"
+                throw "The existing Codex Auto Resume configuration is invalid and was not overwritten: $configPath"
             }
         }
         if ($null -eq $config) {
@@ -326,7 +328,7 @@ $oldStartupApproval = $null
 $oldConfigBytes = $null
 $oldWatchdog = $false
 $oldMcp = $false
-$oldSettings = $false
+$oldLegacyWatchdog = $false
 $oldEnvironment = $null
 $oldEnvironmentPresent = $false
 $oldEnvironmentBackupBytes = $null
@@ -361,7 +363,8 @@ try {
         } catch { }
     }
     if (-not $legacyOwnedEndpoint -and $oldRunValue -and
-        $oldRunValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        ($oldRunValue.IndexOf($legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        $oldRunValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -and
         (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         try {
             $oldConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
@@ -372,25 +375,28 @@ try {
         } catch { }
     }
     if (-not $legacyOwnedEndpoint -and $oldRunValue -and
-        $oldRunValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        ($oldRunValue.IndexOf($legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        $oldRunValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)) {
         $legacyOwnedEndpoint = @('ws://127.0.0.1:49621', 'ws://127.0.0.1:49321')
     }
     foreach ($pair in @(
-        @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe')),
+        @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-resume.exe')),
+        @($legacyWatchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe')),
         @($mcpTarget, (Join-Path $backupRoot 'codex-auto-retry-mcp.exe')),
         @($settingsTarget, (Join-Path $backupRoot 'settings.ps1'))
     )) {
         if (Test-Path -LiteralPath $pair[0] -PathType Leaf) {
             Copy-Item -LiteralPath $pair[0] -Destination $pair[1] -Force
             if ($pair[0] -eq $watchdogTarget) { $oldWatchdog = $true }
+            if ($pair[0] -eq $legacyWatchdogTarget) { $oldLegacyWatchdog = $true }
             if ($pair[0] -eq $mcpTarget) { $oldMcp = $true }
             if ($pair[0] -eq $settingsTarget) { $oldSettings = $true }
         }
     }
 	$runtimeProcessesBefore = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-		Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) })
+		Where-Object { $_.ExecutablePath -and (@($watchdogTarget, $legacyWatchdogTarget) -contains $_.ExecutablePath) })
 	$runtimeBackupFiles = [ordered]@{}
-	foreach ($name in @('codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1', 'config.json', 'environment-backup.json', 'shared-server.json')) {
+	foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1', 'config.json', 'environment-backup.json', 'shared-server.json')) {
 		$source = Join-Path $installDir $name
 		$runtimeBackupFiles[$name] = Test-Path -LiteralPath $source -PathType Leaf
 		if ($runtimeBackupFiles[$name]) {
@@ -424,7 +430,7 @@ try {
 
     $candidateRoot = Join-Path $transactionRoot 'candidate'
     New-Item -ItemType Directory -Force -Path $candidateRoot | Out-Null
-    $candidateWatchdog = Join-Path $candidateRoot 'codex-auto-retry.exe'
+    $candidateWatchdog = Join-Path $candidateRoot 'codex-auto-resume.exe'
     $candidateMcp = Join-Path $candidateRoot 'codex-auto-retry-mcp.exe'
     Copy-Item -LiteralPath $watchdogSource -Destination $candidateWatchdog -Force
     Copy-Item -LiteralPath $mcpSource -Destination $candidateMcp -Force
@@ -437,6 +443,7 @@ try {
     Copy-Item -LiteralPath $candidateWatchdog -Destination $watchdogTarget -Force
     Copy-Item -LiteralPath $candidateMcp -Destination $mcpTarget -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\ui\settings.ps1') -Destination $settingsTarget -Force
+    Remove-Item -LiteralPath $legacyWatchdogTarget -Force -ErrorAction SilentlyContinue
     Set-SupervisedStartupEntry
 	$journal.phase = 'startup_registered'
 	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
@@ -510,7 +517,8 @@ catch {
             Write-Warning 'Startup entry changed during rollback; the concurrent value was preserved.'
         }
         foreach ($pair in @(
-            @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe'), $oldWatchdog),
+            @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-resume.exe'), $oldWatchdog),
+            @($legacyWatchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe'), $oldLegacyWatchdog),
             @($mcpTarget, (Join-Path $backupRoot 'codex-auto-retry-mcp.exe'), $oldMcp),
             @($settingsTarget, (Join-Path $backupRoot 'settings.ps1'), $oldSettings)
         )) {

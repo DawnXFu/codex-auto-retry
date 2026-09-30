@@ -2,7 +2,7 @@
 param()
 
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
-$watchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
+$watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $statusPath = Join-Path $installDir 'status.json'
 $configPath = Join-Path $installDir 'config.json'

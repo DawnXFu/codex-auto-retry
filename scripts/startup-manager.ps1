@@ -17,7 +17,8 @@ if ($env:OS -ne 'Windows_NT') { throw 'The startup manager supports Windows only
 $profileRoot = [System.IO.Path]::GetFullPath($UserProfileRoot)
 $localAppDataRoot = [System.IO.Path]::GetFullPath($LocalAppDataRoot)
 $installDir = Join-Path $localAppDataRoot 'CodexAutoRetry'
-$watchdog = Join-Path $installDir 'codex-auto-retry.exe'
+$watchdog = Join-Path $installDir 'codex-auto-resume.exe'
+$legacyWatchdog = Join-Path $installDir 'codex-auto-retry.exe'
 $pluginTarget = Join-Path $profileRoot 'plugins\codex-auto-retry'
 $statusPath = Join-Path $installDir 'status.json'
 $configPath = Join-Path $installDir 'config.json'
@@ -56,7 +57,8 @@ function Test-OwnedStartupValue {
     else {
         $executable = ($trimmed -split '[\s\t]', 2)[0]
     }
-    return [string]::Equals($executable, $watchdog, [System.StringComparison]::OrdinalIgnoreCase)
+    return [string]::Equals($executable, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($executable, $legacyWatchdog, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Restore-ManagedStartupValue {
@@ -449,13 +451,13 @@ function Show-Manager {
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Codex Auto Retry Startup Manager'
+    $form.Text = 'Codex Auto Resume Startup Manager'
     $form.StartPosition = 'CenterScreen'
     $form.Size = New-Object System.Drawing.Size(720, 600)
     $form.MinimumSize = New-Object System.Drawing.Size(620, 540)
 
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = 'Codex Auto Retry Startup Manager'
+    $title.Text = 'Codex Auto Resume Startup Manager'
     $title.Font = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
     $title.AutoSize = $true
     $title.Location = New-Object System.Drawing.Point(18, 15)
@@ -533,7 +535,7 @@ function Show-Manager {
                     $script:RemoveData = $true
                     $script:NoPrompt = $true
                     $null = Invoke-ManagerAction -RequestedAction 'uninstall'
-                    [System.Windows.Forms.MessageBox]::Show('Full uninstall completed.', 'Codex Auto Retry') | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show('Full uninstall completed.', 'Codex Auto Resume') | Out-Null
                     $form.Close()
                     return
                 }
@@ -548,7 +550,7 @@ function Show-Manager {
                     $script:RemoveData = $false
                     $script:NoPrompt = $true
                     $null = Invoke-ManagerAction -RequestedAction 'uninstall'
-                    [System.Windows.Forms.MessageBox]::Show('Uninstall completed. Runtime data was kept.', 'Codex Auto Retry') | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show('Uninstall completed. Runtime data was kept.', 'Codex Auto Resume') | Out-Null
                     $form.Close()
                     return
                 }

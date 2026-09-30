@@ -3,7 +3,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'environment.ps1')
-$binary = Join-Path $PSScriptRoot 'bin\codex-auto-retry.exe'
+$binary = Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe'
 $testRoot = Join-Path $env:TEMP ('codex-auto-retry-startup-' + [guid]::NewGuid().ToString('N'))
 $dataDir = Join-Path $testRoot 'data'
 $configPath = Join-Path $dataDir 'config.json'

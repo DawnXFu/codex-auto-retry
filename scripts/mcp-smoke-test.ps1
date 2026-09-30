@@ -174,7 +174,7 @@ try {
     if ($content.mimeType -ne 'text/html;profile=mcp-app' -or $content.text.Length -lt 50000) {
         throw 'Embedded MCP App resource is missing or incomplete.'
     }
-    if (-not $content.text.Contains('Codex Auto Retry')) { throw 'Embedded panel identity is missing.' }
+    if (-not $content.text.Contains('Codex Auto Resume')) { throw 'Embedded panel identity is missing.' }
     $recoveryCounterLabel = ([char]0x672c).ToString() + [char]0x6b21 + [char]0x6545 + [char]0x969c + [char]0x6062 + [char]0x590d
     $consecutiveCounterLabel = ([char]0x8fde).ToString() + [char]0x7eed + [char]0x65e0 + [char]0x8fdb + [char]0x5c55
     if (-not $content.text.Contains($recoveryCounterLabel) -or -not $content.text.Contains($consecutiveCounterLabel)) {

@@ -20,7 +20,7 @@ Set-StrictMode -Version 2
 
 function Write-Step {
     param([string]$Message)
-    Write-Host ('[Codex Auto Retry] ' + $Message)
+    Write-Host ('[Codex Auto Resume] ' + $Message)
 }
 
 function Test-CodexDesktopRunning {
@@ -95,9 +95,9 @@ function Read-ReleaseManifest {
 
     $path = Join-Path $Root 'release-manifest.json'
     $manifest = Read-JsonDocument -Path $path
-    if ($null -eq $manifest -or $manifest.product -ne 'Codex Auto Retry' -or
+    if ($null -eq $manifest -or $manifest.product -ne 'Codex Auto Resume' -or
         $manifest.target -ne 'windows-x64') {
-        throw 'This folder is not a valid Codex Auto Retry Windows x64 release.'
+        throw 'This folder is not a valid Codex Auto Resume Windows x64 release.'
     }
     return $manifest
 }
@@ -212,7 +212,7 @@ function Assert-ExistingPluginIsOurs {
     }
     $manifest = Read-JsonDocument -Path (Join-Path $Path '.codex-plugin\plugin.json')
     if ($null -eq $manifest -or [string]$manifest.name -ne 'codex-auto-retry') {
-        throw "The existing target directory is not Codex Auto Retry: $Path"
+        throw "The existing target directory is not Codex Auto Resume: $Path"
     }
 }
 
@@ -249,12 +249,15 @@ function Install-Runtime {
 function Stop-RuntimeForUpgrade {
     param([string]$RuntimePath)
 
-    $watchdog = Join-Path $RuntimePath 'codex-auto-retry.exe'
+    $watchdogPaths = @(
+        (Join-Path $RuntimePath 'codex-auto-resume.exe'),
+        (Join-Path $RuntimePath 'codex-auto-retry.exe')
+    )
     $mcp = Join-Path $RuntimePath 'codex-auto-retry-mcp.exe'
     $stopSignal = Join-Path $RuntimePath 'stop.signal'
     $supervisorStop = Join-Path $RuntimePath 'supervisor.stop'
     $watchdogProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-        Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) })
+        Where-Object { $_.ExecutablePath -and $watchdogPaths -contains $_.ExecutablePath })
     $wasRunning = $watchdogProcesses.Count -gt 0
     if ($wasRunning) {
         New-Item -ItemType Directory -Force -Path $RuntimePath | Out-Null
@@ -264,7 +267,7 @@ function Stop-RuntimeForUpgrade {
         do {
             Start-Sleep -Milliseconds 250
             $watchdogProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
-                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) })
+                Where-Object { $_.ExecutablePath -and $watchdogPaths -contains $_.ExecutablePath })
         } while ($watchdogProcesses.Count -gt 0 -and (Get-Date) -lt $deadline)
         if ($watchdogProcesses.Count -gt 0) {
             throw 'The watchdog did not stop gracefully. Upgrade was cancelled without replacing files.'
@@ -444,7 +447,7 @@ function Verify-Installation {
     }
 
     if ($VerifyRuntime) {
-        $watchdog = Join-Path $RuntimePath 'codex-auto-retry.exe'
+        $watchdog = Join-Path $RuntimePath 'codex-auto-resume.exe'
         $mcp = Join-Path $RuntimePath 'codex-auto-retry-mcp.exe'
         Assert-X64PeBinary -Path $watchdog
         Assert-X64PeBinary -Path $mcp
@@ -500,7 +503,7 @@ if ($null -eq $pluginManifest -or [string]$pluginManifest.name -ne 'codex-auto-r
     [string]$pluginManifest.version -ne [string]$manifest.pluginVersion) {
     throw 'The payload plugin manifest does not match the release manifest.'
 }
-Assert-X64PeBinary -Path (Join-Path $payloadRoot 'scripts\bin\codex-auto-retry.exe')
+Assert-X64PeBinary -Path (Join-Path $payloadRoot 'scripts\bin\codex-auto-resume.exe')
 Assert-X64PeBinary -Path (Join-Path $payloadRoot 'scripts\bin\codex-auto-retry-mcp.exe')
 
 Write-Step 'Verifying release files...'
@@ -560,7 +563,7 @@ try {
     )
 }
 catch {
-    throw 'Another Codex Auto Retry upgrade or repair is already in progress.'
+    throw 'Another Codex Auto Resume upgrade or repair is already in progress.'
 }
 
 try {

@@ -75,7 +75,7 @@ if (Test-Path -LiteralPath $uiLangPath) {
 }
 
 $script:i18n = @{
-    'form_title'              = @{ zh = 'Codex Auto Retry 设置'; en = 'Codex Auto Retry Settings' }
+    'form_title'              = @{ zh = 'Codex Auto Resume 设置'; en = 'Codex Auto Resume Settings' }
     'lang_button'             = @{ zh = 'English'; en = '中文' }
     'status_group'            = @{ zh = '当前状态'; en = 'Current Status' }
     'status_loading'          = @{ zh = '正在读取…'; en = 'Loading...' }
@@ -159,7 +159,7 @@ $script:i18n = @{
     'msg_max_less_initial'    = @{ zh = '最大等待时间不能小于首次等待时间。'; en = 'Maximum wait time cannot be less than initial wait time.' }
     'msg_action_failed'       = @{ zh = '操作没有生效，任务状态可能已经改变。'; en = 'Action did not take effect; task state may have changed.' }
     'memory_guard_msg'        = @{ zh = '设置窗口私有内存已达到 {0} MB，超过上限 {1} MB。窗口将关闭，Codex 任务数据未被删除。'; en = 'Settings window memory reached {0} MB, exceeding limit of {1} MB. Window will close; Codex task data is preserved.' }
-    'memory_guard_title'      = @{ zh = 'Codex Auto Retry 内存保护'; en = 'Codex Auto Retry Memory Guard' }
+    'memory_guard_title'      = @{ zh = 'Codex Auto Resume 内存保护'; en = 'Codex Auto Resume Memory Guard' }
     'layout_overlap_err'      = @{ zh = '设置布局发生遮挡：'; en = 'Layout overlap detected: ' }
     'layout_bounds_err'       = @{ zh = '设置输入框超出可见区域。'; en = 'Control bounds exceed visible area.' }
     'config_read_err'         = @{ zh = '无法读取自动重试设置。'; en = 'Cannot read auto-retry settings.' }
@@ -340,7 +340,7 @@ $config = Read-JsonFile $configPath
 $control = Read-JsonFile $controlPath
 $runtimeStatus = Read-JsonFile $statusPath
 if (-not $config) {
-    [System.Windows.Forms.MessageBox]::Show((T 'config_read_err'), 'Codex Auto Retry', 'OK', 'Error') | Out-Null
+    [System.Windows.Forms.MessageBox]::Show((T 'config_read_err'), 'Codex Auto Resume', 'OK', 'Error') | Out-Null
     exit 1
 }
 
@@ -358,7 +358,7 @@ if ($SmokeTest) {
     $form.ShowInTaskbar = $false
 }
 
-$title = New-Label 'Codex Auto Retry' 22 18 280 30
+$title = New-Label 'Codex Auto Resume' 22 18 280 30
 $title.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 15, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($title)
 
@@ -890,7 +890,7 @@ function Invoke-TaskAction {
         CODEX_AUTO_RETRY_THREAD_ID = $threadID
     }
     if ($exitCode -ne 0) {
-        [System.Windows.Forms.MessageBox]::Show((T 'msg_action_failed'), 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show((T 'msg_action_failed'), 'Codex Auto Resume', 'OK', 'Warning') | Out-Null
     }
     Start-Sleep -Milliseconds 250
     Update-RuntimeView
@@ -967,12 +967,12 @@ $saveButton.add_Click({
     if ($script:localCommandInProgress) { return }
     $prompt = $promptBox.Text.Trim()
     if (-not $prompt) {
-        [System.Windows.Forms.MessageBox]::Show((T 'msg_prompt_empty'), 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show((T 'msg_prompt_empty'), 'Codex Auto Resume', 'OK', 'Warning') | Out-Null
         return
     }
     $delayStrategy = Get-DelayStrategy
     if ($delayStrategy -ne 'fixed' -and [int]$maxDelayBox.Value -lt [int]$initialDelayBox.Value) {
-        [System.Windows.Forms.MessageBox]::Show((T 'msg_max_less_initial'), 'Codex Auto Retry', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show((T 'msg_max_less_initial'), 'Codex Auto Resume', 'OK', 'Warning') | Out-Null
         return
     }
     $payload = [ordered]@{

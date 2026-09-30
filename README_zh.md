@@ -7,6 +7,8 @@
 
 [English](README.md) | [中文说明]
 
+> **Codex Auto Resume** 是 [sybxxx/codex-auto-retry](https://github.com/sybxxx/codex-auto-retry) 的最小差异 Fork（见 [ADR-0001](docs/adr/0001-fork-strategy.md)），新增配额感知（reset-aware）恢复能力，并以 “Codex Auto Resume” 产品名称发布；Codex 插件/MCP 集成面保留 `codex-auto-retry` 命名。
+
 Codex Auto Retry 是一款专为 Windows 平台 Codex 打造的开源可靠性守护与原地自动恢复工具。它可以在后台静默监测 Codex 任务生命周期，在遭遇网络波动、服务限流（Rate Limit）、请求超时、服务器异常或模型空回复时，**在原任务中安全、自动地原地恢复运行**，同时完整保留任务工作区、模型配置与推理参数。
 
 该工具作为 Windows 本地后台轻量守护服务运行，无需在每个 Codex 会话中手动引用或重复发送提示词。同时提供任务栏通知区域托盘控制器以及 Codex 原生内嵌管理面板（基于 MCP 协议），界面开闭均不影响后台自动恢复。

@@ -1,9 +1,9 @@
 ---
 name: codex-auto-retry
-description: Inspect, configure, install, repair, or remove Codex Auto Retry. Use when the user asks about automatic retries, tray controls, countdowns, queue state, retry limits, retry text, pause controls, goal recovery, watchdog status, retry logs, supported failure types, startup behavior, installation, repair, or removal.
+description: Inspect, configure, install, repair, or remove Codex Auto Resume. Use when the user asks about automatic retries, tray controls, countdowns, queue state, retry limits, retry text, pause controls, goal recovery, watchdog status, retry logs, supported failure types, startup behavior, installation, repair, or removal.
 ---
 
-# Codex Auto Retry
+# Codex Auto Resume
 
 This plugin includes a local Windows watchdog and a small sign-in supervisor.
 Once installed, the supervisor starts the watchdog globally at Windows sign-in

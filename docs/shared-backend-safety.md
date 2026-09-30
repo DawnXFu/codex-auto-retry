@@ -170,7 +170,7 @@ backoff, and records only lifecycle categories. A clean tray exit, uninstall,
 or upgrade writes a one-shot stop marker so an intentional shutdown is not
 resurrected. The worker remains the sole owner of the tray, retry state, and
 shared app-server; the supervisor never creates a second backend. Installation
-always migrates the current-user `Run` entry to `"...\\codex-auto-retry.exe"
+always migrates the current-user `Run` entry to `"...\\codex-auto-resume.exe"
 supervise` and verifies that migration. This replaces the older direct `run`
 entry that could exit without a stable cleanup owner.
 

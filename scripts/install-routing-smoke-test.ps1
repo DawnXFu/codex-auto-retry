@@ -72,7 +72,7 @@ try {
         New-Item -ItemType Directory -Path $installDir, $backupRoot | Out-Null
         $configPath = Join-Path $installDir 'config.json'
         $installJournalPath = Join-Path $installDir 'install-journal.json'
-        $watchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
+        $watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
         $endpoint = 'ws://127.0.0.1:49622'
         Write-CodexAutoRetryJsonAtomic -Path (Join-Path $backupRoot 'config.json') -Value ([pscustomobject]@{
             shared_app_server_enabled = $true; retry_prompt = 'retained'; max_recovery_attempts = 7

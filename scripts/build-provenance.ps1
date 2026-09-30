@@ -17,7 +17,7 @@ function Get-CodexBuildSourceHash {
 function Write-CodexBuildProvenance {
     param([string]$Root)
     $record = [ordered]@{ schema = 1; source_hash = Get-CodexBuildSourceHash $Root }
-    foreach ($name in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe')) {
+    foreach ($name in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe')) {
         $record[$name] = (Get-FileHash -LiteralPath (Join-Path $Root ('scripts\bin\' + $name))).Hash
     }
     [IO.File]::WriteAllText((Join-Path $Root 'scripts\build-info.json'), ($record | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
@@ -29,7 +29,7 @@ function Assert-CodexBuildProvenance {
     if (-not (Test-Path -LiteralPath $path)) { throw 'Build provenance missing. Run scripts/build.ps1; do not package stale executables.' }
     $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     if ($record.schema -ne 1 -or $record.source_hash -ne (Get-CodexBuildSourceHash $Root)) { throw 'Sources changed since the last build. Rebuild before packaging.' }
-    foreach ($name in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe')) {
+    foreach ($name in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe')) {
         if ($record.$name -ne (Get-FileHash -LiteralPath (Join-Path $Root ('scripts\bin\' + $name))).Hash) { throw "Build binary mismatch: $name" }
     }
 }

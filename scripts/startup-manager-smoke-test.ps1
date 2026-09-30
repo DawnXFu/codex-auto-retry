@@ -34,7 +34,7 @@ $testRoot = Join-Path $env:TEMP ('codex-auto-retry-manager-' + [guid]::NewGuid()
 $profileRoot = Join-Path $testRoot 'profile'
 $localRoot = Join-Path $testRoot 'local'
 New-Item -ItemType Directory -Force -Path (Join-Path $localRoot 'CodexAutoRetry'), (Join-Path $profileRoot 'plugins\codex-auto-retry\.codex-plugin') | Out-Null
-$fakeWatchdog = Join-Path $localRoot 'CodexAutoRetry\codex-auto-retry.exe'
+$fakeWatchdog = Join-Path $localRoot 'CodexAutoRetry\codex-auto-resume.exe'
 [IO.File]::WriteAllBytes($fakeWatchdog, [byte[]](0..31))
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $testRunName = 'CodexAutoRetrySmoke_' + [guid]::NewGuid().ToString('N')
@@ -181,9 +181,9 @@ try {
         Start-Sleep -Milliseconds 250
         $guiWindow = Get-Process -Id $guiProcess.Id -ErrorAction SilentlyContinue
     } while (-not $guiProcess.HasExited -and
-        ($null -eq $guiWindow -or $guiWindow.MainWindowTitle -ne 'Codex Auto Retry Startup Manager') -and (Get-Date) -lt $deadline)
+        ($null -eq $guiWindow -or $guiWindow.MainWindowTitle -ne 'Codex Auto Resume Startup Manager') -and (Get-Date) -lt $deadline)
     if ($guiProcess.HasExited -or $null -eq $guiWindow -or $guiWindow.MainWindowHandle -eq 0 -or
-        $guiWindow.MainWindowTitle -ne 'Codex Auto Retry Startup Manager') {
+        $guiWindow.MainWindowTitle -ne 'Codex Auto Resume Startup Manager') {
         throw ('Startup manager GUI did not create its visible settings window. ' + (Get-Content -LiteralPath $guiError -Raw))
     }
     Stop-Process -Id $guiProcess.Id -Force -ErrorAction SilentlyContinue

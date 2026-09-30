@@ -83,7 +83,7 @@ func runManagementMCP(dataDir string) error {
 func newManagementMCPServer(service *managementService) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "codex-auto-retry",
-		Title:   "Codex Auto Retry",
+		Title:   "Codex Auto Resume",
 		Version: appVersion,
 	}, nil)
 
@@ -91,7 +91,7 @@ func newManagementMCPServer(service *managementService) *mcp.Server {
 		Meta:        managementResourceMeta(),
 		URI:         managementResourceURI,
 		Name:        "codex_auto_retry_panel",
-		Title:       "Codex Auto Retry",
+		Title:       "Codex Auto Resume",
 		Description: "Interactive local retry status and controls.",
 		MIMEType:    managementResourceMIME,
 	}, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {

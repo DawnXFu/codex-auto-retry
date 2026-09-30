@@ -83,7 +83,7 @@ function Invoke-CodexAutoRetryConfigLocked {
             }
             catch [System.IO.IOException] {
                 if ([DateTime]::UtcNow -ge $deadline) {
-                    throw 'The Codex Auto Retry configuration is locked by another process.'
+                    throw 'The Codex Auto Resume configuration is locked by another process.'
                 }
                 Start-Sleep -Milliseconds 25
             }

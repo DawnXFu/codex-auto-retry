@@ -20,7 +20,8 @@ function Test-OwnedStartupValue {
     else {
         $executable = ($trimmed -split '[\s\t]', 2)[0]
     }
-    return [string]::Equals($executable, $watchdog, [System.StringComparison]::OrdinalIgnoreCase)
+    return [string]::Equals($executable, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($executable, $legacyWatchdog, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Stop-ExactExecutable {
@@ -62,7 +63,8 @@ function Stop-OwnedSharedServer {
 }
 
 $dataRoot = [System.IO.Path]::GetFullPath($DataDir)
-$watchdog = Join-Path $dataRoot 'codex-auto-retry.exe'
+$watchdog = Join-Path $dataRoot 'codex-auto-resume.exe'
+$legacyWatchdog = Join-Path $dataRoot 'codex-auto-retry.exe'
 $mcp = Join-Path $dataRoot 'codex-auto-retry-mcp.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $supervisorStop = Join-Path $dataRoot 'supervisor.stop'
@@ -94,6 +96,7 @@ if (-not $legacyOwnedEndpoint -and (Test-OwnedStartupValue $runValue)) {
 $sharedModeDisabled = Disable-CodexAutoRetrySharedMode -DataDir $dataRoot
 New-Item -ItemType File -Force -Path $supervisorStop | Out-Null
 Stop-ExactExecutable $watchdog
+Stop-ExactExecutable $legacyWatchdog
 Stop-ExactExecutable $mcp
 $sharedStopped = Stop-OwnedSharedServer $dataRoot
 

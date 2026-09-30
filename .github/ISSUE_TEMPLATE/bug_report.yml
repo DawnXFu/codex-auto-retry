@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem with Codex Auto Retry
+description: Report a reproducible problem with Codex Auto Resume
 title: "bug: "
 labels: [bug]
 body:

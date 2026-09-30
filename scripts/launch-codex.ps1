@@ -62,7 +62,7 @@ function Test-CodexLaunchWorker {
     try {
         $workerId = [int](Get-CodexAutoRetryStatusProperty $Status 'pid' 0)
         if ($workerId -le 0) { return $false }
-        $expected = Join-Path $Runtime 'codex-auto-retry.exe'
+        $expected = Join-Path $Runtime 'codex-auto-resume.exe'
         if (-not (Test-Path -LiteralPath $expected -PathType Leaf)) { return $false }
         $worker = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $workerId) -ErrorAction Stop
         if ($null -eq $worker -or -not [string]::Equals([string]$worker.ExecutablePath, $expected, [StringComparison]::OrdinalIgnoreCase)) { return $false }

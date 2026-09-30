@@ -6,7 +6,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
-$watchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
+$watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
+$legacyWatchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
@@ -32,7 +33,8 @@ function Test-OwnedStartupValue {
     else {
         $executable = ($trimmed -split '[\s\t]', 2)[0]
     }
-    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
+    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($executable, $legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 $runProperty = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
@@ -52,7 +54,8 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 }
 $legacyOwnedEndpoint = @()
 if ($stateEndpoint) { $legacyOwnedEndpoint += $stateEndpoint }
-if (-not $legacyOwnedEndpoint -and $runValue.IndexOf((Join-Path $installDir 'codex-auto-retry.exe'), [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+if (-not $legacyOwnedEndpoint -and ($runValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+    $runValue.IndexOf($legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)) {
     $legacyPort = Get-CodexAutoRetrySharedAppServerPort -ConfigPath (Join-Path $installDir 'config.json')
     $legacyOwnedEndpoint += 'ws://127.0.0.1:' + $legacyPort
     $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
@@ -69,7 +72,7 @@ if (Test-Path -LiteralPath $installDir) {
 $deadline = (Get-Date).AddSeconds(12)
 do {
     $process = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) }
+        Where-Object { $_.ExecutablePath -and (@($watchdogTarget, $legacyWatchdogTarget) -contains $_.ExecutablePath) }
     if ($process) { Start-Sleep -Milliseconds 250 }
 } while ($process -and (Get-Date) -lt $deadline)
 if ($process) {

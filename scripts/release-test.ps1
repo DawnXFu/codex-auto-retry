@@ -101,7 +101,7 @@ try {
         'payload\codex-auto-retry\scripts\shared-server-status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
-        'payload\codex-auto-retry\scripts\bin\codex-auto-retry.exe',
+        'payload\codex-auto-retry\scripts\bin\codex-auto-resume.exe',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry-mcp.exe'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required))) {
@@ -269,7 +269,7 @@ try {
         (Join-Path $root 'payload\codex-auto-retry\scripts\environment.ps1'),
         [System.Text.UTF8Encoding]::new($false)
     )
-    if (-not $installerSource.Contains('existing Codex Auto Retry configuration is invalid and was not overwritten') -or
+    if (-not $installerSource.Contains('existing Codex Auto Resume configuration is invalid and was not overwritten') -or
         -not $environmentSource.Contains('Invoke-CodexAutoRetryConfigLocked') -or
         -not $environmentSource.Contains('Break-glass cleanup must continue even when the settings file is') -or
         -not $environmentSource.Contains('Do not replace it with guessed defaults')) {

@@ -56,7 +56,7 @@ function Assert-CodexAutoRetryHostPath {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $redirectedPath = Get-CodexAutoRetryRedirectedPath -Path $fullPath -ProbeIfMissing
     if ($redirectedPath) {
-        throw "Windows redirected the Codex Auto Retry runtime path into an app sandbox: $redirectedPath. The real host installation was not changed. Run the installer from Windows Explorer or a normal PowerShell window outside Codex."
+        throw "Windows redirected the Codex Auto Resume runtime path into an app sandbox: $redirectedPath. The real host installation was not changed. Run the installer from Windows Explorer or a normal PowerShell window outside Codex."
     }
     return $fullPath
 }

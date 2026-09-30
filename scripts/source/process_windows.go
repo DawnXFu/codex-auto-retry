@@ -127,7 +127,7 @@ func processOwnsRuntime(pid int, dataDir string) bool {
 	if exitCode != stillActive {
 		return false
 	}
-	expected := filepath.Join(dataDir, "codex-auto-retry.exe")
+	expected := filepath.Join(dataDir, "codex-auto-resume.exe")
 	if _, err := os.Stat(expected); err != nil {
 		return true
 	}

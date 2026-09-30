@@ -14,7 +14,7 @@ Set-StrictMode -Version 2
 
 function Write-Step {
     param([string]$Message)
-    Write-Host ('[Codex Auto Retry] ' + $Message)
+    Write-Host ('[Codex Auto Resume] ' + $Message)
 }
 
 function Test-PluginInstalled {
@@ -100,7 +100,8 @@ function Test-OwnedStartupValue {
     else {
         $executable = ($trimmed -split '[\s\t]', 2)[0]
     }
-    return [string]::Equals($executable, (Join-Path $runtimePath 'codex-auto-retry.exe'), [System.StringComparison]::OrdinalIgnoreCase)
+    return [string]::Equals($executable, (Join-Path $runtimePath 'codex-auto-resume.exe'), [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($executable, (Join-Path $runtimePath 'codex-auto-retry.exe'), [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 $startupProperty = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
@@ -181,7 +182,7 @@ try {
         }
         $manifest = Read-JsonDocument -Path (Join-Path $pluginTarget '.codex-plugin\plugin.json')
         if ($null -eq $manifest -or [string]$manifest.name -ne 'codex-auto-retry') {
-            throw "The plugin target is not Codex Auto Retry: $pluginTarget"
+            throw "The plugin target is not Codex Auto Resume: $pluginTarget"
         }
         Remove-Item -LiteralPath $pluginTarget -Recurse -Force
     }

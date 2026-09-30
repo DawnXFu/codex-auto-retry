@@ -2,7 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-$binary = Join-Path $PSScriptRoot 'bin\codex-auto-retry.exe'
+$binary = Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe'
 $testRoot = Join-Path $env:TEMP ('codex-auto-retry-supervisor-' + [guid]::NewGuid().ToString('N'))
 $dataDir = Join-Path $testRoot 'data'
 $supervisor = $null
@@ -27,7 +27,7 @@ function Wait-Status {
         if (Test-Path -LiteralPath $supervisorLog) { Get-Content -Raw -LiteralPath $supervisorLog } else { 'supervisor log missing' }
         if (Test-Path -LiteralPath $daemonLog) { Get-Content -Tail 20 -LiteralPath $daemonLog } else { 'daemon log missing' }
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like '*codex-auto-retry.exe' } |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like '*codex-auto-resume.exe' } |
             Select-Object ProcessId, CommandLine | Out-String
     ) -join [Environment]::NewLine
     throw "Timed out waiting for the supervisor worker heartbeat.`n$details"

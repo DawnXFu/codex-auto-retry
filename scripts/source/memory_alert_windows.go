@@ -13,7 +13,7 @@ import (
 const memoryAlertTimeout = 15 * time.Second
 
 func showMemoryLimitAlert(sample memorySample, limitMB int) {
-	title, titleErr := windows.UTF16PtrFromString("Codex Auto Retry 已自动停止")
+	title, titleErr := windows.UTF16PtrFromString("Codex Auto Resume 已自动停止")
 	message, messageErr := windows.UTF16PtrFromString(fmt.Sprintf(
 		"后台进程私有内存已达到 %d MB，超过设定上限 %d MB。\n\n已自动停止自动重试服务，Codex 和任务数据未被删除。请关闭其他异常进程后，从启动管理器重新启动服务。",
 		memoryBytesToMB(sample.PrivateBytes), limitMB,

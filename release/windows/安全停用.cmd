@@ -1,7 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title Codex Auto Retry Safe Disable
+title Codex Auto Resume Safe Disable
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0startup-manager.ps1" -Action safe-disable
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.

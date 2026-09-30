@@ -29,7 +29,7 @@ function Show-CodexCloseNotice {
     try {
         $shell = New-Object -ComObject WScript.Shell
         # Retry/Cancel, warning icon. 4 = Retry, 2 = Cancel, -1 = timeout.
-        return [int]$shell.Popup(($message + $text.timeout), $TimeoutSeconds, 'Codex Auto Retry', 53)
+        return [int]$shell.Popup(($message + $text.timeout), $TimeoutSeconds, 'Codex Auto Resume', 53)
     }
     catch {
         Write-Host 'Close Codex completely and rerun this installer. No process was closed.'
@@ -54,7 +54,7 @@ function Wait-CodexInstallerExit {
             if ($state -eq 'closed') { return $true }
             $remaining = [int][Math]::Floor($TimeoutSeconds - $watch.Elapsed.TotalSeconds)
             if ($remaining -le 0 -or $attempt -eq $MaxPrompts) { return $false }
-            Write-Host '[Codex Auto Retry] Waiting for Codex to close. Save your work, exit Codex, then choose Retry; Cancel leaves the installation unchanged.'
+            Write-Host '[Codex Auto Resume] Waiting for Codex to close. Save your work, exit Codex, then choose Retry; Cancel leaves the installation unchanged.'
             if ((Show-CodexCloseNotice -State $state -TimeoutSeconds $remaining) -ne 4) { return $false }
         }
         return $false

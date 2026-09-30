@@ -6,7 +6,7 @@ $pluginRoot = Split-Path -Parent $PSScriptRoot
 $sourceDir = Join-Path $PSScriptRoot 'source'
 $uiDir = Join-Path $sourceDir 'ui'
 $binDir = Join-Path $PSScriptRoot 'bin'
-$watchdogOutput = Join-Path $binDir 'codex-auto-retry.exe'
+$watchdogOutput = Join-Path $binDir 'codex-auto-resume.exe'
 $mcpOutput = Join-Path $binDir 'codex-auto-retry-mcp.exe'
 $settingsScript = Join-Path $sourceDir 'ui\settings.ps1'
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
