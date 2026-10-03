@@ -65,8 +65,12 @@ func (w QuotaWindow) Exhausted() bool {
 
 // QuotaCredits mirrors the credit block Codex embeds in rate-limit payloads.
 // Only metadata is retained; balance values are privacy-safe numerics/text.
+// NoCredits is set only when the payload explicitly reports has_credits:false
+// — an absent key means "not reported", not "depleted", and some plans carry
+// a constant "0" balance string.
 type QuotaCredits struct {
 	HasCredits bool   `json:"has_credits,omitempty"`
+	NoCredits  bool   `json:"no_credits,omitempty"`
 	Balance    string `json:"balance,omitempty"`
 	Unlimited  bool   `json:"unlimited,omitempty"`
 }
@@ -243,7 +247,12 @@ func quotaCreditsFromValue(value any) *QuotaCredits {
 		Balance:    balanceField(object),
 		Unlimited:  boolField(object, "unlimited"),
 	}
-	if !credits.HasCredits && credits.Balance == "" && !credits.Unlimited {
+	for _, key := range []string{"has_credits", "hasCredits"} {
+		if _, found := object[key]; found && !credits.HasCredits {
+			credits.NoCredits = true
+		}
+	}
+	if !credits.HasCredits && !credits.NoCredits && credits.Balance == "" && !credits.Unlimited {
 		return nil
 	}
 	return credits

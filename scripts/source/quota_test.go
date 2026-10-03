@@ -676,3 +676,60 @@ func TestOrphanedProbeMarkerClearsForNewElection(t *testing.T) {
 		t.Fatalf("parked thread was not elected after marker cleared: %+v", jobs)
 	}
 }
+
+// Regression: a plan that reports credits.balance="0" without an explicit
+// has_credits flag is a quota window, not a credit wall — park, never
+// Needs Attention. Only has_credits:false is a real credit wall.
+func TestZeroBalanceWithoutHasCreditsParks(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	resets := now.Add(90 * time.Minute)
+	threadID := "019f0000-0000-7000-8000-0000000000d0"
+	d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{
+		ObservedAt: now,
+		Windows: map[string]QuotaWindow{
+			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: resets},
+		},
+		Credits: &QuotaCredits{Balance: "0"},
+	}}
+	item := quotaFailure(threadID, "turn-a", now)
+	d.scheduleFailureLocked(item, "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
+	thread := d.state.Threads[threadID]
+	if thread.QuotaWait == nil {
+		t.Fatalf("zero-balance plan was treated as a credit wall instead of parking: %+v", thread)
+	}
+}
+
+func TestExplicitNoCreditsIsNeedsAttention(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	threadID := "019f0000-0000-7000-8000-0000000000d1"
+	d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{
+		ObservedAt: now,
+		Windows: map[string]QuotaWindow{
+			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: now.Add(90 * time.Minute)},
+		},
+		Credits: &QuotaCredits{NoCredits: true, Balance: "0"},
+	}}
+	item := quotaFailure(threadID, "turn-a", now)
+	d.scheduleFailureLocked(item, "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
+	thread := d.state.Threads[threadID]
+	if thread.Stopped == nil || !thread.Stopped.NeedsAttention || thread.Stopped.Reason != stopReasonQuotaCreditWall {
+		t.Fatalf("explicit credit depletion did not reach needs_attention: %+v", thread.Stopped)
+	}
+}
+
+func TestCreditsParserRequiresExplicitFlag(t *testing.T) {
+	credits := quotaCreditsFromValue(map[string]any{"balance": "0"})
+	if credits == nil || credits.NoCredits {
+		t.Fatalf("balance-only credits block was read as depleted: %+v", credits)
+	}
+	credits = quotaCreditsFromValue(map[string]any{"has_credits": false, "balance": "0"})
+	if credits == nil || !credits.NoCredits {
+		t.Fatalf("explicit has_credits:false was not flagged: %+v", credits)
+	}
+	credits = quotaCreditsFromValue(map[string]any{"has_credits": true})
+	if credits == nil || credits.NoCredits || !credits.HasCredits {
+		t.Fatalf("has_credits:true was misread: %+v", credits)
+	}
+}

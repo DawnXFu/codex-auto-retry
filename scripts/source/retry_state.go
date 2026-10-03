@@ -485,7 +485,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		if d.state.Quota != nil {
 			snapshot = d.state.Quota.Snapshot
 		}
-		if snapshot != nil && snapshot.Credits != nil && !snapshot.Credits.HasCredits && !snapshot.Credits.Unlimited {
+		if snapshot != nil && snapshot.Credits != nil && snapshot.Credits.NoCredits {
 			// The account is out of credits regardless of the error text:
 			// a wall automation cannot cross, so fail closed now instead of
 			// parking against a window that will not clear on its own.
