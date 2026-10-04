@@ -37,14 +37,21 @@ const (
 
 // Terminal parked-state reasons for walls automation cannot cross.
 const (
-	stopReasonQuotaCreditWall      = "quota_credit_or_billing_wall"
-	stopReasonQuotaAuthWall        = "quota_auth_wall"
-	stopReasonQuotaUntrustworthy   = "quota_untrustworthy_reset"
-	stopReasonQuotaRelimit         = "quota_relimit_limit"
-	stopReasonQuotaNoResetAttempts = "quota_no_reset_attempt_limit"
-	managedStateWaitingForReset    = "waiting_for_reset"
-	managedStateResetDue           = "reset_due"
-	managedStateNeedsAttention     = "needs_attention"
+	stopReasonQuotaCreditWall    = "quota_credit_or_billing_wall"
+	stopReasonQuotaAuthWall      = "quota_auth_wall"
+	stopReasonQuotaUntrustworthy = "quota_untrustworthy_reset"
+	stopReasonQuotaRelimit       = "quota_relimit_limit"
+
+	// quotaDispatchFailureLimit caps consecutive transport-failure reparks
+	// (Desktop closed, app-server unreachable, exec thread without owner).
+	// Without it a probe retries forever on a backoff capped at
+	// max_delay_seconds — the thread parks forever instead of surfacing.
+	quotaDispatchFailureLimit       = 6
+	stopReasonQuotaProbeUnreachable = "quota_probe_unreachable"
+	stopReasonQuotaNoResetAttempts  = "quota_no_reset_attempt_limit"
+	managedStateWaitingForReset     = "waiting_for_reset"
+	managedStateResetDue            = "reset_due"
+	managedStateNeedsAttention      = "needs_attention"
 )
 
 // QuotaWindow is one server-reported rate-limit window (e.g. the 5-hour or
@@ -474,6 +481,13 @@ func (d *daemon) reparkQuotaWaitLocked(threadID string, thread ThreadState, wait
 // backoff, which also rate-limits a persistently failing endpoint. The
 // in-flight probe marker is cleared so the drain elects a new probe.
 func (d *daemon) parkAwaitingQuotaLocked(threadID string, thread ThreadState, awaiting AwaitingRetry, now time.Time) {
+	if awaiting.DispatchFailures >= quotaDispatchFailureLimit {
+		// The endpoint has been unreachable across the full backoff ladder:
+		// surface instead of reparking forever. Without a live binding the
+		// thread would also strand, so the cap applies in both branches.
+		d.stopThreadNeedsAttentionLocked(threadID, thread, awaiting.EventKey, awaiting.FailedTurnID, awaiting.FailedAt, awaiting.OriginTurnStartedAt, awaiting.Class, awaiting.CodexHome, awaiting.RolloutPath, now, stopReasonQuotaProbeUnreachable)
+		return
+	}
 	if d.state.Quota == nil || d.state.Quota.Binding == nil {
 		// No live binding — the window was verified or drained while this
 		// dispatch was in flight. A QuotaWait would be stranded forever

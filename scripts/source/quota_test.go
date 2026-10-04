@@ -447,6 +447,33 @@ func TestFollowerRelimitCountsTowardCap(t *testing.T) {
 	}
 }
 
+// Regression (live-smoke finding): a quota probe whose dispatches keep
+// failing at the transport layer (Desktop closed, app-server unreachable,
+// CLI exec thread without an owner) must stop after the cap instead of
+// reparking on a capped backoff forever.
+func TestQuotaProbeDispatchCapEscalates(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	threadID := "019f0000-0000-7000-8000-000000000015"
+	d.state.Quota = &QuotaState{
+		Binding: &BindingWindow{Since: now.Add(-time.Hour), ProbeThreadID: threadID,
+			Window: QuotaWindow{Key: "primary", UsedPercent: 100, ResetsAt: now.Add(-time.Hour)}},
+	}
+	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey: "key-p", FailedTurnID: "turn-p", Class: classRateLimit,
+		RetryTurnID: "probe-turn", QuotaRecovery: true, Attempt: 1, ConsecutiveRetry: 1,
+		DispatchFailures: quotaDispatchFailureLimit,
+	}}
+	d.parkAwaitingQuotaLocked(threadID, d.state.Threads[threadID], *d.state.Threads[threadID].Awaiting, now)
+	thread := d.state.Threads[threadID]
+	if thread.Stopped == nil || thread.Stopped.Reason != stopReasonQuotaProbeUnreachable || !thread.Stopped.NeedsAttention {
+		t.Fatalf("probe under the dispatch cap did not escalate: %+v", thread)
+	}
+	if thread.QuotaWait != nil || thread.Awaiting != nil || thread.Pending != nil {
+		t.Fatalf("escalated probe kept retry state: %+v", thread)
+	}
+}
+
 func TestQuotaWaitSurvivesRestartAsResetDue(t *testing.T) {
 	now := time.Now().UTC()
 	threadID := "019f0000-0000-7000-8000-000000000013"
