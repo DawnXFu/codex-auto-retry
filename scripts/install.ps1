@@ -328,6 +328,7 @@ $oldRunValue = $null
 $oldStartupApproval = $null
 $oldConfigBytes = $null
 $oldWatchdog = $false
+$oldSettings = $false
 $oldMcp = $false
 $oldLegacyWatchdog = $false
 $oldEnvironment = $null

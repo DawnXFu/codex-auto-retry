@@ -371,7 +371,7 @@ func TestProbeRelimitReparksWholeWindow(t *testing.T) {
 	if thread.QuotaWait == nil || !thread.QuotaWait.WindowResetsAt.Equal(newResets) {
 		t.Fatalf("probe did not repark on the fresh resets_at: %+v", thread)
 	}
-	if d.state.Quota.Binding == nil || d.state.Quota.Binding.RelimitCount != 1 ||
+	if d.state.Quota.Binding == nil || d.state.Quota.RelimitCount != 1 ||
 		d.state.Quota.Binding.ProbeThreadID != "" {
 		t.Fatalf("binding was not rebound for re-drain: %+v", d.state.Quota.Binding)
 	}
@@ -392,8 +392,9 @@ func TestSecondRelimitEscalatesToNeedsAttention(t *testing.T) {
 		Snapshot: &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
 			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: newResets},
 		}},
-		Binding: &BindingWindow{Since: now.Add(-time.Hour), ProbeThreadID: threadID, RelimitCount: 1,
+		Binding: &BindingWindow{Since: now.Add(-time.Hour), ProbeThreadID: threadID,
 			Window: QuotaWindow{Key: "primary", UsedPercent: 100, ResetsAt: now.Add(-time.Hour)}},
+		RelimitCount: 1,
 	}
 	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
 		EventKey: "key-p", FailedTurnID: "turn-p", Class: classRateLimit,
@@ -413,6 +414,36 @@ func TestSecondRelimitEscalatesToNeedsAttention(t *testing.T) {
 	}
 	if d.state.Quota.Binding != nil {
 		t.Fatal("binding survived escalation")
+	}
+}
+
+// Regression (review finding): a re-limited FOLLOWER must count against the
+// same cap as a probe. Before RelimitCount moved to QuotaState, a follower
+// re-limit created a fresh binding with count 0 and was not the next probe,
+// so verify→release→re-bind cycles could loop forever without escalating.
+func TestFollowerRelimitCountsTowardCap(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	followerID := "019f0000-0000-7000-8000-000000000014"
+	newResets := now.Add(2 * time.Hour)
+	d.state.Quota = &QuotaState{
+		Snapshot: &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: newResets},
+		}},
+		// Prior cycle already counted one re-limit; the binding is gone
+		// (cleared by release) but the account-level count survived.
+		RelimitCount: 1,
+	}
+	// Released follower dispatched and hit the wall again: it is not a probe.
+	d.state.Threads[followerID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey: "key-f", FailedTurnID: "turn-f", Class: classRateLimit,
+		RetryTurnID: "probe-turn", QuotaRecovery: true, Attempt: 1, ConsecutiveRetry: 1,
+	}}
+	item := quotaProbeFailure(followerID, now, "429 rate limit reached")
+	d.handleTaskCompleteLocked(item, "key-follower", now, d.state.Threads[followerID])
+	thread := d.state.Threads[followerID]
+	if thread.Stopped == nil || thread.Stopped.Reason != stopReasonQuotaRelimit || !thread.Stopped.NeedsAttention {
+		t.Fatalf("second consecutive re-limit did not escalate: %+v", thread)
 	}
 }
 

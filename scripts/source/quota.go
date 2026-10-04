@@ -68,7 +68,7 @@ func (w QuotaWindow) Exhausted() bool {
 // has_credits is not a depletion signal: subscription plans report
 // has_credits:false with a constant "0" balance even when healthy, so this
 // field is parsed for completeness but never gates recovery — credit walls
-// are identified by error-text keywords (quotaHardWallReason).
+// are identified by error-text keywords (quotaCreditWallReason).
 type QuotaCredits struct {
 	HasCredits bool   `json:"has_credits,omitempty"`
 	Balance    string `json:"balance,omitempty"`
@@ -88,13 +88,17 @@ type BindingWindow struct {
 	Window        QuotaWindow `json:"window"`
 	Since         time.Time   `json:"since"`
 	ProbeThreadID string      `json:"probe_thread_id,omitempty"`
-	RelimitCount  int         `json:"relimit_count,omitempty"`
 }
 
-// QuotaState is the persisted per-account quota tracker.
+// QuotaState is the persisted per-account quota tracker. RelimitCount counts
+// consecutive post-dispatch walls on this account: a binding that keeps
+// re-binding across release cycles must still escalate, so the counter lives
+// one level above the binding it outlasts. It resets on verified progress,
+// escalation, or a queue that drains away without further walls.
 type QuotaState struct {
-	Snapshot *QuotaSnapshot `json:"snapshot,omitempty"`
-	Binding  *BindingWindow `json:"binding,omitempty"`
+	Snapshot     *QuotaSnapshot `json:"snapshot,omitempty"`
+	Binding      *BindingWindow `json:"binding,omitempty"`
+	RelimitCount int            `json:"relimit_count,omitempty"`
 }
 
 // QuotaWait is Waiting For Reset: a failed task parked until
@@ -374,15 +378,19 @@ func resetsAtTrustworthy(window QuotaWindow, now time.Time) bool {
 	return now.Sub(window.ResetsAt) <= quotaResetPastLimit
 }
 
-// quotaHardWallReason identifies walls automation cannot cross. These fail
-// closed to Needs Attention immediately and are never retried.
-func quotaHardWallReason(errorText string) string {
+// quotaCreditWallReason identifies credit/billing walls automation cannot
+// cross: they fail closed to Needs Attention immediately and are never
+// retried. Auth walls are handled separately (classAuthLimited). Plain
+// quota/rate-limit exhaustion is deliberately absent: an error saying "quota
+// exhausted" on an exhausted window must park in Waiting For Reset, so this
+// list stays credit/spend/billing terms only.
+func quotaCreditWallReason(errorText string) string {
 	text := strings.ToLower(errorText)
 	switch {
 	case containsAny(text,
 		"credits depleted", "insufficient credits", "out of credits", "no credits remaining",
 		"credit balance", "spend cap", "spending cap", "budget exceeded", "budget limit",
-		"quota exhausted", "billing", "payment required", "purchase credits",
+		"billing", "payment required", "purchase credits",
 	):
 		return stopReasonQuotaCreditWall
 	default:
@@ -569,6 +577,7 @@ func (d *daemon) escalateQuotaWindowLocked(now time.Time, reason string) {
 	}
 	if quota := d.state.Quota; quota != nil {
 		quota.Binding = nil
+		quota.RelimitCount = 0
 	}
 }
 
@@ -606,6 +615,8 @@ func (d *daemon) releaseQuotaFollowersLocked(now time.Time) {
 	}
 	if quota := d.state.Quota; quota != nil {
 		quota.Binding = nil
+		// Verified progress cleared the wall: the re-limit cycle ends.
+		quota.RelimitCount = 0
 	}
 	d.logger.Printf("quota recovery released parked threads")
 }
@@ -635,18 +646,23 @@ func (d *daemon) handleQuotaDispatchFailureLocked(item scannedEvent, key string,
 	binding, selection := selectBindingWindow(quota.Snapshot, now)
 	switch {
 	case selection == bindingFound:
+		// Every post-dispatch wall counts against the account-wide re-limit
+		// cap — not just probe failures. A follower that re-limits creates a
+		// fresh binding next cycle, so a binding-scoped counter would never
+		// reach the cap. The counter lives on QuotaState and only verified
+		// progress (or escalation/prune) clears it.
+		quota.RelimitCount++
+		if quota.RelimitCount >= quotaRelimitLimit {
+			d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, wait.EventKey, wait.FailedTurnID, wait.FailedAt, wait.OriginTurnStartedAt, wait.Class, wait.CodexHome, wait.RolloutPath, now, stopReasonQuotaRelimit)
+			d.escalateQuotaWindowLocked(now, stopReasonQuotaRelimit)
+			return
+		}
 		if quota.Binding == nil {
 			quota.Binding = &BindingWindow{Since: now}
 		}
 		quota.Binding.Window = binding
 		if wasProbe {
 			quota.Binding.ProbeThreadID = ""
-			quota.Binding.RelimitCount++
-			if quota.Binding.RelimitCount >= quotaRelimitLimit {
-				d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, wait.EventKey, wait.FailedTurnID, wait.FailedAt, wait.OriginTurnStartedAt, wait.Class, wait.CodexHome, wait.RolloutPath, now, stopReasonQuotaRelimit)
-				d.escalateQuotaWindowLocked(now, stopReasonQuotaRelimit)
-				return
-			}
 		}
 		// The whole window re-parks on the fresh resets_at: parked followers
 		// keep waiting instead of probing the live wall one by one.
@@ -687,6 +703,7 @@ func (d *daemon) pruneStaleBindingLocked() {
 		}
 	}
 	quota.Binding = nil
+	quota.RelimitCount = 0
 	d.logger.Printf("quota binding cleared reason=no_parked_threads")
 }
 

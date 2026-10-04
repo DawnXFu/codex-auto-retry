@@ -464,7 +464,7 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		}
 	}
 	decision := classifyCompletionFailure(item.Event, d.config)
-	if reason := quotaHardWallReason(item.Event.ErrorText); reason != "" {
+	if reason := quotaCreditWallReason(item.Event.ErrorText); reason != "" {
 		d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, key, item.Event.TurnID, item.Event.Timestamp, originTurnStartedAt, decision.Class, item.Root.CodexHome, item.RolloutPath, now, reason)
 		return
 	}
