@@ -406,7 +406,12 @@ func quotaCreditWallReason(errorText string) string {
 }
 
 // handleQuotaEventLocked keeps the newest token_count snapshot. Quota state
-// is per account, so only the timestamp decides freshness.
+// is per account, so only the timestamp decides freshness. Windows absent
+// from the newest payload carry forward: Codex stops reporting window objects
+// once a limit is exhausted (the payload collapses to credits + null
+// windows), which is exactly when classification needs the last exhausted
+// window. Carried entries expire once their resets_at is quotaResetPastLimit
+// in the past, the same staleness bound the binding clamp uses.
 func (d *daemon) handleQuotaEventLocked(event RelevantEvent) {
 	if event.Quota == nil {
 		return
@@ -414,6 +419,17 @@ func (d *daemon) handleQuotaEventLocked(event RelevantEvent) {
 	quota := d.quotaState()
 	if quota.Snapshot != nil && !event.Quota.ObservedAt.After(quota.Snapshot.ObservedAt) {
 		return
+	}
+	if quota.Snapshot != nil {
+		for key, window := range quota.Snapshot.Windows {
+			if _, reported := event.Quota.Windows[key]; reported {
+				continue
+			}
+			if !window.ResetsAt.IsZero() && event.Quota.ObservedAt.Sub(window.ResetsAt) > quotaResetPastLimit {
+				continue
+			}
+			event.Quota.Windows[key] = window
+		}
 	}
 	quota.Snapshot = event.Quota
 }

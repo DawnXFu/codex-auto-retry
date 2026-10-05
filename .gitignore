@@ -13,3 +13,6 @@ scripts/bin/*
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Throwaway scripts and test binaries
+.scratch/

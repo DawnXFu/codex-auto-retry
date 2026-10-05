@@ -192,6 +192,52 @@ func TestRateLimitFailureParksInWaitingForReset(t *testing.T) {
 	}
 }
 
+// Codex stops reporting window objects the moment a limit is exhausted: the
+// wall turn's own token_count arrives with primary/secondary null, and the
+// task_complete failure lands milliseconds later. A wholesale snapshot
+// replace erases the 100% window before classification runs, which sends the
+// failure down the bounded transient chain instead of Waiting For Reset.
+func TestNullWindowSnapshotPreservesExhaustedWindow(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	resets := now.Add(90 * time.Minute)
+	threadID := "019f0000-0000-7000-8000-0000000000ab"
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now, map[string]any{
+		"primary": quotaWindowFixture(100, 300, resets),
+	}), now)
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now.Add(time.Second), map[string]any{
+		"primary":   nil,
+		"secondary": nil,
+	}), now.Add(time.Second))
+	snap := d.state.Quota.Snapshot
+	if snap == nil || snap.Windows["primary"].UsedPercent != 100 {
+		t.Fatalf("null windows erased the exhausted window: %+v", snap)
+	}
+	item := quotaFailure(threadID, "turn-wall", now.Add(time.Second))
+	d.handleEventLocked(item, now.Add(time.Second))
+	thread := d.state.Threads[threadID]
+	if thread.QuotaWait == nil || thread.QuotaWait.WindowResetsAt != resets {
+		t.Fatalf("wall failure was not parked on the carried window: %+v", thread)
+	}
+}
+
+// Carried windows expire on the same staleness bound the binding clamp uses:
+// a window whose resets_at is far in the past must not park new failures.
+func TestCarriedWindowExpiresAfterReset(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now.Add(-2*time.Hour), map[string]any{
+		"primary": quotaWindowFixture(100, 300, now.Add(-quotaResetPastLimit-time.Minute)),
+	}), now.Add(-2*time.Hour))
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now, map[string]any{
+		"primary": nil,
+	}), now)
+	snap := d.state.Quota.Snapshot
+	if snap == nil || len(snap.Windows) != 0 {
+		t.Fatalf("expired window was carried forward: %+v", snap)
+	}
+}
+
 func TestRateLimitWithoutResetUsesBoundedTransientFallback(t *testing.T) {
 	d := newQuotaDaemon(t)
 	now := time.Now().UTC()
