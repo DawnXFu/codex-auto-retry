@@ -481,13 +481,31 @@ func (d *daemon) scheduleFailureLocked(item scannedEvent, key string, now time.T
 		return
 	}
 	if decision.Class == classRateLimit {
-		var snapshot *QuotaSnapshot
+		var quota *QuotaState
 		if d.state.Quota != nil {
-			snapshot = d.state.Quota.Snapshot
+			quota = d.state.Quota
+		}
+		// While a binding lives, parked threads resolve against the binding
+		// itself — the note behind it is already consumed and cannot be
+		// re-read (ADR-0003 one-shot evidence).
+		if quota != nil && quota.Binding != nil {
+			d.parkForQuotaLocked(item, key, now, thread, decision, quota.Binding.Window, originTurnStartedAt, parentNotified)
+			return
+		}
+		var snapshot *QuotaSnapshot
+		if quota != nil {
+			snapshot = quota.Snapshot
 		}
 		window, selection := selectBindingWindow(snapshot, now)
 		switch selection {
 		case bindingFound:
+			// Codex exhaustion with confirmed-usable credits is a false wall:
+			// Codex would have continued on credits, so the failure takes the
+			// bounded transient chain — no binding, no queue freeze.
+			if d.codexWallBypassedByCredits(window, snapshot) {
+				d.logger.Printf("quota wall bypassed thread=%s reason=credits_available limit_id=%s", shortThreadID(item.ThreadID), window.LimitID)
+				break
+			}
 			d.parkForQuotaLocked(item, key, now, thread, decision, window, originTurnStartedAt, parentNotified)
 			return
 		case bindingUntrustworthy:

@@ -249,14 +249,17 @@ func quotaSummary(quota *QuotaState, waiting int) *ManagedQuota {
 	window := QuotaWindow{}
 	if quota.Binding != nil {
 		window = quota.Binding.Window
-	} else {
-		// Prefer the most-used window; on ties (e.g. everything at 0% after
-		// a fresh reset) keep the latest resets_at so the reset time still
-		// surfaces whenever quota data exists.
-		for _, candidate := range quota.Snapshot.Windows {
-			if candidate.UsedPercent > window.UsedPercent ||
-				(candidate.UsedPercent == window.UsedPercent && candidate.ResetsAt.After(window.ResetsAt)) {
-				window = candidate
+	} else if quota.Snapshot != nil {
+		// Prefer the most-used window across all evidence spaces; on ties
+		// (e.g. everything at 0% after a fresh reset) keep the latest
+		// resets_at so the reset time still surfaces whenever quota data
+		// exists.
+		for _, space := range quota.Snapshot.Spaces {
+			for _, candidate := range space.Windows {
+				if candidate.UsedPercent > window.UsedPercent ||
+					(candidate.UsedPercent == window.UsedPercent && candidate.ResetsAt.After(window.ResetsAt)) {
+					window = candidate
+				}
 			}
 		}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,6 +66,17 @@ func quotaProbeFailure(threadID string, failedAt time.Time, errorText string) sc
 	return item
 }
 
+// quotaSnapshotFixture builds a single-space codex snapshot the way the
+// parser produces it: windows stamped with the container limit_id.
+func quotaSnapshotFixture(now time.Time, windows map[string]QuotaWindow) *QuotaSnapshot {
+	return &QuotaSnapshot{
+		ObservedAt: now,
+		Spaces: map[string]*QuotaSpace{
+			quotaCodexLimitID: {ObservedAt: now, Windows: windows},
+		},
+	}
+}
+
 // Issue #2: token_count events populate a fresh per-account snapshot.
 func TestTokenCountParsesQuotaSnapshot(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
@@ -82,12 +94,16 @@ func TestTokenCountParsesQuotaSnapshot(t *testing.T) {
 	if !ok || event.Kind != "token_count" || event.Quota == nil {
 		t.Fatalf("token_count was dropped: %+v", event)
 	}
-	primary := event.Quota.Windows["primary"]
+	space := event.Quota.Spaces[quotaCodexLimitID]
+	if space == nil {
+		t.Fatalf("codex space missing: %+v", event.Quota)
+	}
+	primary := space.Windows["primary"]
 	if primary.UsedPercent != 87.5 || primary.WindowMinutes != 300 ||
 		!primary.ResetsAt.Equal(resets) || primary.LimitID != "codex" {
 		t.Fatalf("primary window parsed wrong: %+v", primary)
 	}
-	sibling := event.Quota.Windows["future_sibling"]
+	sibling := space.Windows["future_sibling"]
 	if !sibling.Exhausted() || sibling.ReachedType != "usage_limit" {
 		t.Fatalf("sibling window was not tracked: %+v", sibling)
 	}
@@ -127,7 +143,8 @@ func TestQuotaSnapshotLatestEventWins(t *testing.T) {
 		"primary": quotaWindowFixture(60, 300, now.Add(3*time.Hour)),
 	}), now)
 	snap := d.state.Quota.Snapshot
-	if snap == nil || snap.Windows["primary"].UsedPercent != 60 {
+	space := snap.Spaces[quotaCodexLimitID]
+	if space == nil || space.Windows["primary"].UsedPercent != 60 {
 		t.Fatalf("latest event did not win: %+v", snap)
 	}
 }
@@ -135,11 +152,11 @@ func TestQuotaSnapshotLatestEventWins(t *testing.T) {
 // Issue #3: binding selection, clamp and classification parking.
 func TestBindingPicksLatestTrustworthyResets(t *testing.T) {
 	now := time.Now().UTC()
-	snapshot := &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+	snapshot := quotaSnapshotFixture(now, map[string]QuotaWindow{
 		"primary":   {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: now.Add(90 * time.Minute)},
 		"secondary": {Key: "secondary", UsedPercent: 100, WindowMinutes: 10080, ResetsAt: now.Add(48 * time.Hour)},
 		"low":       {Key: "low", UsedPercent: 40, ResetsAt: now.Add(10 * time.Hour)},
-	}}
+	})
 	window, selection := selectBindingWindow(snapshot, now)
 	if selection != bindingFound || window.Key != "secondary" {
 		t.Fatalf("binding = %s/%v", window.Key, selection)
@@ -153,16 +170,16 @@ func TestBindingClampsSkewedResets(t *testing.T) {
 		"too far past":   now.Add(-quotaResetPastLimit - time.Minute),
 	}
 	for name, resets := range cases {
-		snapshot := &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+		snapshot := quotaSnapshotFixture(now, map[string]QuotaWindow{
 			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: resets},
-		}}
+		})
 		if _, selection := selectBindingWindow(snapshot, now); selection != bindingUntrustworthy {
 			t.Fatalf("%s: selection=%v", name, selection)
 		}
 	}
-	snapshot := &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+	snapshot := quotaSnapshotFixture(now, map[string]QuotaWindow{
 		"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300},
-	}}
+	})
 	if _, selection := selectBindingWindow(snapshot, now); selection != bindingMissingReset {
 		t.Fatalf("missing resets selection=%v", selection)
 	}
@@ -173,9 +190,9 @@ func TestRateLimitFailureParksInWaitingForReset(t *testing.T) {
 	now := time.Now().UTC()
 	resets := now.Add(90 * time.Minute)
 	threadID := "019f0000-0000-7000-8000-000000000001"
-	d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+	d.state.Quota = &QuotaState{Snapshot: quotaSnapshotFixture(now, map[string]QuotaWindow{
 		"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: resets, LimitID: "codex"},
-	}}}
+	})}
 	item := quotaFailure(threadID, "turn-a", now)
 	d.scheduleFailureLocked(item, "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
 	thread := d.state.Threads[threadID]
@@ -210,7 +227,8 @@ func TestNullWindowSnapshotPreservesExhaustedWindow(t *testing.T) {
 		"secondary": nil,
 	}), now.Add(time.Second))
 	snap := d.state.Quota.Snapshot
-	if snap == nil || snap.Windows["primary"].UsedPercent != 100 {
+	space := snap.Spaces[quotaCodexLimitID]
+	if space == nil || space.Windows["primary"].UsedPercent != 100 {
 		t.Fatalf("null windows erased the exhausted window: %+v", snap)
 	}
 	item := quotaFailure(threadID, "turn-wall", now.Add(time.Second))
@@ -233,8 +251,230 @@ func TestCarriedWindowExpiresAfterReset(t *testing.T) {
 		"primary": nil,
 	}), now)
 	snap := d.state.Quota.Snapshot
-	if snap == nil || len(snap.Windows) != 0 {
+	space := snap.Spaces[quotaCodexLimitID]
+	if space == nil || len(space.Windows) != 0 {
 		t.Fatalf("expired window was carried forward: %+v", snap)
+	}
+}
+
+// ADR-0003 one-shot evidence: once the bound note is consumed and then
+// discarded on verified release, a later rate-limit failure must NOT rebind
+// against it — the board holds only live evidence.
+func TestReleasedBindingCannotRebindLaterFailure(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	resets := now.Add(90 * time.Minute)
+	parkedID := "019f0000-0000-7000-8000-0000000000e0"
+	lateID := "019f0000-0000-7000-8000-0000000000e1"
+	d.state.Quota = &QuotaState{Snapshot: quotaSnapshotFixture(now, map[string]QuotaWindow{
+		"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: resets, LimitID: "codex"},
+	})}
+	d.scheduleFailureLocked(quotaFailure(parkedID, "turn-p", now), "key-p", now, ThreadState{}, 1, 1, time.Time{}, false)
+	if d.state.Threads[parkedID].QuotaWait == nil {
+		t.Fatal("first failure did not park")
+	}
+	if !d.state.Quota.Snapshot.Spaces["codex"].Windows["primary"].Consumed {
+		t.Fatal("binding did not consume its note")
+	}
+	// Verified probe release deletes the bound note outright.
+	d.releaseQuotaFollowersLocked(now.Add(time.Minute))
+	if _, exists := d.state.Quota.Snapshot.Spaces["codex"].Windows["primary"]; exists {
+		t.Fatal("released binding left its consumed note on the board")
+	}
+	// A later rate-limit failure has no live evidence: bounded transient,
+	// never a rebinding on the spent note.
+	d.scheduleFailureLocked(quotaFailure(lateID, "turn-late", now.Add(2*time.Minute)), "key-l", now.Add(2*time.Minute), ThreadState{}, 1, 1, time.Time{}, false)
+	late := d.state.Threads[lateID]
+	if late.QuotaWait != nil || d.state.Quota.Binding != nil {
+		t.Fatalf("spent evidence re-convicted a later failure: %+v binding=%+v", late.QuotaWait, d.state.Quota.Binding)
+	}
+	if late.Pending == nil || late.Pending.MaxAttempts != quotaNoResetFallbackAttempts {
+		t.Fatalf("later failure did not take the bounded transient chain: %+v", late.Pending)
+	}
+}
+
+// ADR-0003: connected turns always report readings, so a probe re-limit
+// whose episode has no fresh window means no trustworthy schedule — the
+// whole window escalates instead of re-parking on a carried or consumed
+// past-due resets_at.
+func TestProbeRelimitWithoutFreshWindowEscalates(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	threadID := "019f0000-0000-7000-8000-0000000000e2"
+	followerID := "019f0000-0000-7000-8000-0000000000e3"
+	// The bound note is already consumed: it cannot supply a new resets_at.
+	d.state.Quota = &QuotaState{
+		Snapshot: quotaSnapshotFixture(now, map[string]QuotaWindow{
+			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300,
+				ResetsAt: now.Add(-time.Hour), LimitID: "codex", Consumed: true},
+		}),
+		Binding: &BindingWindow{Since: now.Add(-time.Hour), ProbeThreadID: threadID,
+			Window: QuotaWindow{Key: "primary", UsedPercent: 100, ResetsAt: now.Add(-time.Hour), LimitID: "codex"}},
+	}
+	d.state.Threads[threadID] = ThreadState{Awaiting: &AwaitingRetry{
+		EventKey: "key-p", FailedTurnID: "turn-p", Class: classRateLimit,
+		RetryTurnID: "probe-turn", QuotaRecovery: true, Attempt: 1, ConsecutiveRetry: 1,
+	}}
+	d.state.Threads[followerID] = ThreadState{QuotaWait: &QuotaWait{
+		EventKey: "key-f", FailedTurnID: "turn-f", Class: classRateLimit,
+		DueAt: now.Add(-time.Minute), WaitUntil: now.Add(-time.Minute),
+	}}
+	item := quotaProbeFailure(threadID, now, "429 rate limit reached")
+	d.handleTaskCompleteLocked(item, "key-probe", now, d.state.Threads[threadID])
+	for _, id := range []string{threadID, followerID} {
+		thread := d.state.Threads[id]
+		if thread.Stopped == nil || thread.Stopped.Reason != stopReasonQuotaUntrustworthy || !thread.Stopped.NeedsAttention {
+			t.Fatalf("%s did not escalate on a schedule-less re-limit: %+v", id, thread)
+		}
+	}
+}
+
+// ADR-0003 wall order: codex exhaustion is evaluated first; confirmed-usable
+// premium credits make that wall false, so the failure takes the bounded
+// transient chain instead of parking.
+func TestCreditsBypassCodexWallUnderAuto(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	threadID := "019f0000-0000-7000-8000-0000000000e4"
+	d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{ObservedAt: now, Spaces: map[string]*QuotaSpace{
+		"codex": {ObservedAt: now, Windows: map[string]QuotaWindow{
+			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: now.Add(time.Hour), LimitID: "codex"},
+		}},
+		"premium": {ObservedAt: now, Credits: &QuotaCredits{HasCredits: true, Balance: "12.50"}},
+	}}}
+	d.scheduleFailureLocked(quotaFailure(threadID, "turn-a", now), "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
+	thread := d.state.Threads[threadID]
+	if thread.QuotaWait != nil || d.state.Quota.Binding != nil {
+		t.Fatalf("false wall parked despite usable credits: %+v", thread)
+	}
+	if thread.Pending == nil || thread.Pending.MaxAttempts != quotaNoResetFallbackAttempts {
+		t.Fatalf("bypassed wall did not take the bounded transient chain: %+v", thread.Pending)
+	}
+}
+
+// quota_exhausted_action=wait_for_reset keeps credits as a reserve: the codex
+// wall parks regardless of balance. spend_control_reached also parks — an
+// indeterminate wall resolves toward the real-wall side.
+func TestWaitForResetAndSpendControlParkDespiteCredits(t *testing.T) {
+	now := time.Now().UTC()
+	resets := now.Add(90 * time.Minute)
+	newDaemon := func(action string, spendControl bool) *daemon {
+		d := newQuotaDaemon(t)
+		d.config.QuotaExhaustedAction = action
+		d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{ObservedAt: now, Spaces: map[string]*QuotaSpace{
+			"codex": {ObservedAt: now, Windows: map[string]QuotaWindow{
+				"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: resets, LimitID: "codex"},
+			}},
+			"premium": {ObservedAt: now, Credits: &QuotaCredits{HasCredits: true, Balance: "99"}, SpendControlReached: spendControl},
+		}}}
+		return d
+	}
+	d := newDaemon(quotaActionWaitForReset, false)
+	d.scheduleFailureLocked(quotaFailure("019f0000-0000-7000-8000-0000000000e5", "turn-a", now), "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
+	if d.state.Threads["019f0000-0000-7000-8000-0000000000e5"].QuotaWait == nil {
+		t.Fatal("wait_for_reset bypassed the wall on credit balance")
+	}
+	d = newDaemon(quotaActionAuto, true)
+	d.scheduleFailureLocked(quotaFailure("019f0000-0000-7000-8000-0000000000e6", "turn-a", now), "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
+	if d.state.Threads["019f0000-0000-7000-8000-0000000000e6"].QuotaWait == nil {
+		t.Fatal("auto bypassed the wall despite spend_control_reached")
+	}
+}
+
+// quota_exhausted_action=use_credits: any readable credits block counts as
+// spendable — a zero balance still bypasses the codex wall.
+func TestUseCreditsBypassesOnReadableCreditsBlock(t *testing.T) {
+	d := newQuotaDaemon(t)
+	d.config.QuotaExhaustedAction = quotaActionUseCredits
+	now := time.Now().UTC()
+	threadID := "019f0000-0000-7000-8000-0000000000e7"
+	d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{ObservedAt: now, Spaces: map[string]*QuotaSpace{
+		"codex": {ObservedAt: now, Windows: map[string]QuotaWindow{
+			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: now.Add(time.Hour), LimitID: "codex"},
+		}},
+		"premium": {ObservedAt: now, Credits: &QuotaCredits{HasCredits: true, Balance: "0"}},
+	}}}
+	d.scheduleFailureLocked(quotaFailure(threadID, "turn-a", now), "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
+	thread := d.state.Threads[threadID]
+	if thread.QuotaWait != nil || thread.Pending == nil {
+		t.Fatalf("use_credits parked on a zero balance: %+v", thread)
+	}
+}
+
+// ADR-0003 migration: a persisted single-board snapshot (windows map directly
+// under "windows") folds into the codex space on load; bindings and waits are
+// untouched.
+func TestLegacySnapshotMigratesIntoCodexSpace(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	resets := now.Add(90 * time.Minute)
+	legacy := fmt.Sprintf(`{"version":5,"files":{},"threads":{},"processed_events":{},`+
+		`"quota":{"snapshot":{"observed_at":%q,"windows":{"primary":{"key":"primary","used_percent":100,"window_minutes":300,"resets_at":%q,"limit_id":"codex"}},"credits":{"has_credits":false,"balance":"0"}},`+
+		`"binding":{"window":{"key":"primary","used_percent":100,"resets_at":%q,"limit_id":"codex"},"since":%q}}}`,
+		now.Format(time.RFC3339Nano), resets.Format(time.RFC3339Nano), resets.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	space := state.Quota.Snapshot.Spaces["codex"]
+	if space == nil || space.Windows["primary"].UsedPercent != 100 || space.Credits == nil || space.Credits.Balance != "0" {
+		t.Fatalf("legacy snapshot did not fold into the codex space: %+v", state.Quota.Snapshot)
+	}
+	if state.Quota.Binding == nil || state.Quota.Binding.Window.Key != "primary" {
+		t.Fatal("migration dropped the live binding")
+	}
+}
+
+// ADR-0003: token_count payloads are emitted per limit_id — a premium event
+// reports about its own evidence space, so its null primary/secondary are not
+// "codex windows cleared". The codex space must keep its last windows and the
+// premium space must collect the credits block the wall test reads.
+func TestPremiumEventPreservesCodexWindows(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	resets := now.Add(90 * time.Minute)
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now, map[string]any{
+		"limit_id":  "codex",
+		"primary":   quotaWindowFixture(100, 300, resets),
+		"secondary": quotaWindowFixture(40, 10080, resets.Add(24*time.Hour)),
+	}), now)
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now.Add(time.Second), map[string]any{
+		"limit_id":              "premium",
+		"primary":               nil,
+		"secondary":             nil,
+		"plan_type":             "pro",
+		"spend_control_reached": false,
+		"credits":               map[string]any{"has_credits": true, "balance": "12.50", "unlimited": false},
+	}), now.Add(time.Second))
+	snap := d.state.Quota.Snapshot
+	codex := snap.Spaces["codex"]
+	if codex == nil || codex.Windows["primary"].UsedPercent != 100 {
+		t.Fatalf("premium event erased codex windows: %+v", snap)
+	}
+	premium := snap.Spaces["premium"]
+	if premium == nil || premium.Credits == nil || premium.Credits.Balance != "12.50" {
+		t.Fatalf("premium space did not capture credits: %+v", premium)
+	}
+}
+
+// ADR-0003: exactly one token_count in thousands carries rate_limits:null —
+// a local bookkeeping event without a server round-trip. It must not refresh
+// any space or timestamp, or freshness would be faked.
+func TestNullRateLimitsEventUpdatesNothing(t *testing.T) {
+	d := newQuotaDaemon(t)
+	now := time.Now().UTC()
+	resets := now.Add(90 * time.Minute)
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now, map[string]any{
+		"limit_id": "codex",
+		"primary":  quotaWindowFixture(100, 300, resets),
+	}), now)
+	d.handleEventLocked(makeTokenCountScannedEvent(t, now.Add(time.Second), nil), now.Add(time.Second))
+	snap := d.state.Quota.Snapshot
+	if snap == nil || !snap.ObservedAt.Equal(now) {
+		t.Fatalf("null rate_limits refreshed the snapshot: %+v", snap)
 	}
 }
 
@@ -260,9 +500,9 @@ func TestUntrustworthyResetFailsClosed(t *testing.T) {
 	d := newQuotaDaemon(t)
 	now := time.Now().UTC()
 	threadID := "019f0000-0000-7000-8000-000000000003"
-	d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+	d.state.Quota = &QuotaState{Snapshot: quotaSnapshotFixture(now, map[string]QuotaWindow{
 		"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: now.Add(-2 * time.Hour)},
-	}}}
+	})}
 	item := quotaFailure(threadID, "turn-a", now)
 	d.scheduleFailureLocked(item, "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
 	thread := d.state.Threads[threadID]
@@ -396,9 +636,9 @@ func TestProbeRelimitReparksWholeWindow(t *testing.T) {
 	followerID := "019f0000-0000-7000-8000-000000000010"
 	newResets := now.Add(2 * time.Hour)
 	d.state.Quota = &QuotaState{
-		Snapshot: &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+		Snapshot: quotaSnapshotFixture(now, map[string]QuotaWindow{
 			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: newResets},
-		}},
+		}),
 		Binding: &BindingWindow{Since: now.Add(-time.Hour), ProbeThreadID: threadID,
 			Window: QuotaWindow{Key: "primary", UsedPercent: 100, ResetsAt: now.Add(-time.Hour)}},
 	}
@@ -435,9 +675,9 @@ func TestSecondRelimitEscalatesToNeedsAttention(t *testing.T) {
 	followerID := "019f0000-0000-7000-8000-000000000012"
 	newResets := now.Add(2 * time.Hour)
 	d.state.Quota = &QuotaState{
-		Snapshot: &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+		Snapshot: quotaSnapshotFixture(now, map[string]QuotaWindow{
 			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: newResets},
-		}},
+		}),
 		Binding: &BindingWindow{Since: now.Add(-time.Hour), ProbeThreadID: threadID,
 			Window: QuotaWindow{Key: "primary", UsedPercent: 100, ResetsAt: now.Add(-time.Hour)}},
 		RelimitCount: 1,
@@ -473,9 +713,9 @@ func TestFollowerRelimitCountsTowardCap(t *testing.T) {
 	followerID := "019f0000-0000-7000-8000-000000000014"
 	newResets := now.Add(2 * time.Hour)
 	d.state.Quota = &QuotaState{
-		Snapshot: &QuotaSnapshot{ObservedAt: now, Windows: map[string]QuotaWindow{
+		Snapshot: quotaSnapshotFixture(now, map[string]QuotaWindow{
 			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: newResets},
-		}},
+		}),
 		// Prior cycle already counted one re-limit; the binding is gone
 		// (cleared by release) but the account-level count survived.
 		RelimitCount: 1,
@@ -704,7 +944,8 @@ func TestScannerFeedsTokenCountIntoQuotaState(t *testing.T) {
 	if thread.QuotaWait == nil || thread.QuotaWait.WindowResetsAt != resets {
 		t.Fatalf("scanned token_count did not park the failure: %+v", thread)
 	}
-	if d.state.Quota.Snapshot == nil || d.state.Quota.Snapshot.Windows["primary"].UsedPercent != 100 {
+	space := d.state.Quota.Snapshot.Spaces[quotaCodexLimitID]
+	if space == nil || space.Windows["primary"].UsedPercent != 100 {
 		t.Fatalf("scanner did not update the snapshot: %+v", d.state.Quota)
 	}
 }
@@ -790,15 +1031,13 @@ func TestSubscriptionCreditsBlockParksNormally(t *testing.T) {
 	now := time.Now().UTC()
 	resets := now.Add(90 * time.Minute)
 	threadID := "019f0000-0000-7000-8000-0000000000d0"
-	d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{
-		ObservedAt: now,
-		Windows: map[string]QuotaWindow{
-			"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: resets},
-		},
-		// Exactly what Codex emits for this account: has_credits=false,
-		// balance="0", unlimited=false.
-		Credits: &QuotaCredits{Balance: "0"},
-	}}
+	// Exactly what Codex emits for this account inside the codex space:
+	// has_credits=false, balance="0", unlimited=false.
+	snapshot := quotaSnapshotFixture(now, map[string]QuotaWindow{
+		"primary": {Key: "primary", UsedPercent: 100, WindowMinutes: 300, ResetsAt: resets, LimitID: "codex"},
+	})
+	snapshot.Spaces[quotaCodexLimitID].Credits = &QuotaCredits{Balance: "0"}
+	d.state.Quota = &QuotaState{Snapshot: snapshot}
 	item := quotaFailure(threadID, "turn-a", now)
 	d.scheduleFailureLocked(item, "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
 	thread := d.state.Threads[threadID]

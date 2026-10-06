@@ -8,6 +8,14 @@ A Windows watchdog forked from `sybxxx/codex-auto-retry` that adds reset-aware q
 A server-reported rate-limit window (e.g. 5-hour, weekly) described by `used_percent`, `window_minutes`, and `resets_at` in `token_count` rollout events. A Quota Window is *exhausted* when the server marks the limit reached or `used_percent` is ~100.
 _Avoid_: rate limit, limit, bucket
 
+**Evidence Space**:
+Per-`limit_id` quota evidence (`codex` = subscription windows, `premium` = purchased credits). A `token_count` event updates only its own space; a `rate_limits: null` event updates nothing. (ADR-0003.)
+_Avoid_: merged snapshot, bucket
+
+**Consumed Note**:
+A Quota Window note that already established a Binding Window — one-shot evidence. It is skipped for any later conviction and removed from its space when the binding closes. (ADR-0003.)
+_Avoid_: stale window, cached reset
+
 **Binding Window**:
 The Quota Window currently blocking task execution. When several windows are exhausted, the Binding Window is the one with the latest `resets_at`. Recovery waits on the Binding Window, never on a computed duration.
 _Avoid_: active limit, current window

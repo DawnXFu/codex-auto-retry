@@ -35,6 +35,7 @@ type Config struct {
 	SharedAppServerMemoryLimitMB int      `json:"shared_app_server_memory_limit_mb"`
 	RetryPrompt                  string   `json:"retry_prompt"`
 	QuotaGraceSeconds            int      `json:"quota_grace_seconds"`
+	QuotaExhaustedAction         string   `json:"quota_exhausted_action"`
 	ShowNotifications            bool     `json:"show_notifications"`
 }
 
@@ -54,7 +55,7 @@ const (
 )
 
 const (
-	currentConfigVersion             = 12
+	currentConfigVersion             = 13
 	legacyDefaultSharedAppServerPort = 49321
 	defaultSharedAppServerPort       = 49621
 )
@@ -88,6 +89,7 @@ func defaultConfig() Config {
 		SharedAppServerMemoryLimitMB: 4096,
 		RetryPrompt:                  defaultRetryPrompt,
 		QuotaGraceSeconds:            30,
+		QuotaExhaustedAction:         quotaActionAuto,
 		ShowNotifications:            true,
 	}
 }
@@ -138,7 +140,8 @@ func loadOrCreateConfigUnlocked(path string) (Config, error) {
 	// a bounded private-memory guard for the watchdog process. Version 10 adds
 	// a monitor-only memory limit for the optional shared Codex app-server.
 	// Version 11 separates user preference from temporary backend availability.
-	// Version 12 adds the reset grace for quota recovery.
+	// Version 12 adds the reset grace for quota recovery. Version 13 adds the
+	// credits-aware action for an exhausted codex window.
 	if _, versioned := fields["config_version"]; !versioned {
 		cfg.ConfigVersion = currentConfigVersion
 		cfg.MaxParallelRetries = defaultConfig().MaxParallelRetries
@@ -190,6 +193,10 @@ func loadOrCreateConfigUnlocked(path string) (Config, error) {
 		}
 		if _, found := fields["quota_grace_seconds"]; !found {
 			cfg.QuotaGraceSeconds = defaultConfig().QuotaGraceSeconds
+			changed = true
+		}
+		if _, found := fields["quota_exhausted_action"]; !found {
+			cfg.QuotaExhaustedAction = defaultConfig().QuotaExhaustedAction
 			changed = true
 		}
 		if _, found := fields["shared_app_server_enabled"]; !found {
@@ -279,6 +286,11 @@ func (c Config) validate() error {
 	}
 	if c.QuotaGraceSeconds < 0 || c.QuotaGraceSeconds > 86400 {
 		return errors.New("quota_grace_seconds must be between 0 and 86400")
+	}
+	switch c.QuotaExhaustedAction {
+	case quotaActionAuto, quotaActionWaitForReset, quotaActionUseCredits:
+	default:
+		return errors.New("quota_exhausted_action must be auto, wait_for_reset, or use_credits")
 	}
 	return nil
 }

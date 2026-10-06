@@ -437,17 +437,33 @@ becoming additional writers for `state.json`.
 
 ## Quota Recovery Lifecycle
 
-`token_count` rollout events carry the account's Quota Windows
-(`used_percent`, `window_duration_mins`, `resets_at`) and are folded into a
-fresh `QuotaSnapshot` on every scan. When a task fails on an exhausted window
-with a trustworthy `resets_at`, the thread parks in Waiting For Reset
-(`QuotaWait`, state `waiting_for_reset`/`reset_due`) instead of consuming
-transient retry budget; waits compare absolute epochs, so sleep or hibernation
-cannot overshoot. The exhausted window with the latest `resets_at` becomes the
-Binding Window: while a binding is active, transient dispatches are deferred
-(not failed) and breaker expiry during suspension stops threads normally. A
-binding with no parked threads and no in-flight quota dispatch is cleared as
-residue so a fully drained queue cannot suspend the account forever.
+`token_count` rollout events carry one evidence space per `limit_id`: the
+`codex` space holds the subscription Quota Windows (`used_percent`,
+`window_duration_mins`, `resets_at`) and the `premium` space holds purchased
+credits (`balance`, `unlimited`, `spend_control_reached`). Each event merges
+into its own space — a premium report can never erase codex windows — and a
+`rate_limits: null` bookkeeping event updates nothing. Windows absent from
+the newest payload carry forward (Codex stops reporting exhausted windows),
+expiring once `resets_at` is over an hour past.
+
+When a task fails on an exhausted window with a trustworthy `resets_at`, the
+thread parks in Waiting For Reset (`QuotaWait`, state
+`waiting_for_reset`/`reset_due`) instead of consuming transient retry budget;
+waits compare absolute epochs, so sleep or hibernation cannot overshoot. The
+window note that establishes the Binding Window is consumed on the spot —
+one-shot evidence that can never re-convict — and is removed from its space
+when the binding closes (verified release, escalation, or prune). While a
+binding lives, later failures park against the binding itself; a re-limit
+during a drain needs a window reported since the episode began, and a
+re-limit without one escalates the window to Needs Attention because every
+connected turn reports readings.
+
+Credits decide whether a codex wall is real, per `quota_exhausted_action`
+(default `auto`): confirmed-usable premium credits (balance > 0 or
+unlimited, and `spend_control_reached` not true) turn codex exhaustion into a
+false wall taking the bounded transient chain; `wait_for_reset` always parks;
+`use_credits` trusts any readable credits block. Credits never independently
+block, and indeterminate readings resolve toward the real wall.
 
 At RESET_DUE exactly one parked thread is elected probe (earliest `DueAt`),
 preserving the original thread's working directory, model, and permissions.

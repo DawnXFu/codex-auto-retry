@@ -63,6 +63,10 @@ type QuotaWindow struct {
 	ResetsAt      time.Time `json:"resets_at"`
 	LimitID       string    `json:"limit_id,omitempty"`
 	ReachedType   string    `json:"reached_type,omitempty"`
+	// Consumed marks a note that already established a Binding Window: it is
+	// one-shot evidence and can never convict a second time. A fresh server
+	// report for the same slot overwrites it, clearing the flag.
+	Consumed bool `json:"consumed,omitempty"`
 }
 
 // Exhausted reports whether the window currently blocks task execution.
@@ -82,11 +86,57 @@ type QuotaCredits struct {
 	Unlimited  bool   `json:"unlimited,omitempty"`
 }
 
-// QuotaSnapshot is the newest parsed token_count state, tracked per account.
+// QuotaSpace is one evidence space: the windows, credits and observation time
+// a single limit_id reported. ADR-0003 partitions quota evidence by limit_id
+// so a premium event can never erase or carry codex windows.
+type QuotaSpace struct {
+	ObservedAt          time.Time              `json:"observed_at"`
+	Windows             map[string]QuotaWindow `json:"windows,omitempty"`
+	Credits             *QuotaCredits          `json:"credits,omitempty"`
+	SpendControlReached bool                   `json:"spend_control_reached,omitempty"`
+}
+
+// quotaCodexLimitID is the subscription-quota space. Events without a
+// limit_id default here: historically the only space that ever reported
+// windows, and the one persisted single-board snapshots migrate into.
+const quotaCodexLimitID = "codex"
+
+// QuotaSnapshot is the newest parsed token_count state, tracked per account
+// and partitioned by limit_id. ObservedAt is the newest space timestamp.
 type QuotaSnapshot struct {
 	ObservedAt time.Time              `json:"observed_at"`
-	Windows    map[string]QuotaWindow `json:"windows,omitempty"`
-	Credits    *QuotaCredits          `json:"credits,omitempty"`
+	Spaces     map[string]*QuotaSpace `json:"spaces,omitempty"`
+}
+
+// UnmarshalJSON keeps QuotaSnapshot loadable across the single-board →
+// evidence-space cutover: a persisted snapshot whose windows map sat directly
+// under "windows" folds into the codex space. Bindings and waits are
+// untouched; a parked queue survives the upgrade.
+func (s *QuotaSnapshot) UnmarshalJSON(data []byte) error {
+	type alias QuotaSnapshot
+	var legacy struct {
+		alias
+		Windows map[string]QuotaWindow `json:"windows"`
+		Credits *QuotaCredits          `json:"credits"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	*s = QuotaSnapshot(legacy.alias)
+	if s.Spaces != nil {
+		return nil
+	}
+	if legacy.Windows == nil && legacy.Credits == nil && legacy.ObservedAt.IsZero() {
+		return nil
+	}
+	s.Spaces = map[string]*QuotaSpace{
+		quotaCodexLimitID: {
+			ObservedAt: legacy.ObservedAt,
+			Windows:    legacy.Windows,
+			Credits:    legacy.Credits,
+		},
+	}
+	return nil
 }
 
 // BindingWindow is the Quota Window currently blocking task execution: the
@@ -145,15 +195,24 @@ func quotaGrace(cfg Config) time.Duration {
 	return time.Duration(cfg.QuotaGraceSeconds) * time.Second
 }
 
+// quotaSpaceID resolves the evidence space a token_count payload reports
+// about. The limit_id lives on the rate_limits container, not on individual
+// window objects; absent, the space defaults to codex.
+func quotaSpaceID(rateLimits map[string]any) string {
+	if id := stringFieldAny(rateLimits, "limit_id", "limitId"); id != "" {
+		return id
+	}
+	return quotaCodexLimitID
+}
+
 // tokenCountPayload mirrors the token_count event_msg payload. Unknown
 // window keys are decoded from the map so future rate-limit siblings
-// (beyond primary/secondary) are picked up automatically.
+// (beyond primary/secondary) are picked up automatically. The
+// rate_limits_by_limit_id alias was removed: never observed in real
+// rollouts, and its assumed shape would misparse.
 type tokenCountPayload struct {
 	Type       string         `json:"type"`
 	RateLimits map[string]any `json:"rate_limits"`
-	// Codex builds have spelled the container both `rate_limits` and
-	// `rate_limits_by_limit_id`; the second alias keeps older payloads working.
-	RateLimitsByID map[string]any `json:"rate_limits_by_limit_id"`
 }
 
 func parseQuotaEvent(raw json.RawMessage, timestamp time.Time) (RelevantEvent, bool) {
@@ -161,18 +220,27 @@ func parseQuotaEvent(raw json.RawMessage, timestamp time.Time) (RelevantEvent, b
 	if json.Unmarshal(raw, &payload) != nil || payload.Type != "token_count" {
 		return RelevantEvent{}, false
 	}
-	snapshot := QuotaSnapshot{ObservedAt: timestamp, Windows: map[string]QuotaWindow{}}
-	mergeRateLimitMaps(snapshot.Windows, payload.RateLimits, timestamp)
-	mergeRateLimitMaps(snapshot.Windows, payload.RateLimitsByID, timestamp)
-	var envelope map[string]any
-	if json.Unmarshal(raw, &envelope) == nil {
-		if credits := quotaCreditsFromValue(envelope["credits"]); credits != nil {
-			snapshot.Credits = credits
-		} else if limits, ok := envelope["rate_limits"].(map[string]any); ok {
-			if credits := quotaCreditsFromValue(limits["credits"]); credits != nil {
-				snapshot.Credits = credits
-			}
+	if payload.RateLimits == nil {
+		// rate_limits:null is local bookkeeping emitted without a server
+		// round-trip. It must not refresh any space or timestamp.
+		return RelevantEvent{Kind: "token_count", Timestamp: timestamp}, true
+	}
+	spaceID := quotaSpaceID(payload.RateLimits)
+	space := &QuotaSpace{ObservedAt: timestamp, Windows: map[string]QuotaWindow{}}
+	mergeRateLimitMaps(space.Windows, payload.RateLimits, timestamp)
+	for key, window := range space.Windows {
+		if window.LimitID == "" {
+			window.LimitID = spaceID
+			space.Windows[key] = window
 		}
+	}
+	if credits := quotaCreditsFromValue(payload.RateLimits["credits"]); credits != nil {
+		space.Credits = credits
+	}
+	space.SpendControlReached = boolField(payload.RateLimits, "spend_control_reached", "spendControlReached")
+	snapshot := QuotaSnapshot{
+		ObservedAt: timestamp,
+		Spaces:     map[string]*QuotaSpace{spaceID: space},
 	}
 	return RelevantEvent{Kind: "token_count", Timestamp: timestamp, Quota: &snapshot}, true
 }
@@ -336,10 +404,63 @@ const (
 	bindingMissingReset                          // exhausted but no resets_at at all
 )
 
-// selectBindingWindow picks the exhausted window with the latest resets_at.
-// An exhausted window whose resets_at is absent → missing; present but outside
-// the sanity clamp → untrustworthy. Untrustworthy wins over missing so that
-// skewed clocks and parse bugs fail closed instead of silently retrying.
+// quota_exhausted_action values (ADR-0003): what a confirmed codex wall means
+// when the premium space reports spendable credits.
+const (
+	// quotaActionAuto (default) treats confirmed-usable credits as a false
+	// wall → bounded transient retry; otherwise wait for reset.
+	quotaActionAuto = "auto"
+	// quotaActionWaitForReset keeps credits as a reserve: always park.
+	quotaActionWaitForReset = "wait_for_reset"
+	// quotaActionUseCredits counts any readable credits block as spendable
+	// and ignores spend-control signals.
+	quotaActionUseCredits = "use_credits"
+)
+
+// creditsUsable reports whether the space's credits can carry traffic past an
+// exhausted codex wall: numeric balance > 0 or unlimited, and no spend
+// control reached. Indeterminate readings resolve toward the real wall.
+func creditsUsable(space *QuotaSpace) bool {
+	if space == nil || space.Credits == nil {
+		return false
+	}
+	if space.SpendControlReached {
+		return false
+	}
+	credits := space.Credits
+	if credits.Unlimited {
+		return true
+	}
+	balance, err := strconv.ParseFloat(strings.TrimSpace(credits.Balance), 64)
+	return err == nil && balance > 0
+}
+
+// codexWallBypassedByCredits decides whether an exhausted codex window is a
+// false wall under the configured quota_exhausted_action. Credits decide
+// whether the codex wall is real — they never independently block, and they
+// only apply to codex-space windows.
+func (d *daemon) codexWallBypassedByCredits(window QuotaWindow, snapshot *QuotaSnapshot) bool {
+	if window.LimitID != quotaCodexLimitID {
+		return false
+	}
+	premium := snapshot.Spaces["premium"]
+	switch d.config.QuotaExhaustedAction {
+	case quotaActionWaitForReset:
+		return false
+	case quotaActionUseCredits:
+		return premium != nil && premium.Credits != nil
+	default: // quotaActionAuto and any unrecognized value resolve conservatively
+		return creditsUsable(premium)
+	}
+}
+
+// selectBindingWindow picks the exhausted window with the latest resets_at
+// across all evidence spaces. Consumed notes are one-shot evidence: once a
+// window established a binding it is skipped, so stale notes cannot
+// re-convict a later failure. An exhausted window whose resets_at is absent
+// → missing; present but outside the sanity clamp → untrustworthy.
+// Untrustworthy wins over missing so that skewed clocks and parse bugs fail
+// closed instead of silently retrying.
 func selectBindingWindow(snapshot *QuotaSnapshot, now time.Time) (QuotaWindow, bindingSelection) {
 	if snapshot == nil {
 		return QuotaWindow{}, bindingNone
@@ -347,31 +468,78 @@ func selectBindingWindow(snapshot *QuotaSnapshot, now time.Time) (QuotaWindow, b
 	var best QuotaWindow
 	found := false
 	status := bindingNone
-	for _, window := range snapshot.Windows {
-		if !window.Exhausted() {
-			continue
-		}
-		if window.ResetsAt.IsZero() {
-			if status == bindingNone {
-				status = bindingMissingReset
+	for _, space := range snapshot.Spaces {
+		for _, window := range space.Windows {
+			if window.Consumed || !window.Exhausted() {
+				continue
 			}
-			continue
-		}
-		if !resetsAtTrustworthy(window, now) {
-			if status != bindingFound {
-				status = bindingUntrustworthy
+			if window.ResetsAt.IsZero() {
+				if status == bindingNone {
+					status = bindingMissingReset
+				}
+				continue
 			}
-			continue
-		}
-		if !found || window.ResetsAt.After(best.ResetsAt) {
-			best = window
-			found = true
+			if !resetsAtTrustworthy(window, now) {
+				if status != bindingFound {
+					status = bindingUntrustworthy
+				}
+				continue
+			}
+			if !found || window.ResetsAt.After(best.ResetsAt) {
+				best = window
+				found = true
+			}
 		}
 	}
 	if found {
 		return best, bindingFound
 	}
 	return QuotaWindow{}, status
+}
+
+// consumeWindowNoteLocked marks the note behind a fresh binding as consumed:
+// it established one Binding Window and cannot supply resets_at again. The
+// slot lookup tolerates an empty LimitID (migrated notes) by folding to codex.
+func (d *daemon) consumeWindowNoteLocked(window QuotaWindow) {
+	quota := d.state.Quota
+	if quota == nil || quota.Snapshot == nil {
+		return
+	}
+	spaceID := window.LimitID
+	if spaceID == "" {
+		spaceID = quotaCodexLimitID
+	}
+	space := quota.Snapshot.Spaces[spaceID]
+	if space == nil {
+		return
+	}
+	note, ok := space.Windows[window.Key]
+	if !ok || !note.ResetsAt.Equal(window.ResetsAt) {
+		return
+	}
+	note.Consumed = true
+	space.Windows[window.Key] = note
+}
+
+// discardBoundNoteLocked removes the consumed note behind a closing binding:
+// the board only holds live evidence; the audit trail lives in daemon logs.
+func (d *daemon) discardBoundNoteLocked() {
+	quota := d.state.Quota
+	if quota == nil || quota.Binding == nil || quota.Snapshot == nil {
+		return
+	}
+	spaceID := quota.Binding.Window.LimitID
+	if spaceID == "" {
+		spaceID = quotaCodexLimitID
+	}
+	space := quota.Snapshot.Spaces[spaceID]
+	if space == nil {
+		return
+	}
+	note, ok := space.Windows[quota.Binding.Window.Key]
+	if ok && note.Consumed && note.ResetsAt.Equal(quota.Binding.Window.ResetsAt) {
+		delete(space.Windows, quota.Binding.Window.Key)
+	}
 }
 
 func resetsAtTrustworthy(window QuotaWindow, now time.Time) bool {
@@ -405,33 +573,52 @@ func quotaCreditWallReason(errorText string) string {
 	}
 }
 
-// handleQuotaEventLocked keeps the newest token_count snapshot. Quota state
-// is per account, so only the timestamp decides freshness. Windows absent
-// from the newest payload carry forward: Codex stops reporting window objects
-// once a limit is exhausted (the payload collapses to credits + null
-// windows), which is exactly when classification needs the last exhausted
-// window. Carried entries expire once their resets_at is quotaResetPastLimit
-// in the past, the same staleness bound the binding clamp uses.
+// handleQuotaEventLocked merges a token_count event into the per-account
+// snapshot, one evidence space at a time: an event for limit_id X touches
+// only space X, so premium readings can never contaminate codex evidence.
+// Within a space the newest event wins and windows absent from the newest
+// payload carry forward: Codex stops reporting window objects once a limit
+// is exhausted (the payload collapses to credits + null windows), which is
+// exactly when classification needs the last exhausted window. Carried
+// entries expire once their resets_at is quotaResetPastLimit in the past,
+// the same staleness bound the binding clamp uses.
 func (d *daemon) handleQuotaEventLocked(event RelevantEvent) {
-	if event.Quota == nil {
+	if event.Quota == nil || len(event.Quota.Spaces) == 0 {
 		return
 	}
 	quota := d.quotaState()
-	if quota.Snapshot != nil && !event.Quota.ObservedAt.After(quota.Snapshot.ObservedAt) {
-		return
+	snapshot := quota.Snapshot
+	if snapshot == nil {
+		snapshot = &QuotaSnapshot{Spaces: map[string]*QuotaSpace{}}
+		quota.Snapshot = snapshot
 	}
-	if quota.Snapshot != nil {
-		for key, window := range quota.Snapshot.Windows {
-			if _, reported := event.Quota.Windows[key]; reported {
-				continue
-			}
-			if !window.ResetsAt.IsZero() && event.Quota.ObservedAt.Sub(window.ResetsAt) > quotaResetPastLimit {
-				continue
-			}
-			event.Quota.Windows[key] = window
+	if snapshot.Spaces == nil {
+		snapshot.Spaces = map[string]*QuotaSpace{}
+	}
+	for spaceID, incoming := range event.Quota.Spaces {
+		existing := snapshot.Spaces[spaceID]
+		if existing != nil && !incoming.ObservedAt.After(existing.ObservedAt) {
+			continue
 		}
+		if existing != nil {
+			for key, window := range existing.Windows {
+				if _, reported := incoming.Windows[key]; reported {
+					continue
+				}
+				if !window.ResetsAt.IsZero() && incoming.ObservedAt.Sub(window.ResetsAt) > quotaResetPastLimit {
+					continue
+				}
+				incoming.Windows[key] = window
+			}
+			if incoming.Credits == nil {
+				incoming.Credits = existing.Credits
+			}
+		}
+		snapshot.Spaces[spaceID] = incoming
 	}
-	quota.Snapshot = event.Quota
+	if event.Quota.ObservedAt.After(snapshot.ObservedAt) {
+		snapshot.ObservedAt = event.Quota.ObservedAt
+	}
 }
 
 // parkForQuotaLocked moves a failed thread into Waiting For Reset and binds
@@ -443,6 +630,9 @@ func (d *daemon) parkForQuotaLocked(item scannedEvent, key string, now time.Time
 		quota.Binding = &BindingWindow{Since: now}
 	}
 	quota.Binding.Window = window
+	// One-shot evidence: the note that established this binding is consumed
+	// so it can never supply a resets_at for a second conviction.
+	d.consumeWindowNoteLocked(window)
 	waitUntil := window.ResetsAt.Add(quotaGrace(d.config))
 	if thread.RecoveryAttempts == 0 && thread.ConsecutiveRetries == 0 {
 		thread.RecoveryStartedAt = now
@@ -606,6 +796,7 @@ func (d *daemon) escalateQuotaWindowLocked(now time.Time, reason string) {
 		d.stopThreadNeedsAttentionLocked(threadID, thread, wait.EventKey, wait.FailedTurnID, wait.FailedAt, wait.OriginTurnStartedAt, wait.Class, wait.CodexHome, wait.RolloutPath, now, reason)
 	}
 	if quota := d.state.Quota; quota != nil {
+		d.discardBoundNoteLocked()
 		quota.Binding = nil
 		quota.RelimitCount = 0
 	}
@@ -644,6 +835,9 @@ func (d *daemon) releaseQuotaFollowersLocked(now time.Time) {
 		d.state.Threads[threadID] = thread
 	}
 	if quota := d.state.Quota; quota != nil {
+		// Verified release: the consumed note is removed from its space — the
+		// board only holds live evidence; the audit trail lives in the log.
+		d.discardBoundNoteLocked()
 		quota.Binding = nil
 		// Verified progress cleared the wall: the re-limit cycle ends.
 		quota.RelimitCount = 0
@@ -665,11 +859,13 @@ func (d *daemon) verifyQuotaProbeLocked(threadID string, thread ThreadState, now
 	d.logger.Printf("quota probe verified thread=%s", shortThreadID(threadID))
 }
 
-// handleQuotaDispatchFailureLocked resolves a failed quota drain: a fresh
-// trustworthy window re-parks the whole queue on the new resets_at; a probe
-// that re-limits with nothing trustworthy left escalates the window; any
-// other outcome means the wall cleared and the failure rejoins the normal
-// transient chain with a fresh recovery budget.
+// handleQuotaDispatchFailureLocked resolves a failed quota drain. Evidence
+// is one-shot: the note that established the episode's binding was consumed
+// at park time, so a re-limit can only be re-scheduled by a *fresh* window
+// reported since. Connected turns always report readings, so a re-limit
+// with nothing trustworthy left means no readable schedule — the window
+// escalates to Needs Attention instead of re-parking on a consumed or
+// carried note. (ADR-0003.)
 func (d *daemon) handleQuotaDispatchFailureLocked(item scannedEvent, key string, now time.Time, thread ThreadState, wait QuotaWait, originTurnStartedAt time.Time, parentNotified bool) {
 	quota := d.quotaState()
 	wasProbe := quota.Binding != nil && quota.Binding.ProbeThreadID == item.ThreadID
@@ -691,6 +887,7 @@ func (d *daemon) handleQuotaDispatchFailureLocked(item scannedEvent, key string,
 			quota.Binding = &BindingWindow{Since: now}
 		}
 		quota.Binding.Window = binding
+		d.consumeWindowNoteLocked(binding)
 		if wasProbe {
 			quota.Binding.ProbeThreadID = ""
 		}
@@ -699,22 +896,14 @@ func (d *daemon) handleQuotaDispatchFailureLocked(item scannedEvent, key string,
 		d.rebindParkedLocked(binding, now)
 		d.reparkQuotaWaitLocked(item.ThreadID, thread, wait, binding, now)
 		return
-	case wasProbe || selection == bindingUntrustworthy:
-		// A probe re-limit without a fresh resets_at (or a clamp violation) is a
-		// wall with no readable schedule: fail closed on the whole window.
+	default:
+		// No unconsumed window can re-schedule this re-limit: the binding's
+		// note is spent and any carried copy is stale evidence. Probe and
+		// parked threads alike escalate — the wall is real but its schedule
+		// is unreadable.
 		d.stopThreadNeedsAttentionLocked(item.ThreadID, thread, wait.EventKey, wait.FailedTurnID, wait.FailedAt, wait.OriginTurnStartedAt, wait.Class, wait.CodexHome, wait.RolloutPath, now, stopReasonQuotaUntrustworthy)
 		d.escalateQuotaWindowLocked(now, stopReasonQuotaUntrustworthy)
 		return
-	default:
-		// The binding cleared without verification (probe never emitted
-		// progress). Release the rest of the queue and let this failure follow
-		// the ordinary transient chain with a fresh budget.
-		d.releaseQuotaFollowersLocked(now)
-		thread.RecoveryAttempts = 0
-		thread.ConsecutiveRetries = 0
-		thread.CurrentTurnProgress = false
-		thread.RecoveryStartedAt = now
-		d.scheduleFailureLocked(item, key, now, thread, 1, 1, originTurnStartedAt, parentNotified)
 	}
 }
 
@@ -732,6 +921,7 @@ func (d *daemon) pruneStaleBindingLocked() {
 			return
 		}
 	}
+	d.discardBoundNoteLocked()
 	quota.Binding = nil
 	quota.RelimitCount = 0
 	d.logger.Printf("quota binding cleared reason=no_parked_threads")
