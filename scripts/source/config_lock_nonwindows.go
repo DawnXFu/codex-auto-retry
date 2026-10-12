@@ -4,13 +4,12 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"syscall"
 	"time"
 )
 
 func acquireConfigFileLock(path string, timeout time.Duration) (*instanceLock, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := openLockFile(path)
 	if err != nil {
 		return nil, err
 	}

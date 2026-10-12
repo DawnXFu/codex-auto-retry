@@ -118,31 +118,45 @@ func main() {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return
 	}
-	if mode == "save-settings" {
-		if err := saveLocalSettings(dataDir, *settingsFileFlag); err != nil {
-			os.Exit(localSettingsExitCode(err))
-		}
-		return
+	switch mode {
+	case "save-settings":
+		runSaveSettingsCommand(dataDir, *settingsFileFlag)
+	case "control":
+		runControlCommand(dataDir, *actionFlag, *threadIDFlag)
+	case "mcp":
+		runMCPCommand(dataDir)
+	case "supervise":
+		runSuperviseCommand(dataDir, *noTrayFlag)
+	default:
+		runWatchdog(dataDir, *noTrayFlag, *supervisedFlag)
 	}
-	if mode == "control" {
-		if err := runLocalControl(dataDir, *actionFlag, *threadIDFlag); err != nil {
-			os.Exit(1)
-		}
-		return
-	}
-	if mode == "mcp" {
-		if err := runManagementMCP(dataDir); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, "Codex Auto Resume MCP server stopped:", err)
-		}
-		return
-	}
-	if mode == "supervise" {
-		if err := runSupervisor(dataDir, *noTrayFlag); err != nil {
-			os.Exit(1)
-		}
-		return
-	}
+}
 
+func runSaveSettingsCommand(dataDir, settingsPath string) {
+	if err := saveLocalSettings(dataDir, settingsPath); err != nil {
+		os.Exit(localSettingsExitCode(err))
+	}
+}
+
+func runControlCommand(dataDir, action, threadID string) {
+	if err := runLocalControl(dataDir, action, threadID); err != nil {
+		os.Exit(1)
+	}
+}
+
+func runMCPCommand(dataDir string) {
+	if err := runManagementMCP(dataDir); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "Codex Auto Resume MCP server stopped:", err)
+	}
+}
+
+func runSuperviseCommand(dataDir string, noTray bool) {
+	if err := runSupervisor(dataDir, noTray); err != nil {
+		os.Exit(1)
+	}
+}
+
+func runWatchdog(dataDir string, noTray, supervised bool) {
 	lock, err := acquireInstanceLock(filepath.Join(dataDir, "daemon.lock"))
 	if err != nil {
 		return
@@ -157,6 +171,24 @@ func main() {
 	logger.Printf("watchdog starting version=%s", appVersion)
 
 	configPath := filepath.Join(dataDir, "config.json")
+	config, ok := loadWatchdogConfig(logger, dataDir, configPath)
+	if !ok {
+		return
+	}
+	startup, ok := prepareSharedBackendStartup(logger, dataDir, configPath, config)
+	if !ok {
+		return
+	}
+	daemon, err := newDaemon(startup.config, dataDir, logger, startup.runner)
+	if err != nil {
+		logger.Printf("startup failed category=state")
+		return
+	}
+	startup.applyControllerState(daemon, logger)
+	runDaemon(daemon, startup.config, dataDir, logger, noTray, supervised)
+}
+
+func loadWatchdogConfig(logger *safeLogger, dataDir, configPath string) (Config, bool) {
 	config, err := loadOrCreateConfig(configPath)
 	if err != nil {
 		logger.Printf("startup failed category=config")
@@ -165,27 +197,42 @@ func main() {
 			logger.Printf("shared app-server startup cleanup failed category=config_fallback")
 		}
 		cleanupCancel()
-		return
+		return Config{}, false
 	}
 	if warning := config.retrySafetyWarning(); warning != "" {
 		logger.Printf("retry policy warning category=aggressive_limits recovery=%d consecutive=%d", config.MaxRecoveryAttempts, config.MaxConsecutiveRetries)
 	}
+	return config, true
+}
+
+// watchdogStartup carries the shared-backend startup gate results into daemon
+// construction: the possibly rewritten config, the prepared runner, and the
+// controller state the daemon should report.
+type watchdogStartup struct {
+	config                Config
+	runner                *appResumeRunner
+	prepareErr            error
+	prepareReason         string
+	startupFailOpenReason string
+}
+
+func prepareSharedBackendStartup(logger *safeLogger, dataDir, configPath string, config Config) (watchdogStartup, bool) {
+	startup := watchdogStartup{config: config}
 	// A previous fail-open may have been interrupted while config.json was
 	// locked. Resolve that durable marker before any readiness or Ensure call so
 	// an old enabled setting can never recreate a dead endpoint on this startup.
-	startupFailOpenReason := ""
 	if _, markerErr := os.Stat(filepath.Join(dataDir, sharedFailOpenMarkerName)); markerErr == nil {
-		startupFailOpenReason = "shared_app_server_startup_recovery"
+		startup.startupFailOpenReason = "shared_app_server_startup_recovery"
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		failOpenResult := completeStartupFailOpen(cleanupCtx, configPath, dataDir, config)
 		cleanupCancel()
 		config = failOpenResult.Config
 		if !failOpenResult.CanContinue {
-			logger.Printf("shared app-server startup fail-open remains incomplete category=%s", startupFailOpenReason)
-			return
+			logger.Printf("shared app-server startup fail-open remains incomplete category=%s", startup.startupFailOpenReason)
+			return startup, false
 		}
 		if failOpenResult.CleanupErr != nil {
-			logger.Printf("shared app-server startup cleanup remains deferred category=%s", startupFailOpenReason)
+			logger.Printf("shared app-server startup cleanup remains deferred category=%s", startup.startupFailOpenReason)
 		} else {
 			_ = os.Remove(filepath.Join(dataDir, sharedFailOpenMarkerName))
 		}
@@ -208,16 +255,16 @@ func main() {
 		startupResult := prepareSharedBackendAtStartup(startupCtx, configPath, dataDir, config)
 		startupCancel()
 		if startupResult.Reason != "" {
-			startupFailOpenReason = startupResult.Reason
+			startup.startupFailOpenReason = startupResult.Reason
 			config = startupResult.Config
 			if !startupResult.CanContinue {
-				logger.Printf("shared app-server startup fail-open remains incomplete category=%s", startupFailOpenReason)
-				return
+				logger.Printf("shared app-server startup fail-open remains incomplete category=%s", startup.startupFailOpenReason)
+				return startup, false
 			}
 			if startupResult.CleanupErr != nil {
-				logger.Printf("shared app-server startup fail-open cleanup failed category=%s", startupFailOpenReason)
+				logger.Printf("shared app-server startup fail-open cleanup failed category=%s", startup.startupFailOpenReason)
 			}
-			logger.Printf("shared app-server disabled after startup health failure category=%s", startupFailOpenReason)
+			logger.Printf("shared app-server disabled after startup health failure category=%s", startup.startupFailOpenReason)
 		}
 	}
 	runner := newAppResumeRunner(config, dataDir, logger)
@@ -228,42 +275,47 @@ func main() {
 	}
 	prepareReason := controllerFailureReason(DispatchResult{}, prepareErr)
 	if config.SharedAppServerEnabled && prepareErr != nil && controllerFailureNeedsFailOpen(prepareReason) {
-		startupFailOpenReason = prepareReason
+		startup.startupFailOpenReason = prepareReason
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		failOpenResult := completeStartupFailOpen(cleanupCtx, configPath, dataDir, config)
 		cleanupCancel()
 		config = failOpenResult.Config
 		if !failOpenResult.CanContinue {
 			logger.Printf("shared app-server fail-open remains incomplete category=%s", prepareReason)
-			return
+			return startup, false
 		}
 		if failOpenResult.CleanupErr != nil {
 			logger.Printf("shared app-server fail-open cleanup failed category=%s", prepareReason)
 		}
 		logger.Printf("shared app-server disabled after startup failure category=%s", prepareReason)
 	}
-	daemon, err := newDaemon(config, dataDir, logger, runner)
-	if err != nil {
-		logger.Printf("startup failed category=state")
-		return
-	}
-	if !config.SharedAppServerEnabled {
-		if startupFailOpenReason != "" {
-			daemon.controllerState = startupFailOpenReason
-			daemon.lastError = startupFailOpenReason
-			logger.Printf("shared app-server disabled; Codex remains on its official backend category=%s", startupFailOpenReason)
+	startup.config = config
+	startup.runner = runner
+	startup.prepareErr = prepareErr
+	startup.prepareReason = prepareReason
+	return startup, true
+}
+
+func (startup watchdogStartup) applyControllerState(daemon *daemon, logger *safeLogger) {
+	if !startup.config.SharedAppServerEnabled {
+		if startup.startupFailOpenReason != "" {
+			daemon.controllerState = startup.startupFailOpenReason
+			daemon.lastError = startup.startupFailOpenReason
+			logger.Printf("shared app-server disabled; Codex remains on its official backend category=%s", startup.startupFailOpenReason)
 		} else {
 			daemon.controllerState = "shared_app_server_disabled"
 			logger.Printf("shared app-server disabled; Codex remains on its official backend")
 		}
-	} else if prepareErr != nil {
-		daemon.lastError = prepareReason
+	} else if startup.prepareErr != nil {
+		daemon.lastError = startup.prepareReason
 		daemon.controllerState = daemon.lastError
 		logger.Printf("controller preparation failed category=%s", daemon.lastError)
 	} else {
 		daemon.controllerState = "ready"
 	}
+}
 
+func runDaemon(daemon *daemon, config Config, dataDir string, logger *safeLogger, noTray, supervised bool) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	memoryTriggered := make(chan memorySample, 1)
@@ -280,7 +332,7 @@ func main() {
 	)
 	go memoryGuard.Run(ctx)
 	trayDone := make(chan struct{})
-	if *noTrayFlag {
+	if noTray {
 		close(trayDone)
 	} else {
 		go func() {
@@ -291,7 +343,7 @@ func main() {
 		}()
 	}
 	_ = daemon.writeStatus(true)
-	err = daemon.run(ctx)
+	err := daemon.run(ctx)
 	cancel()
 	daemon.waitForJobs()
 	select {
@@ -307,7 +359,7 @@ func main() {
 		showMemoryLimitAlert(sample, config.MemoryLimitMB)
 	default:
 	}
-	if *supervisedFlag && (err == nil || errors.Is(err, errStopRequested)) {
+	if supervised && (err == nil || errors.Is(err, errStopRequested)) {
 		// A clean worker shutdown is intentional. Tell the supervisor not to
 		// bring it back; crashes and startup errors remain restartable.
 		_ = os.WriteFile(filepath.Join(dataDir, "supervisor.stop"), []byte("stop\n"), 0o600)

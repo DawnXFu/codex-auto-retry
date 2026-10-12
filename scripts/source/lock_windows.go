@@ -11,12 +11,12 @@ type instanceLock struct {
 	handle syscall.Handle
 }
 
-func acquireInstanceLock(path string) (*instanceLock, error) {
+func openExclusiveFile(path string) (syscall.Handle, error) {
 	pathPtr, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	handle, err := syscall.CreateFile(
+	return syscall.CreateFile(
 		pathPtr,
 		syscall.GENERIC_READ|syscall.GENERIC_WRITE,
 		0,
@@ -25,6 +25,10 @@ func acquireInstanceLock(path string) (*instanceLock, error) {
 		syscall.FILE_ATTRIBUTE_NORMAL,
 		0,
 	)
+}
+
+func acquireInstanceLock(path string) (*instanceLock, error) {
+	handle, err := openExclusiveFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("another watchdog instance is already running: %w", err)
 	}

@@ -219,7 +219,7 @@ func failOpenSharedAppServer(ctx context.Context, configPath, dataDir string, co
 	}
 	markerErr := writeSharedFailOpenMarker(markerPath, marker)
 	persistErr := withConfigFileLock(configPath, func() error {
-		latest, err := loadOrCreateConfigUnlocked(configPath)
+		latest, err := loadOrCreateConfigInsideLock(configPath)
 		if err != nil {
 			return err
 		}

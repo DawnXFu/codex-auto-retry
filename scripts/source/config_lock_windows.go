@@ -12,21 +12,9 @@ import (
 const configLockSharingViolation = syscall.Errno(32)
 
 func acquireConfigFileLock(path string, timeout time.Duration) (*instanceLock, error) {
-	pathPtr, err := syscall.UTF16PtrFromString(path)
-	if err != nil {
-		return nil, err
-	}
 	deadline := time.Now().Add(timeout)
 	for {
-		handle, openErr := syscall.CreateFile(
-			pathPtr,
-			syscall.GENERIC_READ|syscall.GENERIC_WRITE,
-			0,
-			nil,
-			syscall.OPEN_ALWAYS,
-			syscall.FILE_ATTRIBUTE_NORMAL,
-			0,
-		)
+		handle, openErr := openExclusiveFile(path)
 		if openErr == nil {
 			return &instanceLock{handle: handle}, nil
 		}

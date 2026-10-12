@@ -30,7 +30,7 @@ func withConfigFileLock(configPath string, fn func() error) error {
 func updateConfigFile(path string, mutate func(*Config) error) (Config, error) {
 	var config Config
 	err := withConfigFileLock(path, func() error {
-		loaded, err := loadOrCreateConfigUnlocked(path)
+		loaded, err := loadOrCreateConfigInsideLock(path)
 		if err != nil {
 			return err
 		}

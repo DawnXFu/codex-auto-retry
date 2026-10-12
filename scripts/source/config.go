@@ -98,13 +98,13 @@ func loadOrCreateConfig(path string) (Config, error) {
 	var config Config
 	err := withConfigFileLock(path, func() error {
 		var err error
-		config, err = loadOrCreateConfigUnlocked(path)
+		config, err = loadOrCreateConfigInsideLock(path)
 		return err
 	})
 	return config, err
 }
 
-func loadOrCreateConfigUnlocked(path string) (Config, error) {
+func loadOrCreateConfigInsideLock(path string) (Config, error) {
 	cfg := defaultConfig()
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

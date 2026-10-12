@@ -358,7 +358,7 @@ func TestCreditsBypassCodexWallUnderAuto(t *testing.T) {
 func TestWaitForResetAndSpendControlParkDespiteCredits(t *testing.T) {
 	now := time.Now().UTC()
 	resets := now.Add(90 * time.Minute)
-	newDaemon := func(action string, spendControl bool) *daemon {
+	newQuotaFixtureDaemon := func(action string, spendControl bool) *daemon {
 		d := newQuotaDaemon(t)
 		d.config.QuotaExhaustedAction = action
 		d.state.Quota = &QuotaState{Snapshot: &QuotaSnapshot{ObservedAt: now, Spaces: map[string]*QuotaSpace{
@@ -369,12 +369,12 @@ func TestWaitForResetAndSpendControlParkDespiteCredits(t *testing.T) {
 		}}}
 		return d
 	}
-	d := newDaemon(quotaActionWaitForReset, false)
+	d := newQuotaFixtureDaemon(quotaActionWaitForReset, false)
 	d.scheduleFailureLocked(quotaFailure("019f0000-0000-7000-8000-0000000000e5", "turn-a", now), "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
 	if d.state.Threads["019f0000-0000-7000-8000-0000000000e5"].QuotaWait == nil {
 		t.Fatal("wait_for_reset bypassed the wall on credit balance")
 	}
-	d = newDaemon(quotaActionAuto, true)
+	d = newQuotaFixtureDaemon(quotaActionAuto, true)
 	d.scheduleFailureLocked(quotaFailure("019f0000-0000-7000-8000-0000000000e6", "turn-a", now), "key-a", now, ThreadState{}, 1, 1, time.Time{}, false)
 	if d.state.Threads["019f0000-0000-7000-8000-0000000000e6"].QuotaWait == nil {
 		t.Fatal("auto bypassed the wall despite spend_control_reached")

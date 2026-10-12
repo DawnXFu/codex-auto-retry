@@ -640,7 +640,7 @@ func (a *trayApp) openSettings() {
 		arguments = append(arguments, "-SmokeTest")
 	}
 	command := exec.Command(powerShell, arguments...)
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 	if err := command.Start(); err != nil {
 		a.logger.Printf("settings open failed category=settings_start")
 		a.settingsFinished()
