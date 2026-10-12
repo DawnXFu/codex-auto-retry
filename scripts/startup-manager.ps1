@@ -29,36 +29,7 @@ $runSubKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
 
 function Open-RunKey {
     param([bool]$Writable)
-    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($runSubKey, $Writable)
-}
-
-function Get-RunValue {
-    $key = Open-RunKey -Writable $false
-    if ($null -eq $key) { return '' }
-    try {
-        $value = $key.GetValue($RunName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        if ($null -eq $value) { return '' }
-        return [string]$value
-    }
-    finally {
-        $key.Close()
-    }
-}
-
-function Test-OwnedStartupValue {
-    param([AllowNull()][string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-    $trimmed = $Value.Trim()
-    if ($trimmed.StartsWith('"')) {
-        $closingQuote = $trimmed.IndexOf('"', 1)
-        if ($closingQuote -le 1) { return $false }
-        $executable = $trimmed.Substring(1, $closingQuote - 1)
-    }
-    else {
-        $executable = ($trimmed -split '[\s\t]', 2)[0]
-    }
-    return [string]::Equals($executable, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($executable, $legacyWatchdog, [System.StringComparison]::OrdinalIgnoreCase)
+    return Open-CodexAutoRetryRunKey -Writable $Writable
 }
 
 function Restore-ManagedStartupValue {
@@ -85,8 +56,8 @@ function Set-ManagedStartup {
     if (-not (Test-Path -LiteralPath $watchdog -PathType Leaf)) {
         throw "The watchdog executable is missing: $watchdog"
     }
-    $existing = Get-RunValue
-    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing)) {
+    $existing = Get-RunValue -RunName $RunName
+    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing @($watchdog, $legacyWatchdog))) {
         throw "The startup entry $RunName belongs to another command and was not changed."
     }
     $oldApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
@@ -105,8 +76,8 @@ function Set-ManagedStartup {
             $key.Close()
         }
         $null = Set-CodexAutoRetryStartupApprovalEnabled -RunName $RunName
-        $actual = Get-RunValue
-        if (-not (Test-OwnedStartupValue $actual) -or $actual -notmatch '(?i)\bsupervise\b') {
+        $actual = Get-RunValue -RunName $RunName
+        if (-not (Test-OwnedStartupValue $actual @($watchdog, $legacyWatchdog)) -or $actual -notmatch '(?i)\bsupervise\b') {
             throw 'The startup entry could not be registered in supervised mode.'
         }
     }
@@ -115,7 +86,7 @@ function Set-ManagedStartup {
             # Restore only while the registry still contains the value this
             # operation wrote. A concurrent user or installer change is left
             # untouched and reported through the original failure.
-            if ((Get-RunValue) -eq $desiredValue) {
+            if ((Get-RunValue -RunName $RunName) -eq $desiredValue) {
                 $currentApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
                 $currentApprovalBytes = if ($currentApproval.Present) { [byte[]]$currentApproval.Bytes } else { $null }
                 $approvalWasOld = Test-CodexAutoRetryStartupApprovalBytes -Left $currentApprovalBytes -Right $(if ($oldApproval.Present) { [byte[]]$oldApproval.Bytes } else { $null })
@@ -143,8 +114,8 @@ function Set-ManagedStartup {
 }
 
 function Remove-ManagedStartup {
-    $existing = Get-RunValue
-    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing)) {
+    $existing = Get-RunValue -RunName $RunName
+    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing @($watchdog, $legacyWatchdog))) {
         throw "The startup entry $RunName belongs to another command and was not removed."
     }
     $oldApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
@@ -152,7 +123,7 @@ function Remove-ManagedStartup {
     try {
         # Re-read immediately before deletion so a concurrent installer or
         # user cannot replace the checked owned command with a foreign one.
-        $current = Get-RunValue
+        $current = Get-RunValue -RunName $RunName
         if ($current -ne $existing) {
             throw "The startup entry $RunName changed while it was being removed."
         }
@@ -163,7 +134,7 @@ function Remove-ManagedStartup {
                 finally { $key.Close() }
             }
         }
-        if (-not [string]::IsNullOrWhiteSpace((Get-RunValue))) {
+        if (-not [string]::IsNullOrWhiteSpace((Get-RunValue -RunName $RunName))) {
             throw 'The plugin startup entry is still present after removal.'
         }
         $removedApproval = Remove-CodexAutoRetryStartupApproval -RunName $RunName
@@ -173,7 +144,7 @@ function Remove-ManagedStartup {
         try {
             # Roll back only an unchanged post-delete state. Never overwrite a
             # foreign command that appeared while the removal was in flight.
-            $currentRunAfterFailure = Get-RunValue
+            $currentRunAfterFailure = Get-RunValue -RunName $RunName
             $currentApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
             $currentApprovalBytes = if ($currentApproval.Present) { [byte[]]$currentApproval.Bytes } else { $null }
             $approvalWasOld = Test-CodexAutoRetryStartupApprovalBytes -Left $currentApprovalBytes -Right $(if ($oldApproval.Present) { [byte[]]$oldApproval.Bytes } else { $null })
@@ -206,29 +177,6 @@ function Get-ManagerProcesses {
         })
 }
 
-function Test-HeartbeatFresh {
-    param(
-        [Parameter(Mandatory = $true)]$Value,
-        [TimeSpan]$MaxAge = ([TimeSpan]::FromSeconds(15))
-    )
-    try {
-        $timestamp = if ($Value -is [DateTime]) {
-            [DateTimeOffset]$Value
-        }
-        elseif ($Value -is [DateTimeOffset]) {
-            $Value
-        }
-        else {
-            [DateTimeOffset]::Parse([string]$Value)
-        }
-        $age = [DateTimeOffset]::UtcNow - $timestamp.ToUniversalTime()
-        return $age -ge [TimeSpan]::Zero -and $age -le $MaxAge
-    }
-    catch {
-        return $false
-    }
-}
-
 function Read-JsonOrNull {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
@@ -245,10 +193,10 @@ function Get-ManagerState {
     $processes = @(Get-ManagerProcesses)
     $heartbeatFresh = $false
     if ($status -and $status.last_scan_at) {
-        $heartbeatFresh = Test-HeartbeatFresh -Value $status.last_scan_at
+        $heartbeatFresh = Test-CodexAutoRetryHeartbeatFresh -Value $status.last_scan_at
     }
     $serviceRunning = $null -ne $status -and [bool]$status.running -and $heartbeatFresh -and $processes.Count -gt 0
-    $startupEntry = Get-RunValue
+    $startupEntry = Get-RunValue -RunName $RunName
     $startupApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
     $startupMode = if ([string]::IsNullOrWhiteSpace($startupEntry)) {
         'missing'
@@ -269,38 +217,26 @@ function Get-ManagerState {
     } else {
         Get-CodexAutoRetrySharedServerStatus -State $sharedState -ExpectedPort $expectedSharedPort
     }
-    $sharedStateStatus = [string]$sharedVerification.Status
     $endpoint = [Environment]::GetEnvironmentVariable('CODEX_APP_SERVER_WS_URL', 'User')
     $manifest = Read-JsonOrNull -Path (Join-Path $pluginTarget '.codex-plugin\plugin.json')
-    return [pscustomobject][ordered]@{
+    $extras = [ordered]@{
         PluginInstalled = $null -ne $manifest -and [string]$manifest.name -eq 'codex-auto-retry'
         PluginVersion = if ($manifest) { [string]$manifest.version } else { $null }
         InstallDir = $installDir
         ServiceRunning = $serviceRunning
         ProcessCount = $processes.Count
         ProcessIds = @($processes | ForEach-Object { [int]$_.ProcessId })
-        HeartbeatFresh = $heartbeatFresh
-        RuntimeVersion = if ($status) { [string]$status.version } else { $null }
-        LastScanAt = if ($status) { $status.last_scan_at } else { $null }
-        StartupMode = $startupMode
-        StartupEntry = if ([string]::IsNullOrWhiteSpace($startupEntry)) { $null } else { $startupEntry }
-        StartupOwned = Test-OwnedStartupValue $startupEntry
-        StartupApproved = $startupApproval.Status
+        StartupOwned = Test-OwnedStartupValue $startupEntry @($watchdog, $legacyWatchdog)
         SharedModeEnabled = if ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
         SharedModeRequested = if ($config -and $config.PSObject.Properties['shared_app_server_requested']) { [bool]$config.shared_app_server_requested } elseif ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
-        SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($endpoint)
-        DesktopLaunchMode = Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_launch_mode' -Default 'legacy_unprotected'
-        SafeLauncher = Join-Path $PSScriptRoot 'launch-codex.ps1'
-        SharedServerState = $sharedStateStatus
-        SharedServerVerification = [string]$sharedVerification.Reason
-        SharedAppServerMemoryUsageMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_usage_mb' -Default 0
-        SharedAppServerMemoryLimitMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_limit_mb' -Default $null
-        SharedAppServerMemoryGuardTriggered = [bool](Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_guard_triggered' -Default $false)
-        RetrySafetyWarning = [string](Get-CodexAutoRetryStatusProperty -Status $status -Name 'retry_safety_warning' -Default '')
-        StatusCompatibility = $statusCompatibility
-        StatusCompatibilityMessage = Get-CodexAutoRetryStatusCompatibilityMessage -Status $statusCompatibility
         DataDirectoryExists = Test-Path -LiteralPath $installDir -PathType Container
     }
+    return New-CodexAutoRetryStatusView -Status $status -HeartbeatFresh $heartbeatFresh `
+        -StartupMode $startupMode -StartupEntry $startupEntry `
+        -StartupApproved ([string]$startupApproval.Status) -SharedEndpoint $endpoint `
+        -SharedVerification $sharedVerification -StatusCompatibility $statusCompatibility `
+        -DesktopLaunchMode (Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_launch_mode' -Default 'legacy_unprotected') `
+        -SafeLauncher (Join-Path $PSScriptRoot 'launch-codex.ps1') -Extras $extras
 }
 
 function Wait-ManagerServiceState {
@@ -380,7 +316,7 @@ function Invoke-ManagerUninstall {
     return [pscustomobject][ordered]@{
         Uninstalled = $true
         DataRemoved = [bool]$RemoveData
-        StartupEntry = Get-RunValue
+        StartupEntry = Get-RunValue -RunName $RunName
         RuntimePathExists = Test-Path -LiteralPath $installDir -PathType Container
         PluginPathExists = Test-Path -LiteralPath $pluginTarget -PathType Container
     }

@@ -1,6 +1,3 @@
-[CmdletBinding()]
-param()
-
 Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'native-command.ps1')
 
@@ -27,6 +24,11 @@ function Resolve-SafeChildPath {
         throw "Path escapes its intended directory: $ChildPath"
     }
     return $candidate
+}
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host ('[Codex Auto Resume] ' + $Message)
 }
 
 function Write-Utf8NoBom {

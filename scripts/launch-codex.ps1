@@ -7,6 +7,7 @@ param(
     [int]$WaitForExitSeconds = 0
 )
 
+$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'shared-server-status.ps1')
 . (Join-Path $PSScriptRoot 'path-safety.ps1')

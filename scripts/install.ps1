@@ -25,38 +25,16 @@ $environmentName = 'CODEX_APP_SERVER_WS_URL'
 . (Join-Path $PSScriptRoot 'shared-server-status.ps1')
 [void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
-function Get-RunValue {
-    $property = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
-    if ($null -eq $property) { return $null }
-    return [string]$property.$runName
-}
-
-function Test-OwnedStartupValue {
-    param([AllowNull()][string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-    $trimmed = $Value.Trim()
-    if ($trimmed.StartsWith('"')) {
-        $closingQuote = $trimmed.IndexOf('"', 1)
-        if ($closingQuote -le 1) { return $false }
-        $executable = $trimmed.Substring(1, $closingQuote - 1)
-    }
-    else {
-        $executable = ($trimmed -split '[\s\t]', 2)[0]
-    }
-    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($executable, $legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
 function Set-SupervisedStartupEntry {
-    $existing = Get-RunValue
-    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing)) {
+    $existing = Get-RunValue -RunName $runName
+    if (-not [string]::IsNullOrWhiteSpace($existing) -and -not (Test-OwnedStartupValue $existing @($watchdogTarget, $legacyWatchdogTarget))) {
         throw 'The current-user startup entry belongs to another command and was not overwritten.'
     }
     $runRegistryKey = Open-CodexAutoRetryRunKey -Writable $true
     if ($null -eq $runRegistryKey) { throw 'The current-user startup registry key could not be opened.' }
     try { $runRegistryKey.SetValue($runName, ('"{0}" supervise' -f $watchdogTarget), [Microsoft.Win32.RegistryValueKind]::String) }
     finally { $runRegistryKey.Close() }
-    $value = Get-RunValue
+    $value = Get-RunValue -RunName $runName
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch '(?i)\bsupervise\b' -or
         $value -notmatch [regex]::Escape($watchdogTarget)) {
         throw 'The current-user startup entry was not migrated to supervised mode.'
@@ -96,12 +74,7 @@ function Stop-InstalledRuntime {
 
 function Test-CodexDesktopRunning {
     try {
-        $main = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-            ($_.Name -eq 'ChatGPT.exe' -or ($_.Name -eq 'Codex.exe' -and
-                $_.ExecutablePath -match '\\app\\Codex\.exe$')) -and
-            (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
-        })
-        return $main.Count -gt 0
+        return [bool](Test-CodexDesktopProcess)
     }
     catch {
         return $true
@@ -202,8 +175,8 @@ function Recover-IncompleteInstall {
     # An interrupted transaction may be resumed after the user has changed the
     # startup entry. Restore only an empty or plugin-owned value; preserve a
     # foreign command instead of replacing it during automatic recovery.
-    $currentRunValue = Get-RunValue
-    if ([string]::IsNullOrWhiteSpace($currentRunValue) -or (Test-OwnedStartupValue $currentRunValue)) {
+    $currentRunValue = Get-RunValue -RunName $runName
+    if ([string]::IsNullOrWhiteSpace($currentRunValue) -or (Test-OwnedStartupValue $currentRunValue @($watchdogTarget, $legacyWatchdogTarget))) {
         if ([bool]$journal.run_present) {
             $runRegistryKey = Open-CodexAutoRetryRunKey -Writable $true
             if ($null -eq $runRegistryKey) { throw 'The current-user startup registry key could not be opened while restoring the previous value.' }
@@ -317,7 +290,7 @@ if (Test-Path -LiteralPath $configPath -PathType Leaf) {
     try { $existingConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json } catch { }
 }
 if (Test-CodexDesktopRunning) {
-	throw 'Codex Desktop is using the shared backend. Close Codex completely before installing or upgrading the runtime.'
+    throw 'Codex Desktop is using the shared backend. Close Codex completely before installing or upgrading the runtime.'
 }
 
 $transactionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('codex-auto-retry-runtime-' + [guid]::NewGuid().ToString('N'))
@@ -346,7 +319,7 @@ $journalCleared = $false
 
 try {
     New-Item -ItemType Directory -Force -Path $installDir, $backupRoot | Out-Null
-    $oldRunValue = Get-RunValue
+    $oldRunValue = Get-RunValue -RunName $runName
     $oldStartupApproval = Get-CodexAutoRetryStartupApproval -RunName $runName
     $oldEnvironment = [Environment]::GetEnvironmentVariable($environmentName, 'User')
     $oldEnvironmentPresent = $null -ne $oldEnvironment
@@ -395,37 +368,37 @@ try {
             if ($pair[0] -eq $settingsTarget) { $oldSettings = $true }
         }
     }
-	$runtimeProcessesBefore = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-		Where-Object { $_.ExecutablePath -and (@($watchdogTarget, $legacyWatchdogTarget) -contains $_.ExecutablePath) })
-	$runtimeBackupFiles = [ordered]@{}
-	foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1', 'config.json', 'environment-backup.json', 'shared-server.json')) {
-		$source = Join-Path $installDir $name
-		$runtimeBackupFiles[$name] = Test-Path -LiteralPath $source -PathType Leaf
-		if ($runtimeBackupFiles[$name]) {
-			Copy-Item -LiteralPath $source -Destination (Join-Path $backupRoot $name) -Force
-		}
-	}
-	$journal = [pscustomobject][ordered]@{
-		schema_version = 1
-		transaction_id = [guid]::NewGuid().ToString('N')
-		phase = 'prepared'
-		transaction_root = $transactionRoot
-		files = [pscustomobject]$runtimeBackupFiles
-		run_present = -not [string]::IsNullOrWhiteSpace([string]$oldRunValue)
+    $runtimeProcessesBefore = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and (@($watchdogTarget, $legacyWatchdogTarget) -contains $_.ExecutablePath) })
+    $runtimeBackupFiles = [ordered]@{}
+    foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1', 'config.json', 'environment-backup.json', 'shared-server.json')) {
+        $source = Join-Path $installDir $name
+        $runtimeBackupFiles[$name] = Test-Path -LiteralPath $source -PathType Leaf
+        if ($runtimeBackupFiles[$name]) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $backupRoot $name) -Force
+        }
+    }
+    $journal = [pscustomobject][ordered]@{
+        schema_version = 1
+        transaction_id = [guid]::NewGuid().ToString('N')
+        phase = 'prepared'
+        transaction_root = $transactionRoot
+        files = [pscustomobject]$runtimeBackupFiles
+        run_present = -not [string]::IsNullOrWhiteSpace([string]$oldRunValue)
         run_value = [string]$oldRunValue
         startup_approval_present = [bool]$oldStartupApproval.Present
         startup_approval_value = if ($oldStartupApproval.Present) { [Convert]::ToBase64String([byte[]]$oldStartupApproval.Bytes) } else { '' }
-		environment_present = $oldEnvironmentPresent
-		environment_value = if ($oldEnvironmentPresent) { [string]$oldEnvironment } else { '' }
-		shared_enabled = if ($existingConfig) { [bool]$existingConfig.shared_app_server_enabled } else { $false }
-		watchdog_was_running = $runtimeProcessesBefore.Count -gt 0
-		created_at = [DateTime]::UtcNow.ToString('o')
-	}
-	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
+        environment_present = $oldEnvironmentPresent
+        environment_value = if ($oldEnvironmentPresent) { [string]$oldEnvironment } else { '' }
+        shared_enabled = if ($existingConfig) { [bool]$existingConfig.shared_app_server_enabled } else { $false }
+        watchdog_was_running = $runtimeProcessesBefore.Count -gt 0
+        created_at = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
 
     Stop-InstalledRuntime
-	$journal.phase = 'runtime_stopped'
-	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
+    $journal.phase = 'runtime_stopped'
+    Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     # Migration is mandatory even when the shared service remains enabled.
     # Desktop routing is now inherited only from the explicit safe launcher.
     $environmentMigration = Restore-CodexAutoRetrySharedEnvironment -DataDir $installDir -LegacyOwnedEndpoint $legacyOwnedEndpoint
@@ -440,15 +413,15 @@ try {
         (Get-FileHash -LiteralPath $mcpSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidateMcp -Algorithm SHA256).Hash) {
         throw 'Candidate binary verification failed.'
     }
-	$journal.phase = 'candidate_verified'
-	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
+    $journal.phase = 'candidate_verified'
+    Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     Copy-Item -LiteralPath $candidateWatchdog -Destination $watchdogTarget -Force
     Copy-Item -LiteralPath $candidateMcp -Destination $mcpTarget -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\ui\settings.ps1') -Destination $settingsTarget -Force
     Remove-Item -LiteralPath $legacyWatchdogTarget -Force -ErrorAction SilentlyContinue
     Set-SupervisedStartupEntry
-	$journal.phase = 'startup_registered'
-	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
+    $journal.phase = 'startup_registered'
+    Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
 
     Set-ConfigSharedMode ([bool]$EnableSharedAppServer)
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
@@ -458,8 +431,8 @@ try {
     $status = Wait-Heartbeat -ProcessId $startedProcess.Id -RequireSharedReady:$EnableSharedAppServer -ProcessIsSupervisor
 
     $installationSucceeded = $true
-	$journal.phase = 'committed'
-	Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
+    $journal.phase = 'committed'
+    Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     [pscustomobject]@{
         Installed = $true
         Running = $status.running
@@ -489,7 +462,7 @@ catch {
         # Restore startup state only when the entry still contains the value
         # written by this transaction. A concurrent user or installer change
         # is preserved instead of being overwritten during rollback.
-        $currentRunAfterFailure = Get-RunValue
+        $currentRunAfterFailure = Get-RunValue -RunName $runName
         if ($currentRunAfterFailure -eq $desiredRunValue) {
             $currentApprovalAfterFailure = Get-CodexAutoRetryStartupApproval -RunName $runName
             [byte[]]$expectedApprovalBytes = @(Get-CodexAutoRetryStartupApprovalEnabledBytes -ExistingBytes $(if ($oldStartupApproval -and $oldStartupApproval.Present) { [byte[]]$oldStartupApproval.Bytes } else { $null }))
@@ -534,13 +507,13 @@ catch {
         if ($oldSharedStateExisted) { [System.IO.File]::WriteAllBytes($sharedStatePath, $oldSharedStateBytes) }
         else { Remove-Item -LiteralPath $sharedStatePath -Force -ErrorAction SilentlyContinue }
         Restore-SafeInstallRouting
-		if (Test-Path -LiteralPath $installJournalPath -PathType Leaf) {
-			$rollbackJournal = Get-Content -Raw -Encoding UTF8 -LiteralPath $installJournalPath | ConvertFrom-Json
-			$rollbackJournal.phase = 'rolled_back'
-			Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $rollbackJournal
-			Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
-			$journalCleared = $true
-		}
+        if (Test-Path -LiteralPath $installJournalPath -PathType Leaf) {
+            $rollbackJournal = Get-Content -Raw -Encoding UTF8 -LiteralPath $installJournalPath | ConvertFrom-Json
+            $rollbackJournal.phase = 'rolled_back'
+            Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $rollbackJournal
+            Remove-Item -LiteralPath $installJournalPath -Force -ErrorAction SilentlyContinue
+            $journalCleared = $true
+        }
     }
     catch { Write-Warning 'Automatic runtime rollback was incomplete; user task data was not deleted.' }
     throw $failure

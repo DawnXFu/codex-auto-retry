@@ -20,6 +20,43 @@ function Open-CodexAutoRetryRunKey {
     return $key
 }
 
+function Get-RunValue {
+    param([string]$RunName = 'CodexAutoRetry')
+
+    $key = Open-CodexAutoRetryRunKey -Writable $false
+    if ($null -eq $key) { return '' }
+    try {
+        $value = $key.GetValue($RunName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -eq $value) { return '' }
+        return [string]$value
+    }
+    finally {
+        $key.Close()
+    }
+}
+
+function Test-OwnedStartupValue {
+    param(
+        [AllowNull()][string]$RunValue,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedPaths
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RunValue)) { return $false }
+    $trimmed = $RunValue.Trim()
+    if ($trimmed.StartsWith('"')) {
+        $closingQuote = $trimmed.IndexOf('"', 1)
+        if ($closingQuote -le 1) { return $false }
+        $executable = $trimmed.Substring(1, $closingQuote - 1)
+    }
+    else {
+        $executable = ($trimmed -split '[\s\t]', 2)[0]
+    }
+    foreach ($expected in $ExpectedPaths) {
+        if ([string]::Equals($executable, $expected, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function Open-CodexAutoRetryStartupApprovedKey {
     param([bool]$Writable)
     return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(

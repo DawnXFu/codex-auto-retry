@@ -21,25 +21,9 @@ if (Test-Path -LiteralPath $installDir -PathType Container) {
     [void](Assert-CodexAutoRetryHostPath -Path $installDir)
 }
 
-function Test-OwnedStartupValue {
-    param([AllowNull()][string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-    $trimmed = $Value.Trim()
-    if ($trimmed.StartsWith('"')) {
-        $closingQuote = $trimmed.IndexOf('"', 1)
-        if ($closingQuote -le 1) { return $false }
-        $executable = $trimmed.Substring(1, $closingQuote - 1)
-    }
-    else {
-        $executable = ($trimmed -split '[\s\t]', 2)[0]
-    }
-    return [string]::Equals($executable, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($executable, $legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
 $runProperty = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
 $runValue = if ($null -eq $runProperty) { '' } else { [string]$runProperty.$runName }
-if (-not [string]::IsNullOrWhiteSpace($runValue) -and -not (Test-OwnedStartupValue $runValue)) {
+if (-not [string]::IsNullOrWhiteSpace($runValue) -and -not (Test-OwnedStartupValue $runValue @($watchdogTarget, $legacyWatchdogTarget))) {
     throw 'The current-user startup entry belongs to another command and was not removed.'
 }
 $stateEndpoint = $null
@@ -52,14 +36,9 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
         }
     } catch { }
 }
-$legacyOwnedEndpoint = @()
-if ($stateEndpoint) { $legacyOwnedEndpoint += $stateEndpoint }
-if (-not $legacyOwnedEndpoint -and ($runValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-    $runValue.IndexOf($legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)) {
-    $legacyPort = Get-CodexAutoRetrySharedAppServerPort -ConfigPath (Join-Path $installDir 'config.json')
-    $legacyOwnedEndpoint += 'ws://127.0.0.1:' + $legacyPort
-    $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
-}
+$runValueOwned = $runValue.IndexOf($watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+    $runValue.IndexOf($legacyWatchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+$legacyOwnedEndpoint = @(Resolve-CodexAutoRetryLegacyEndpoint -DataDir $installDir -StateEndpoint $stateEndpoint -RunValueOwned $runValueOwned)
 
 # Persist fail-open before tearing down the route. This also protects a later
 # startup if the uninstaller is interrupted after stopping the worker.

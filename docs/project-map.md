@@ -24,6 +24,7 @@
 | `scripts/uninstall.ps1` | Stops watchdog/MCP/settings processes, restores the prior shared-server environment, removes startup registration and its matching approval marker, and optionally preserves runtime data. |
 | `scripts/safe-disable.ps1` | Independent break-glass cleanup for plugin-owned processes, startup and its matching approval marker, and endpoint; persists shared mode disabled and never removes chat data or user-owned `CODEX_API_KEY`. |
 | `docs/shared-backend-safety.md` | Operational contract for fail-open startup, supervised migration, opt-in shared mode, transactional rollback, emergency disable, and stale-backend diagnostics. |
+| `docs/api/management-tools.md`, `docs/api/runtime-files.md` | External contract: the eight MCP management tools, the management panel resource, and the versioned runtime file protocol; locked by `scripts/source/mcp_contract_test.go` and `testdata/mcp_tools.golden.json`. |
 | `scripts/environment.ps1` | Shared current-user environment ownership, explicit registry-value removal, backup/restore, Windows change broadcast, and safe unused-server cleanup. |
 | `scripts/build.ps1` | Type-checks and bundles the embedded panel, formats and tests Go, and builds both Windows executables with the GUI subsystem. |
 | `scripts/build-release.ps1` | Builds a self-contained Windows x64 ZIP with one-click install/uninstall launchers and SHA-256 manifests. |
@@ -37,6 +38,7 @@
 | `scripts/smoke-test.ps1` | Runs the isolated shared-server and environment-ownership smoke tests. |
 | `scripts/supervisor-smoke-test.ps1` | Starts the sign-in supervisor, kills only the worker to prove bounded restart, then verifies an intentional stop is honored. |
 | `scripts/status-smoke-test.ps1` | Verifies the installed watchdog process and UTC heartbeat are reported as fresh, including on non-UTC Windows time zones. |
+| `scripts/smoke-test-helpers.ps1` | Shared Codex CLI binary locator dot-sourced by the protocol and shared-app-server smoke tests. |
 | `scripts/shared-app-server-smoke-test.ps1` | Uses a real isolated Codex WebSocket app-server, two clients, and a local fake provider to prove Desktop-visible same-task recovery without a visible user message. |
 | `scripts/shared-server-status-smoke-test.ps1` | Proves missing, unowned, and dead owned records are not reported as a live shared backend. |
 | `scripts/environment-smoke-test.ps1` | Proves safe environment ownership, idempotent endpoint updates, restoration, and conflict refusal through a random test-only user variable. |
@@ -45,7 +47,7 @@
 | `release/windows/deploy.ps1` | One-click deployment engine: validates the package, writes the direct background MCP launcher, safely updates the personal marketplace, registers the plugin, installs the runtime, and verifies the result. |
 | `release/windows/uninstall-release.ps1` | Removes Codex registration, startup, and installed source while preserving runtime data unless full removal is explicitly requested. |
 | `release/windows/common.ps1` | Shared path-safety, JSON, executable validation, and Codex CLI discovery helpers for release deployment. |
-| `release/windows/安装.cmd`, `release/windows/卸载.cmd`, `release/windows/启动管理器.cmd`, `release/windows/启动管理器.vbs`, `release/windows/安全停用.cmd` | Double-click entry points for installation, clean removal, startup management, and break-glass shared-backend disable; the VBS helper starts the graphical manager without a console. |
+| `release/windows/安装.cmd`, `release/windows/卸载.cmd`, `release/windows/启动管理器.cmd`, `release/windows/startup-manager.vbs`, `release/windows/安全停用.cmd` | Double-click entry points for installation, clean removal, startup management, and break-glass shared-backend disable; the VBS helper starts the graphical manager without a console. |
 
 ## Watchdog Source
 
@@ -56,7 +58,10 @@ Source code lives under `scripts/source`.
 | `main.go` | Process startup, supervised worker shutdown signaling, singleton acquisition, local settings/control commands, and top-level wiring. |
 | `environment_isolation_windows_test.go` | Redirects all Go test routing registry operations to a unique test-only name so even an interrupted suite cannot modify live Desktop routing. |
 | `supervisor.go` | Stable sign-in supervisor, bounded worker restart backoff, intentional-stop marker handling, shared-backend lifecycle ownership across worker restarts, and privacy-safe lifecycle logging. |
-| `daemon.go` | Scan loop, bounded parallel dispatch, generic controller lifecycle, acknowledgement timeouts, and status publication. |
+| `daemon.go` | Scan loop, acknowledgement timeouts, memory guard glue, and status publication. |
+| `daemon_dispatch.go` | Due-job collection, bounded parallel dispatch, dispatch result application, and controller-failure classification. |
+| `daemon_awaiting.go` | Awaiting-retry lifecycle reconciliation: start confirmation, inactive advancement, rescheduling, and controller-state stops. |
+| `daemon_shared.go` | Shared-backend health reconciliation, restart readiness, and fail-open cleanup across the worker lifecycle. |
 | `retry_state.go` | Generic retry transitions, dual attempt limits, visible-progress resets, startup reconciliation, later external-turn attribution, and management command application. |
 | `goal_recovery.go` | Goal lifecycle holds, native-turn adoption, stale-update protection, bounded post-limit goal blocking, and goal-specific controller reconciliation. |
 | `subagent_recovery.go` | Durable acknowledgement of deterministic parent recovery events for the exact existing child. |
@@ -67,7 +72,9 @@ Source code lives under `scripts/source`.
 | `process_windows.go` | Windows process-liveness verification, Codex Desktop detection, hidden inherited-console attributes, and owned process-tree cleanup. |
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, parent-to-child recovery-event routing, rollout paths, and mirrored-session detection. |
 | `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, token_count quota events, and the plugin's fixed subagent recovery event. |
-| `quota.go` | Reset-aware quota recovery: token_count rate-limit parsing, Binding Window selection with the resets_at clamp, Waiting For Reset parking, probe-first drain, suspension helpers, and terminal Needs Attention walls. |
+| `quota.go` | Reset-aware quota recovery state machine: Waiting For Reset parking, probe-first drain, suspension helpers, and terminal Needs Attention walls. |
+| `quota_types.go` | Quota domain types: QuotaWindow/QuotaCredits/QuotaSpace, QuotaSnapshot JSON shape, BindingWindow, QuotaState, QuotaWait, and quota constants. |
+| `quota_parse.go` | Pure quota parsing and selection helpers: token_count payload parsing, field coercion, Binding Window selection, and credit-wall keyword checks. |
 | `classifier.go` | Provider-independent retry decisions, empty-response classification, bounded no-reset rate-limit fallback, and limited authentication budgets. |
 | `runner.go` | Controller result validation, privacy-safe failure codes, runtime shared-backend fail-open handling, PowerShell discovery support, and retry backoff. |
 | `resume_settings.go` | Reverse lookup, exact-thread rollout discovery, and allowlisted validation of the latest per-task context and applied thread settings used during resume. |

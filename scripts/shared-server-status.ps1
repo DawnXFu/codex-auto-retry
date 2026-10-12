@@ -145,3 +145,85 @@ function Get-CodexAutoRetrySharedServerStatus {
         return [pscustomobject][ordered]@{ Status = 'unknown'; Reason = 'verification_failed'; PID = $null; Endpoint = $null }
     }
 }
+
+function Test-CodexAutoRetryHeartbeatFresh {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [TimeSpan]$MaxAge = ([TimeSpan]::FromSeconds(15))
+    )
+    try {
+        # ConvertFrom-Json materializes ISO timestamps as DateTime values. Cast
+        # those directly so a UTC Kind is preserved; stringifying first loses
+        # the trailing Z and can add the local timezone offset a second time.
+        $timestamp = if ($Value -is [DateTime]) {
+            [DateTimeOffset]$Value
+        }
+        elseif ($Value -is [DateTimeOffset]) {
+            $Value
+        }
+        else {
+            [DateTimeOffset]::Parse([string]$Value)
+        }
+        $age = [DateTimeOffset]::UtcNow - $timestamp.ToUniversalTime()
+        return $age -ge [TimeSpan]::Zero -and $age -le $MaxAge
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-CodexDesktopProcess {
+    # A bounded query is required: an unbounded Win32_Process enumeration can
+    # stall the close gate. Throws when the process inventory cannot be read;
+    # callers decide whether an unknown state blocks or permits their work.
+    $main = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 -ErrorAction Stop | Where-Object {
+        ($_.Name -eq 'ChatGPT.exe' -or ($_.Name -eq 'Codex.exe' -and
+            $_.ExecutablePath -match '\\app\\Codex\.exe$')) -and
+        (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
+    })
+    return $main.Count -gt 0
+}
+
+function New-CodexAutoRetryStatusView {
+    # Base fields shared by scripts\status.ps1 and scripts\startup-manager.ps1.
+    # Caller-specific fields are appended in order through -Extras.
+    param(
+        $Status,
+        [bool]$HeartbeatFresh,
+        [AllowNull()][string]$StartupMode,
+        [AllowNull()][string]$StartupEntry,
+        [AllowNull()][string]$StartupApproved,
+        [AllowNull()][string]$SharedEndpoint,
+        [AllowNull()][object]$SharedVerification,
+        [AllowNull()][string]$StatusCompatibility,
+        [AllowNull()][string]$DesktopLaunchMode,
+        [AllowNull()][string]$SafeLauncher,
+        [AllowNull()][System.Collections.Specialized.OrderedDictionary]$Extras
+    )
+
+    $view = [pscustomobject][ordered]@{
+        HeartbeatFresh = $HeartbeatFresh
+        RuntimeVersion = if ($Status) { [string]$Status.version } else { $null }
+        LastScanAt = if ($Status) { $Status.last_scan_at } else { $null }
+        StartupMode = $StartupMode
+        StartupEntry = if ([string]::IsNullOrWhiteSpace($StartupEntry)) { $null } else { $StartupEntry }
+        StartupApproved = $StartupApproved
+        SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($SharedEndpoint)
+        DesktopLaunchMode = $DesktopLaunchMode
+        SafeLauncher = $SafeLauncher
+        SharedServerState = if ($SharedVerification) { [string]$SharedVerification.Status } else { $null }
+        SharedServerVerification = if ($SharedVerification) { [string]$SharedVerification.Reason } else { $null }
+        SharedAppServerMemoryUsageMB = Get-CodexAutoRetryStatusProperty -Status $Status -Name 'shared_app_server_memory_usage_mb' -Default 0
+        SharedAppServerMemoryLimitMB = Get-CodexAutoRetryStatusProperty -Status $Status -Name 'shared_app_server_memory_limit_mb' -Default $null
+        SharedAppServerMemoryGuardTriggered = [bool](Get-CodexAutoRetryStatusProperty -Status $Status -Name 'shared_app_server_memory_guard_triggered' -Default $false)
+        RetrySafetyWarning = [string](Get-CodexAutoRetryStatusProperty -Status $Status -Name 'retry_safety_warning' -Default '')
+        StatusCompatibility = $StatusCompatibility
+        StatusCompatibilityMessage = Get-CodexAutoRetryStatusCompatibilityMessage -Status $StatusCompatibility
+    }
+    if ($Extras) {
+        foreach ($key in $Extras.Keys) {
+            $view | Add-Member -NotePropertyName ([string]$key) -NotePropertyValue $Extras[$key]
+        }
+    }
+    return $view
+}

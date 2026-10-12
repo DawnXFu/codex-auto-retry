@@ -1,11 +1,14 @@
+$sharedStatusHelper = Join-Path $PSScriptRoot 'payload\codex-auto-retry\scripts\shared-server-status.ps1'
+if (-not (Test-Path -LiteralPath $sharedStatusHelper -PathType Leaf)) {
+    # Also support launching from the plugin payload beside this script.
+    $sharedStatusHelper = Join-Path $PSScriptRoot '..\..\scripts\shared-server-status.ps1'
+}
+if (-not (Test-Path -LiteralPath $sharedStatusHelper -PathType Leaf)) { throw "The packaged status helper is missing: $sharedStatusHelper" }
+. $sharedStatusHelper
+
 function Get-InstallerDesktopState {
     try {
-        $main = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5 -ErrorAction Stop | Where-Object {
-            ($_.Name -eq 'ChatGPT.exe' -or ($_.Name -eq 'Codex.exe' -and
-                $_.ExecutablePath -match '\\app\\Codex\.exe$')) -and
-            (-not $_.CommandLine -or $_.CommandLine -notmatch '(?:^|\s)--type=')
-        })
-        if ($main.Count -gt 0) { return 'running' }
+        if (Test-CodexDesktopProcess) { return 'running' }
         return 'closed'
     }
     catch {

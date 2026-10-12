@@ -12,11 +12,6 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-function Write-Step {
-    param([string]$Message)
-    Write-Host ('[Codex Auto Resume] ' + $Message)
-}
-
 function Test-PluginInstalled {
     param([string]$Cli, [string]$PluginId)
 
@@ -46,11 +41,21 @@ $pluginParent = Resolve-SafeChildPath -BasePath $profileRootPath -ChildPath 'plu
 $pluginTarget = Resolve-SafeChildPath -BasePath $pluginParent -ChildPath 'codex-auto-retry'
 $marketplacePath = Resolve-SafeChildPath -BasePath $profileRootPath -ChildPath '.agents\plugins\marketplace.json'
 $runtimePath = Resolve-SafeChildPath -BasePath $localAppDataPath -ChildPath 'CodexAutoRetry'
-$startupApprovalScript = Join-Path $pluginTarget 'scripts\startup-approval.ps1'
+$startupApprovalScript = Join-Path $PSScriptRoot 'payload\codex-auto-retry\scripts\startup-approval.ps1'
 if (-not (Test-Path -LiteralPath $startupApprovalScript -PathType Leaf)) {
-    $startupApprovalScript = Join-Path $PSScriptRoot 'payload\codex-auto-retry\scripts\startup-approval.ps1'
+    # Also support uninstalling from the source tree beside this release script.
+    $startupApprovalScript = Join-Path $PSScriptRoot '..\..\scripts\startup-approval.ps1'
+}
+if (-not (Test-Path -LiteralPath $startupApprovalScript -PathType Leaf)) {
+    # Last resort: the copy bundled with the installed plugin.
+    $startupApprovalScript = Join-Path $pluginTarget 'scripts\startup-approval.ps1'
 }
 if (Test-Path -LiteralPath $startupApprovalScript -PathType Leaf) { . $startupApprovalScript }
+
+$runtimeWatchdogPaths = @(
+    (Join-Path $runtimePath 'codex-auto-resume.exe'),
+    (Join-Path $runtimePath 'codex-auto-retry.exe')
+)
 
 $startupApprovedRunSubKey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
 
@@ -88,25 +93,10 @@ if ($marketplaceName -notmatch '^[A-Za-z0-9._-]+$') {
 }
 $pluginId = 'codex-auto-retry@' + $marketplaceName
 
-function Test-OwnedStartupValue {
-    param([AllowNull()][string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-    $trimmed = $Value.Trim()
-    if ($trimmed.StartsWith('"')) {
-        $closingQuote = $trimmed.IndexOf('"', 1)
-        if ($closingQuote -le 1) { return $false }
-        $executable = $trimmed.Substring(1, $closingQuote - 1)
-    }
-    else {
-        $executable = ($trimmed -split '[\s\t]', 2)[0]
-    }
-    return [string]::Equals($executable, (Join-Path $runtimePath 'codex-auto-resume.exe'), [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($executable, (Join-Path $runtimePath 'codex-auto-retry.exe'), [System.StringComparison]::OrdinalIgnoreCase)
-}
 
 $startupProperty = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
 $startupValue = if ($null -eq $startupProperty) { '' } else { [string]$startupProperty.CodexAutoRetry }
-if (-not [string]::IsNullOrWhiteSpace([string]$startupValue) -and -not (Test-OwnedStartupValue ([string]$startupValue))) {
+if (-not [string]::IsNullOrWhiteSpace([string]$startupValue) -and -not (Test-OwnedStartupValue ([string]$startupValue) $runtimeWatchdogPaths)) {
     throw 'The current-user startup entry belongs to another command and was not removed.'
 }
 
@@ -149,7 +139,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "The watchdog uninstaller failed with exit code $LASTEXITCODE." }
     }
     else {
-        if ([string]::IsNullOrWhiteSpace([string]$startupValue) -or (Test-OwnedStartupValue ([string]$startupValue))) {
+        if ([string]::IsNullOrWhiteSpace([string]$startupValue) -or (Test-OwnedStartupValue ([string]$startupValue) $runtimeWatchdogPaths)) {
             Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'CodexAutoRetry' -ErrorAction SilentlyContinue
         }
         if ($RemoveData -and (Test-Path -LiteralPath $runtimePath -PathType Container)) {

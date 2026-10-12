@@ -6,15 +6,7 @@ $testRoot = Join-Path $env:TEMP ("codex-auto-retry-protocol-" + [guid]::NewGuid(
 $testHome = Join-Path $testRoot 'codex-home'
 $process = $null
 
-function Find-CodexBinary {
-    $npmRoot = Join-Path $env:APPDATA 'npm\node_modules\@openai\codex'
-    if (Test-Path -LiteralPath $npmRoot) {
-        $candidate = Get-ChildItem -LiteralPath $npmRoot -Recurse -Filter 'codex.exe' -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($candidate) { return $candidate.FullName }
-    }
-    throw 'The standalone Codex CLI binary was not found for the isolated protocol test.'
-}
+. (Join-Path $PSScriptRoot 'smoke-test-helpers.ps1')
 
 function Start-AppServer {
     param([string]$CodexBinary, [string]$CodexHome)

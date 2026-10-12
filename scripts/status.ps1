@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param()
 
+$ErrorActionPreference = 'Stop'
+
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
 $watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
@@ -12,32 +14,6 @@ $sharedStatePath = Join-Path $installDir 'shared-server.json'
 . (Join-Path $PSScriptRoot 'shared-server-status.ps1')
 $redirectedPath = Get-CodexAutoRetryRedirectedPath -Path $installDir
 $runtimePathRedirected = -not [string]::IsNullOrWhiteSpace([string]$redirectedPath)
-
-function Test-CodexAutoRetryHeartbeatFresh {
-    param(
-        [Parameter(Mandatory = $true)]$Value,
-        [TimeSpan]$MaxAge = ([TimeSpan]::FromSeconds(15))
-    )
-    try {
-        # ConvertFrom-Json materializes ISO timestamps as DateTime values. Cast
-        # those directly so a UTC Kind is preserved; stringifying first loses
-        # the trailing Z and can add the local timezone offset a second time.
-        $timestamp = if ($Value -is [DateTime]) {
-            [DateTimeOffset]$Value
-        }
-        elseif ($Value -is [DateTimeOffset]) {
-            $Value
-        }
-        else {
-            [DateTimeOffset]::Parse([string]$Value)
-        }
-        $age = [DateTimeOffset]::UtcNow - $timestamp.ToUniversalTime()
-        return $age -ge [TimeSpan]::Zero -and $age -le $MaxAge
-    }
-    catch {
-        return $false
-    }
-}
 
 $status = $null
 $statusReadFailed = $false
@@ -82,12 +58,11 @@ $sharedVerification = if ($sharedStateReadFailed) {
 } else {
     Get-CodexAutoRetrySharedServerStatus -State $sharedState -ExpectedPort $expectedSharedPort
 }
-$sharedStateStatus = [string]$sharedVerification.Status
 $runtimeRunning = -not $runtimePathRedirected -and $null -ne $process -and [bool]$status.running -and $heartbeatFresh
 $pendingRetries = if ($runtimeRunning -and $status) { $status.pending_retries } else { 0 }
 $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } else { 0 }
 
-[pscustomobject]@{
+$extras = [ordered]@{
     Installed = -not $runtimePathRedirected -and (Test-Path -LiteralPath $watchdogTarget)
     RuntimePath = $installDir
     RuntimePathRedirected = $runtimePathRedirected
@@ -98,7 +73,6 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     HeartbeatStale = -not $runtimeRunning
     PID = if ($process) { $process.ProcessId } else { $null }
     Version = if ($status) { $status.version } else { $null }
-    LastScanAt = if ($status) { $status.last_scan_at } else { $null }
     WatchedRoots = if ($status) { $status.watched_roots } else { 0 }
     PendingRetries = $pendingRetries
     ActiveRetries = $activeRetries
@@ -106,26 +80,18 @@ $activeRetries = if ($runtimeRunning -and $status) { $status.active_retries } el
     ControllerState = if ($runtimePathRedirected) { 'runtime_path_redirected' } elseif (-not $runtimeRunning) { 'backend_service_not_running' } elseif ($status) { [string]$status.controller_state } else { $null }
     SharedAppServerEnabled = if ($runtimePathRedirected) { $false } elseif ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
     SharedAppServerRequested = if ($config -and $config.PSObject.Properties['shared_app_server_requested']) { [bool]$config.shared_app_server_requested } elseif ($config -and $config.PSObject.Properties['shared_app_server_enabled']) { [bool]$config.shared_app_server_enabled } else { $false }
-    StartupMode = $startupMode
-    StartupEntry = if ([string]::IsNullOrWhiteSpace($runValue)) { $null } else { $runValue }
-    StartupApproved = $startupApproval.Status
-    SharedEndpointConfigured = -not [string]::IsNullOrWhiteSpace($userEndpoint)
-    DesktopLaunchMode = Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_launch_mode' -Default 'legacy_unprotected'
     DesktopTransport = Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_transport' -Default 'unknown'
     RecoveryMode = Get-CodexAutoRetryStatusProperty -Status $status -Name 'recovery_mode' -Default 'none'
     AutomaticRecoverySupported = [bool](Get-CodexAutoRetryStatusProperty -Status $status -Name 'automatic_recovery_supported' -Default $false)
     RecoveryCapabilityReason = Get-CodexAutoRetryStatusProperty -Status $status -Name 'recovery_capability_reason' -Default 'legacy_status_schema'
     BuildSourceHash = Get-CodexAutoRetryStatusProperty -Status $status -Name 'build_source_hash' -Default 'unverified_legacy_build'
-    SafeLauncher = Join-Path $PSScriptRoot 'launch-codex.ps1'
-    SharedServerState = $sharedStateStatus
-    SharedServerVerification = [string]$sharedVerification.Reason
-    SharedAppServerMemoryUsageMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_usage_mb' -Default 0
-    SharedAppServerMemoryLimitMB = Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_limit_mb' -Default $null
-    SharedAppServerMemoryGuardTriggered = [bool](Get-CodexAutoRetryStatusProperty -Status $status -Name 'shared_app_server_memory_guard_triggered' -Default $false)
-    RetrySafetyWarning = [string](Get-CodexAutoRetryStatusProperty -Status $status -Name 'retry_safety_warning' -Default '')
-    StatusCompatibility = $statusCompatibility
-    StatusCompatibilityMessage = Get-CodexAutoRetryStatusCompatibilityMessage -Status $statusCompatibility
     CodexRestartRequired = if ($runtimePathRedirected) { $false } elseif ($status) { [string]$status.controller_state -eq 'codex_restart_required' } else { $false }
     LastError = if ($runtimePathRedirected) { 'runtime_path_redirected' } elseif ($status) { $status.last_error } else { $null }
     LogPath = Join-Path $installDir 'logs\daemon.log'
 }
+New-CodexAutoRetryStatusView -Status $status -HeartbeatFresh $heartbeatFresh `
+    -StartupMode $startupMode -StartupEntry $runValue `
+    -StartupApproved ([string]$startupApproval.Status) -SharedEndpoint $userEndpoint `
+    -SharedVerification $sharedVerification -StatusCompatibility $statusCompatibility `
+    -DesktopLaunchMode (Get-CodexAutoRetryStatusProperty -Status $status -Name 'desktop_launch_mode' -Default 'legacy_unprotected') `
+    -SafeLauncher (Join-Path $PSScriptRoot 'launch-codex.ps1') -Extras $extras

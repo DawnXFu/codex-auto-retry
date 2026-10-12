@@ -308,3 +308,24 @@ function Stop-CodexAutoRetrySharedServerIfUnused {
     Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
     return $true
 }
+
+function Resolve-CodexAutoRetryLegacyEndpoint {
+    # Legacy cleanup must only guess endpoints when the startup entry still
+    # points at a plugin-owned runtime. -RunValueOwned carries that verdict so
+    # callers keep their own ownership check (strict value match or substring
+    # detection) without duplicating the candidate list.
+    param(
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [AllowNull()][string]$StateEndpoint,
+        [Parameter(Mandatory = $true)][bool]$RunValueOwned
+    )
+
+    $endpoints = @()
+    if (-not [string]::IsNullOrWhiteSpace($StateEndpoint)) { $endpoints += $StateEndpoint }
+    if (-not $endpoints -and $RunValueOwned) {
+        $legacyPort = Get-CodexAutoRetrySharedAppServerPort -ConfigPath (Join-Path $DataDir 'config.json')
+        $endpoints += 'ws://127.0.0.1:' + $legacyPort
+        $endpoints += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
+    }
+    return $endpoints
+}

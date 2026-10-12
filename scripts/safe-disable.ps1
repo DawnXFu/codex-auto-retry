@@ -8,22 +8,6 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'environment.ps1')
 . (Join-Path $PSScriptRoot 'startup-approval.ps1')
 
-function Test-OwnedStartupValue {
-    param([AllowNull()][string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-    $trimmed = $Value.Trim()
-    if ($trimmed.StartsWith('"')) {
-        $closingQuote = $trimmed.IndexOf('"', 1)
-        if ($closingQuote -le 1) { return $false }
-        $executable = $trimmed.Substring(1, $closingQuote - 1)
-    }
-    else {
-        $executable = ($trimmed -split '[\s\t]', 2)[0]
-    }
-    return [string]::Equals($executable, $watchdog, [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($executable, $legacyWatchdog, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
 function Stop-ExactExecutable {
     param([Parameter(Mandatory = $true)][string]$Path)
     $fullPath = [System.IO.Path]::GetFullPath($Path)
@@ -83,13 +67,8 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 
 $runProperty = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
 $runValue = if ($null -eq $runProperty) { '' } else { [string]$runProperty.$runName }
-$legacyOwnedEndpoint = @()
-if ($stateEndpoint) { $legacyOwnedEndpoint += $stateEndpoint }
-if (-not $legacyOwnedEndpoint -and (Test-OwnedStartupValue $runValue)) {
-    $legacyPort = Get-CodexAutoRetrySharedAppServerPort -ConfigPath (Join-Path $dataRoot 'config.json')
-    $legacyOwnedEndpoint += 'ws://127.0.0.1:' + $legacyPort
-    $legacyOwnedEndpoint += 'ws://127.0.0.1:49621', 'ws://127.0.0.1:49321'
-}
+$legacyOwnedEndpoint = @(Resolve-CodexAutoRetryLegacyEndpoint -DataDir $dataRoot -StateEndpoint $stateEndpoint `
+    -RunValueOwned (Test-OwnedStartupValue $runValue @($watchdog, $legacyWatchdog)))
 
 # Persist fail-open before removing the endpoint. A later startup must not
 # re-enable the shared route if this cleanup is interrupted halfway through.
@@ -104,7 +83,7 @@ $startupApprovalError = $null
 $startupRemoved = $false
 $startupApprovalRemoved = $false
 $oldApproval = Get-CodexAutoRetryStartupApproval -RunName $RunName
-if ([string]::IsNullOrWhiteSpace($runValue) -or (Test-OwnedStartupValue $runValue)) {
+if ([string]::IsNullOrWhiteSpace($runValue) -or (Test-OwnedStartupValue $runValue @($watchdog, $legacyWatchdog))) {
     $currentRunValue = Get-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
     $currentRunValue = if ($null -eq $currentRunValue) { '' } else { [string]$currentRunValue.$runName }
     if ($currentRunValue -ne $runValue) {

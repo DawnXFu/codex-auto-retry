@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -43,7 +43,7 @@ try {
         start_ack_timeout_seconds = 10; auth_max_attempts = 1; unknown_max_attempts = 1
         session_roots = @(); include_default_home = $false; include_cockpit_homes = $false
         shared_app_server_port = 49621; shared_app_server_enabled = $false
-        controller_failure_limit = 1; retry_prompt = '缁х画'; show_notifications = $false
+        controller_failure_limit = 1; retry_prompt = '继续'; show_notifications = $false
     }
     [System.IO.File]::WriteAllText((Join-Path $dataDir 'config.json'), ($config | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
 

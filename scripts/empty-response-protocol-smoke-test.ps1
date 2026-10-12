@@ -3,15 +3,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-function Find-CodexBinary {
-    $npmRoot = Join-Path $env:APPDATA 'npm\node_modules\@openai\codex'
-    if (Test-Path -LiteralPath $npmRoot) {
-        $candidate = Get-ChildItem -LiteralPath $npmRoot -Recurse -Filter 'codex.exe' -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($candidate) { return $candidate.FullName }
-    }
-    throw 'The standalone Codex CLI binary was not found for the empty-response protocol test.'
-}
+. (Join-Path $PSScriptRoot 'smoke-test-helpers.ps1')
 
 $node = Get-Command node.exe -ErrorAction Stop
 $oldCodexExecutable = $env:CODEX_EMPTY_RESPONSE_TEST_CODEX_EXE

@@ -18,11 +18,6 @@ Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot 'upgrade-runtime.ps1')
 . (Join-Path $PSScriptRoot 'close-codex.ps1')
 
-function Write-Step {
-    param([string]$Message)
-    Write-Host ('[Codex Auto Resume] ' + $Message)
-}
-
 function Test-CodexDesktopRunning {
     return (Get-InstallerDesktopState) -ne 'closed'
 }
@@ -644,25 +639,25 @@ try {
     if (-not $SkipRuntimeInstall) {
         Backup-UpgradeRuntime -RuntimePath $runtimePath -TransactionRoot $transactionRoot
     }
-	$journal = [pscustomobject][ordered]@{
-	    schema_version = 1
-	    transaction_id = [guid]::NewGuid().ToString('N')
-	    phase = 'prepared'
-	    transaction_root = $transactionRoot
-	    plugin_existed = $pluginExisted
-	    marketplace_existed = $marketplaceExisted
-	    runtime_snapshot = -not $SkipRuntimeInstall
-	    registration_attempted = $false
-	    created_at = [DateTime]::UtcNow.ToString('o')
-	}
-	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
+    $journal = [pscustomobject][ordered]@{
+        schema_version = 1
+        transaction_id = [guid]::NewGuid().ToString('N')
+        phase = 'prepared'
+        transaction_root = $transactionRoot
+        plugin_existed = $pluginExisted
+        marketplace_existed = $marketplaceExisted
+        runtime_snapshot = -not $SkipRuntimeInstall
+        registration_attempted = $false
+        created_at = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
 
     Write-Step 'Installing plugin files...'
     if ($pluginExisted -or -not $SkipRuntimeInstall) {
         $null = Stop-RuntimeForUpgrade -RuntimePath $runtimePath
     }
-	$journal.phase = 'runtime_stopped'
-	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
+    $journal.phase = 'runtime_stopped'
+    Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     New-Item -ItemType Directory -Force -Path $pluginParent | Out-Null
     if ($pluginExisted) {
         Remove-Item -LiteralPath $pluginTarget -Recurse -Force
@@ -677,8 +672,8 @@ try {
         Copy-Item -LiteralPath $gitMetadataBackup -Destination $gitMetadataTarget -Force
     }
     Set-InstalledMcpLauncher -PluginPath $pluginTarget -RuntimePath $runtimePath
-	$journal.phase = 'plugin_replaced'
-	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
+    $journal.phase = 'plugin_replaced'
+    Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     Write-JsonAtomic -Path (Join-Path $pluginTarget '.codex-auto-retry-release.json') -Value ([pscustomobject][ordered]@{
         packageVersion = [string]$manifest.packageVersion
         pluginVersion = [string]$manifest.pluginVersion
@@ -687,8 +682,8 @@ try {
 
     Write-Step 'Registering the personal Codex plugin...'
     Write-JsonAtomic -Path $marketplacePath -Value $marketplace
-	$journal.phase = 'plugin_registered'
-	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
+    $journal.phase = 'plugin_registered'
+    Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
 
     $env:USERPROFILE = $profileRootPath
     $env:HOME = $profileRootPath
@@ -707,15 +702,15 @@ try {
     if (-not $SkipRuntimeInstall) {
         Write-Step 'Installing and starting the background watchdog...'
         [void](Install-Runtime -PluginPath $pluginTarget -EnableSharedAppServer:$EnableSharedAppServer)
-		$journal.phase = 'runtime_installed'
-		Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
+        $journal.phase = 'runtime_installed'
+        Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     }
 
     Write-Step 'Verifying the completed installation...'
     $baseVersion = ([string]$manifest.pluginVersion -split '\+', 2)[0]
     Verify-Installation -PluginPath $pluginTarget -RuntimePath $runtimePath -Cli $cli -PluginId $pluginId -ExpectedBaseVersion $baseVersion -VerifyPlugin (-not $SkipPluginRegistration) -VerifyRuntime (-not $SkipRuntimeInstall) -ExpectedSharedAppServer:$EnableSharedAppServer
-	$journal.phase = 'committed'
-	Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
+    $journal.phase = 'committed'
+    Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     $success = $true
 
     Write-Step 'Installation completed successfully.'
