@@ -16,3 +16,13 @@ Thumbs.db
 
 # Throwaway scripts and test binaries
 .scratch/
+
+# Doc exports and other loose working files
+tmp/
+
+# Absolute-path mirror leaked by test binaries run with a different cwd
+scripts/source/e/
+
+# Ad-hoc build artifacts left by `go build` inside the module
+scripts/source/codex-auto-retry
+scripts/source/codex-auto-retry.exe

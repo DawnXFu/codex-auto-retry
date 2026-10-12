@@ -18,7 +18,8 @@ Single-context repo:
 ├── CONTEXT.md                        ← glossary
 ├── docs/adr/
 │   ├── 0001-fork-strategy.md
-│   └── 0002-quota-recovery-semantics.md
+│   ├── 0002-quota-recovery-semantics.md
+│   └── 0003-per-limit-evidence-spaces.md
 └── scripts/source/                   ← Go watchdog code
 ```
 
