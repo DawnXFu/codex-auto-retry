@@ -15,7 +15,7 @@ PowerShell writers).
 
 | Actor | Identity |
 | --- | --- |
-| Worker | `codex-auto-resume.exe run` — the supervised watchdog (`daemon.go`) |
+| Worker | `codex-auto-resume.exe run` — the supervised watchdog (`daemon.go`); also serves the loopback Management API (`api.go`, `main.go:336`) |
 | Supervisor | `codex-auto-resume.exe supervise` — sign-in entry that restarts the worker (`supervisor.go`) |
 | MCP server | `codex-auto-retry-mcp.exe mcp` — per-invocation management surface (`mcp_server.go`, `management.go`) |
 | Settings helper | `codex-auto-resume.exe save-settings` / `control` — one-shot modes used by `ui/settings.ps1` (`main.go:121-131`) |
@@ -30,6 +30,7 @@ PowerShell writers).
 | `control.json` | `version` | `1` | `currentControlVersion`, `control.go:16` |
 | `commands/*.json` | `version` | `1` | `currentControlVersion` (reused), `control.go:32-37` |
 | `state.json` | `version` | `5` | literal in `newRuntimeState`/`loadState`, `state.go:21,56` |
+| `api.json` | `version` | `1` | `apiDescriptorVersion`, `api.go:32` |
 | `install-journal.json` | `schema_version` | `1` | `install.ps1:409` |
 | `environment-backup.json` | `schema_version` | `1` | `sharedEnvironmentBackup`, `shared_mode_windows.go:31-38` |
 | `shared-fail-open.json` | `schema_version` | `1` | marker literal, `shared_mode_windows.go:215-219` |
@@ -361,6 +362,35 @@ legacy fields rather than rejecting the file; `QuotaSnapshot.UnmarshalJSON`
   (`shared-server-status.ps1:16-32`) reports `legacy_status_schema` when the
   four shared-server memory fields and `retry_safety_warning` are absent —
   older files remain readable.
+
+## `api.json` — Management API discovery
+
+- **Producer:** worker only, once per launch after the loopback listener binds
+  (`serveManagementAPI`, `api.go:39-62`) → `writeJSONAtomic`.
+- **Consumers:** desktop client and any future Management API client; read on
+  every launch since `port` and `token` rotate (`api.go:44-50`).
+- **Privacy:** the temp file is chmod `0600` before the atomic rename, and the
+  data dir itself is user-private — the token bounds callers to processes that
+  can already read the user's private files (ADR-0004).
+- **Staleness:** the file is intentionally **left behind** on shutdown — port
+  and token are meaningless across launches, and clients must verify `pid` is
+  a live worker before trusting the descriptor (same freshness discipline as
+  `status.json`).
+- **Schema** (`apiDescriptor`, `api.go:20-28`):
+
+```json
+{
+  "type": "object",
+  "required": ["version", "port", "token", "pid", "started_at"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "port": { "type": "integer", "description": "bound port on 127.0.0.1 (random, 127.0.0.1:0)" },
+    "token": { "type": "string", "description": "per-launch bearer token, 16 bytes crypto/rand hex-encoded" },
+    "pid": { "type": "integer" },
+    "started_at": { "type": "string", "format": "date-time" }
+  }
+}
+```
 
 ## `shared-recovery-request.json` — launcher → worker request
 

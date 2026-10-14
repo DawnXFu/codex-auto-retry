@@ -331,6 +331,9 @@ func runDaemon(daemon *daemon, config Config, dataDir string, logger *safeLogger
 		},
 	)
 	go memoryGuard.Run(ctx)
+	// Loopback read surface for the desktop client; best-effort sidecar that
+	// shuts down with the watchdog context and never gates the loop.
+	go serveManagementAPI(ctx, newManagementService(dataDir), dataDir, logger)
 	trayDone := make(chan struct{})
 	if noTray {
 		close(trayDone)
