@@ -2,9 +2,16 @@ import type { ManagementSnapshot } from "./types";
 import { buildPreviewSnapshot } from "./fixture";
 
 // ---- connection params ----------------------------------------------------
-// Discovery seam: the desktop shell (Wails handoff) or a dev session passes
-// ?api=<base>&token=<token> once; we persist to localStorage so reloads keep
-// working. ?preview=1 renders a bundled fixture with no backend.
+// Discovery seams, in priority order:
+//   1. ?preview=1           — bundled fixture, no backend (dev/demo)
+//   2. Wails binding         — desktop shell: window.go.main.App.GetConnection()
+//     returns {api, token}; `api` is the same-origin "/daemon" proxy path
+//     (the webview cannot fetch http://127.0.0.1 directly — CORS). Absent or
+//     null when the daemon is down / api.json is stale → retry on the poll
+//     timer, since port+token rotate every daemon launch.
+//   3. ?api=<base>&token=<token> or persisted localStorage — browser dev.
+// Steps 1 and 3 stay synchronous in resolveConnection; only the binding is
+// async, so resolveConnectionAsync wraps it for the desktop case.
 
 const LS_API = "car.api";
 const LS_TOKEN = "car.token";
@@ -13,6 +20,19 @@ export type Connection =
   | { mode: "preview" }
   | { mode: "live"; api: string; token: string }
   | { mode: "none" };
+
+declare global {
+  interface Window {
+    /** Injected by the Wails desktop shell; undefined in a plain browser. */
+    go?: {
+      main?: {
+        App?: {
+          GetConnection?: () => Promise<{ api: string; token: string } | null>;
+        };
+      };
+    };
+  }
+}
 
 export function resolveConnection(search = window.location.search): Connection {
   const params = new URLSearchParams(search);
@@ -32,6 +52,32 @@ export function resolveConnection(search = window.location.search): Connection {
     return { mode: "live", api: savedApi, token: savedToken };
   }
   return { mode: "none" };
+}
+
+/** Try the Wails-bound GetConnection; null outside the desktop shell or when
+ * the daemon descriptor is missing/stale. */
+async function wailsConnection(): Promise<Connection | null> {
+  const get = window.go?.main?.App?.GetConnection;
+  if (!get) return null;
+  const conn = await get();
+  if (!conn?.api) return null;
+  return { mode: "live", api: conn.api.replace(/\/+$/, ""), token: conn.token ?? "" };
+}
+
+/** Binding-first resolution used by the app on boot and on its retry timer. */
+export async function resolveConnectionAsync(
+  search = window.location.search,
+): Promise<Connection> {
+  if (new URLSearchParams(search).get("preview") === "1") {
+    return { mode: "preview" };
+  }
+  try {
+    const bound = await wailsConnection();
+    if (bound) return bound;
+  } catch {
+    // binding rejected — fall through to URL params / localStorage
+  }
+  return resolveConnection(search);
 }
 
 // ---- snapshot fetch -------------------------------------------------------

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "codex-auto-resume-desktop",
+  "outputfilename": "codex-auto-resume-desktop",
+  "frontend:dir": ".",
+  "frontend:install": "npm --prefix ../frontend install",
+  "frontend:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 -FrontendOnly",
+  "frontend:dev:watcher": "npm --prefix ../frontend run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "DawnXFu",
+    "email": ""
+  }
+}

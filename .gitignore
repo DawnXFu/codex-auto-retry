@@ -26,3 +26,12 @@ scripts/source/e/
 # Ad-hoc build artifacts left by `go build` inside the module
 scripts/source/codex-auto-retry
 scripts/source/codex-auto-retry.exe
+
+# Desktop client: frontend bundle staged for //go:embed (built by desktop/build.ps1)
+desktop/frontend/dist/*
+!desktop/frontend/dist/.keep
+
+# Desktop client build outputs and generated Wails JS bindings
+desktop/codex-auto-resume-desktop*
+desktop/build/
+desktop/wailsjs/
