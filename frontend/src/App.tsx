@@ -26,7 +26,7 @@ export default function App() {
           </div>
         )}
         {page === "dashboard" && <Dashboard snapshot={snapshot} now={now} onRefresh={refresh} />}
-        {page === "settings" && <SettingsPage snapshot={snapshot} />}
+        {page === "settings" && <SettingsPage snapshot={snapshot} onRefresh={refresh} />}
         {page === "about" && <AboutPage snapshot={snapshot} />}
       </main>
     </>

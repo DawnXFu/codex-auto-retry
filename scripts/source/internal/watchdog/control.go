@@ -24,9 +24,10 @@ type ControlState struct {
 type ControlCommandAction string
 
 const (
-	commandRetryNow     ControlCommandAction = "retry_now"
-	commandCancelRetry  ControlCommandAction = "cancel_retry"
-	commandRestartRetry ControlCommandAction = "restart_retry"
+	commandRetryNow      ControlCommandAction = "retry_now"
+	commandCancelRetry   ControlCommandAction = "cancel_retry"
+	commandRestartRetry  ControlCommandAction = "restart_retry"
+	commandRestartDaemon ControlCommandAction = "restart_daemon"
 )
 
 type ControlCommand struct {
@@ -107,11 +108,18 @@ func (c ControlCommand) validate() error {
 	if c.Version != currentControlVersion {
 		return fmt.Errorf("command version must be %d", currentControlVersion)
 	}
-	if c.Action != commandRetryNow && c.Action != commandCancelRetry && c.Action != commandRestartRetry {
-		return errors.New("unsupported control command")
-	}
-	if threadIDFromPath(c.ThreadID+".jsonl") != strings.ToLower(c.ThreadID) {
-		return errors.New("invalid thread id")
+	if c.Action == commandRestartDaemon {
+		// Process-scoped command: no thread id is expected or allowed.
+		if c.ThreadID != "" {
+			return errors.New("restart_daemon takes no thread id")
+		}
+	} else {
+		if c.Action != commandRetryNow && c.Action != commandCancelRetry && c.Action != commandRestartRetry {
+			return errors.New("unsupported control command")
+		}
+		if threadIDFromPath(c.ThreadID+".jsonl") != strings.ToLower(c.ThreadID) {
+			return errors.New("invalid thread id")
+		}
 	}
 	if c.CreatedAt.IsZero() {
 		return errors.New("command timestamp is required")

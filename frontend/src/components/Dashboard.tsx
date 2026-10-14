@@ -29,8 +29,15 @@ export default function Dashboard(props: {
 
   const act = async (action: string, threadID = "") => {
     const res = await postAction(action, threadID);
-    if (!res.ok) setFlash(t("queue_writes_pending"));
-    window.setTimeout(() => setFlash(null), 3000);
+    if (!res.ok) {
+      setFlash(res.reason === "unwired" ? t("action_unavailable") : t("action_failed", { error: res.reason }));
+    } else {
+      // The daemon picks command files up on its next tick (~1-2s); refresh
+      // now for the notice and once more for the applied result.
+      props.onRefresh();
+      window.setTimeout(props.onRefresh, 1500);
+    }
+    window.setTimeout(() => setFlash(null), 4000);
   };
 
   const retries = snap?.retries ?? [];
@@ -71,7 +78,7 @@ export default function Dashboard(props: {
         <button className="mini-btn" title={t("strip_refresh")} onClick={props.onRefresh}>
           ⟳
         </button>
-        <button className="mini-btn" onClick={() => void act("pause")}>
+        <button className="mini-btn" onClick={() => void act(paused ? "resume" : "pause")}>
           {paused ? t("strip_resume") : t("strip_pause")}
         </button>
       </div>

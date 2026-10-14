@@ -353,7 +353,9 @@ func runDaemon(daemon *daemon, config Config, dataDir string, logger *safeLogger
 	case <-trayDone:
 	case <-time.After(3 * time.Second):
 	}
-	if err != nil && err != errStopRequested {
+	if errors.Is(err, errRestartRequested) {
+		logger.Printf("watchdog restarting category=restart_requested")
+	} else if err != nil && err != errStopRequested {
 		logger.Printf("watchdog stopped category=runtime_error")
 	}
 	_ = daemon.writeStatus(false)
@@ -424,6 +426,9 @@ func runLocalControl(dataDir, action, threadID string) error {
 		return err
 	case string(commandRestartRetry):
 		_, err := service.restartRetry(threadID, now)
+		return err
+	case string(commandRestartDaemon):
+		_, err := queueControlCommand(service.commandDir, commandRestartDaemon, "", now)
 		return err
 	default:
 		return fmt.Errorf("unsupported control action")

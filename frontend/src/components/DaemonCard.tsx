@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import type { ManagementSnapshot } from "../types";
 import { postAction } from "../api";
 import { useI18n } from "../i18n";
-import { relAgo } from "../time";
+import { fmtDuration, relAgo } from "../time";
 
 const SAMPLES = 60;
 
 // Daemon card: live dot, canvas sparkline of memory_usage_mb sampled per poll,
 // blue tick marks at scan events (last_scan_at changes), restart button with
-// inline confirm. PID/uptime are not in the snapshot contract — shown as "—".
+// inline confirm. PID/uptime come from the snapshot's daemon_pid /
+// daemon_started_at (present only while the worker process is alive).
 export default function DaemonCard(props: { snapshot: ManagementSnapshot | null; now: Date }) {
   const { t } = useI18n();
   const snap = props.snapshot;
@@ -18,7 +19,9 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
   const lastScanSeen = useRef<string | undefined>(undefined);
   const lastMemSeen = useRef<number | undefined>(undefined);
   const [confirming, setConfirming] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [restartMsg, setRestartMsg] = useState<string | null>(null);
+  const restartBasePid = useRef<number | undefined>(undefined);
 
   const running = snap?.running ?? false;
 
@@ -88,12 +91,49 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
 
   const confirmRestart = async () => {
     setConfirming(false);
+    // Remember the current worker pid: RestartDaemon blocks through the
+    // soft→hard→respawn escalation and resolves once the API is back; the
+    // fresh api.json then yields a new daemon_pid, which clears the state.
+    restartBasePid.current = snap?.daemon_pid;
+    setRestarting(true);
     const res = await postAction("restart_daemon");
     if (!res.ok) {
-      setRestartMsg(t("daemon_restart_pending"));
-      window.setTimeout(() => setRestartMsg(null), 3500);
+      setRestarting(false);
+      setRestartMsg(
+        res.reason === "unwired"
+          ? t("action_unavailable")
+          : t("daemon_restart_failed", { error: res.reason }),
+      );
+      window.setTimeout(() => setRestartMsg(null), 5000);
     }
   };
+
+  // A new worker writes a fresh api.json with a new pid — that is the signal
+  // the restart completed, even if the bound call is still timing out.
+  useEffect(() => {
+    if (!restarting || snap?.daemon_pid === undefined) return;
+    if (snap.daemon_pid !== restartBasePid.current) {
+      setRestarting(false);
+      setRestartMsg(t("daemon_restarted"));
+      window.setTimeout(() => setRestartMsg(null), 4000);
+    }
+  }, [snap, restarting, t]);
+
+  // Never leave the card stuck in "restarting" if the daemon stays down.
+  useEffect(() => {
+    if (!restarting) return;
+    const timer = window.setTimeout(() => {
+      setRestarting(false);
+      setRestartMsg(t("daemon_restart_timeout"));
+      window.setTimeout(() => setRestartMsg(null), 6000);
+    }, 90000);
+    return () => window.clearTimeout(timer);
+  }, [restarting, t]);
+
+  const uptime =
+    snap?.daemon_started_at !== undefined
+      ? fmtDuration((props.now.getTime() - new Date(snap.daemon_started_at).getTime()) / 1000, t)
+      : "—";
 
   return (
     <div className="card side-card" style={{ marginTop: 10 }}>
@@ -110,11 +150,11 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
       </div>
       <div className="kv">
         <span className="k">{t("daemon_pid_limit")}</span>
-        <span className="v">{snap ? `— · ${snap.memory_limit_mb} MB` : "—"}</span>
+        <span className="v">{snap ? `${snap.daemon_pid ?? "—"} · ${snap.memory_limit_mb} MB` : "—"}</span>
       </div>
       <div className="kv">
         <span className="k">{t("daemon_uptime")}</span>
-        <span className="v">—</span>
+        <span className="v">{uptime}</span>
       </div>
       <div className="kv">
         <span className="k">{t("daemon_transport")}</span>
@@ -127,8 +167,12 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
         </span>
       </div>
       <div className="daemon-actions">
-        <button className="mini-btn danger" onClick={() => setConfirming(true)} disabled={!snap}>
-          {t("daemon_restart")}
+        <button
+          className="mini-btn danger"
+          onClick={() => setConfirming(true)}
+          disabled={!snap || restarting}
+        >
+          {restarting ? t("daemon_restarting") : t("daemon_restart")}
         </button>
         {confirming && (
           <div className="restart-confirm">

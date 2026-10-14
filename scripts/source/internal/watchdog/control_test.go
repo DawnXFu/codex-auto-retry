@@ -50,6 +50,15 @@ func TestControlCommandQueueValidatesAndOrdersCommands(t *testing.T) {
 	if _, err := queueControlCommand(directory, commandRetryNow, "not-a-thread", now); err == nil {
 		t.Fatal("invalid thread ID was accepted")
 	}
+	if _, err := queueControlCommand(directory, commandRestartDaemon, "", now); err != nil {
+		t.Fatalf("restart_daemon command was rejected: %v", err)
+	}
+	if _, err := queueControlCommand(directory, commandRestartDaemon, threadID, now); err == nil {
+		t.Fatal("restart_daemon accepted a thread id")
+	}
+	if _, err := queueControlCommand(directory, "bogus", threadID, now); err == nil {
+		t.Fatal("unsupported action was accepted")
+	}
 	if err := os.WriteFile(filepath.Join(directory, "invalid.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}

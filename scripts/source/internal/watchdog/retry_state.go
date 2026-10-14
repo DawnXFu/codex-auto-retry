@@ -110,6 +110,13 @@ func (d *daemon) stopPendingRetryLocked(threadID string, thread ThreadState, now
 }
 
 func (d *daemon) applyControlCommandLocked(command ControlCommand, now time.Time) {
+	if command.Action == commandRestartDaemon {
+		// Soft restart request from a management surface: finish this tick's
+		// state write, then exit so the supervisor respawns a fresh worker.
+		d.restartRequested = true
+		d.logger.Printf("daemon restart requested category=control_command")
+		return
+	}
 	thread, found := d.state.Threads[command.ThreadID]
 	if !found {
 		d.logger.Printf("control command ignored thread=%s reason=retry_not_found", shortThreadID(command.ThreadID))
