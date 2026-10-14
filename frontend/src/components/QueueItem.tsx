@@ -1,5 +1,5 @@
 import type { ManagedRetry, RetryState } from "../types";
-import { S } from "../strings";
+import { useI18n, type TFunc, type TRFunc } from "../i18n";
 import { dayLabel, fmtHMS, secondsUntil } from "../time";
 
 const STATE_STYLE: Record<RetryState, { icon: string; iconCls: string; tagCls: string }> = {
@@ -12,24 +12,30 @@ const STATE_STYLE: Record<RetryState, { icon: string; iconCls: string; tagCls: s
   stopped: { icon: "✕", iconCls: "stop", tagCls: "red" },
 };
 
-function stopReasonLabel(reason: string | undefined): string {
+function stopReasonLabel(reason: string | undefined, tr: TRFunc): string {
   if (!reason) return "";
-  return S.meta.stopReasons[reason] ?? reason;
+  return tr(`stop_reason_${reason}`, reason);
 }
 
-function metaLine(r: ManagedRetry, now: Date): string {
+function metaLine(r: ManagedRetry, now: Date, t: TFunc, tr: TRFunc): string {
   const parts: string[] = [];
-  const cls = S.class[r.class] ?? r.class;
+  const cls = tr(`class_${r.class}`, r.class);
   if (cls && cls !== "—") parts.push(cls);
   if (r.state === "waiting_for_reset" || r.state === "reset_due") {
-    if (r.wait_until) parts.push(S.meta.bindingReset(dayLabel(r.wait_until, now)));
+    if (r.wait_until) parts.push(t("meta_binding_reset", { when: dayLabel(r.wait_until, now, t) }));
   } else {
-    const budget = S.meta.recovery(r.recovery_attempt, r.max_recovery_attempts, r.consecutive_retry, r.max_consecutive_retries);
-    if (budget) parts.push(budget);
-    if (r.action) parts.push(S.action[r.action] ?? r.action);
+    const budget: string[] = [];
+    if (r.max_recovery_attempts) {
+      budget.push(t("meta_recovery", { attempt: r.recovery_attempt, max: r.max_recovery_attempts }));
+    }
+    if (r.max_consecutive_retries) {
+      budget.push(t("meta_no_progress", { consec: r.consecutive_retry, maxConsec: r.max_consecutive_retries }));
+    }
+    if (budget.length) parts.push(budget.join(" · "));
+    if (r.action) parts.push(tr(`action_${r.action}`, r.action));
   }
   if (r.state === "stopped" || r.state === "needs_attention") {
-    const reason = stopReasonLabel(r.stop_reason);
+    const reason = stopReasonLabel(r.stop_reason, tr);
     if (reason) parts.push(reason);
   }
   return parts.join(" · ");
@@ -40,6 +46,7 @@ export default function QueueItem(props: {
   now: Date;
   onAction: (action: string, threadID: string) => void;
 }) {
+  const { t, tr } = useI18n();
   const r = props.retry;
   const style = STATE_STYLE[r.state] ?? STATE_STYLE.stopped;
   const title = r.title || r.label;
@@ -50,19 +57,19 @@ export default function QueueItem(props: {
   if (r.state === "waiting_for_reset" || r.state === "pending") {
     const left = secondsUntil(r.due_at, props.now);
     count = fmtHMS(left);
-    sub = r.state === "pending" ? S.queue.sub.untilRetry : S.queue.sub.untilResume;
+    sub = r.state === "pending" ? t("queue_sub_until_retry") : t("queue_sub_until_resume");
   } else if (r.state === "reset_due") {
-    count = S.queue.sub.dueNow;
-    sub = S.queue.sub.untilResume;
+    count = t("queue_sub_due_now");
+    sub = t("queue_sub_until_resume");
   } else if (r.state === "running" || r.state === "starting") {
-    count = r.state === "running" ? S.queue.sub.running : S.queue.sub.starting;
-    sub = r.action ? S.action[r.action] ?? r.action : "";
+    count = r.state === "running" ? t("queue_sub_running") : t("queue_sub_starting");
+    sub = r.action ? tr(`action_${r.action}`, r.action) : "";
   } else if (r.state === "needs_attention") {
-    count = S.queue.sub.attention;
-    sub = stopReasonLabel(r.stop_reason);
+    count = t("queue_sub_attention");
+    sub = stopReasonLabel(r.stop_reason, tr);
   } else {
-    count = S.queue.sub.stopped;
-    sub = stopReasonLabel(r.stop_reason);
+    count = t("queue_sub_stopped");
+    sub = stopReasonLabel(r.stop_reason, tr);
   }
 
   const quotaWait = r.state === "waiting_for_reset" || r.state === "reset_due";
@@ -73,9 +80,9 @@ export default function QueueItem(props: {
       <div className="qbody">
         <div className="qtitle" title={title}>
           <span className="t">{title}</span>
-          <span className={`qtag ${style.tagCls}`}>{S.queue.tags[r.state]}</span>
+          <span className={`qtag ${style.tagCls}`}>{tr(`queue_tag_${r.state}`, r.state)}</span>
         </div>
-        <div className="qmeta">{metaLine(r, props.now)}</div>
+        <div className="qmeta">{metaLine(r, props.now, t, tr)}</div>
       </div>
       <div className="qstate">
         <div className="qcount">{count}</div>
@@ -84,18 +91,18 @@ export default function QueueItem(props: {
       <div className="qactions">
         {r.can_retry_now && (
           <button className="mini-btn primary" onClick={() => props.onAction("retry_now", r.thread_id)}>
-            {quotaWait ? S.queue.btn.resume : S.queue.btn.retryNow}
+            {quotaWait ? t("queue_btn_resume") : t("queue_btn_retry_now")}
           </button>
         )}
         {r.can_restart && (
           <button className="mini-btn" onClick={() => props.onAction("restart", r.thread_id)}>
-            {S.queue.btn.restart}
+            {t("queue_btn_restart")}
           </button>
         )}
         {r.can_cancel && (
           <button
             className="mini-btn danger"
-            title={S.queue.btn.cancel}
+            title={t("queue_btn_cancel")}
             onClick={() => props.onAction("cancel", r.thread_id)}
           >
             ✕

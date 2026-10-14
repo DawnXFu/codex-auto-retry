@@ -1,11 +1,12 @@
-import { S } from "../strings";
+import { useI18n } from "../i18n";
+import type { StringKey } from "../strings";
 
 export type Page = "dashboard" | "settings" | "about";
 
-const ITEMS: { page: Page; icon: string; label: string }[] = [
-  { page: "dashboard", icon: "📊", label: S.nav.dashboard },
-  { page: "settings", icon: "⚙️", label: S.nav.settings },
-  { page: "about", icon: "ℹ️", label: S.nav.about },
+const ITEMS: { page: Page; icon: string; key: StringKey }[] = [
+  { page: "dashboard", icon: "📊", key: "nav_dashboard" },
+  { page: "settings", icon: "⚙️", key: "nav_settings" },
+  { page: "about", icon: "ℹ️", key: "nav_about" },
 ];
 
 export default function Sidebar(props: {
@@ -14,11 +15,12 @@ export default function Sidebar(props: {
   running: boolean;
   version?: string;
 }) {
+  const { t } = useI18n();
   return (
     <aside className="sidebar">
       <div className="brand">
         <span className="dot" style={props.running ? undefined : { background: "var(--red)" }} />
-        {S.appName}
+        {t("app_name")}
       </div>
       {ITEMS.map((it) => (
         <div
@@ -26,11 +28,11 @@ export default function Sidebar(props: {
           className={`nav-item${props.page === it.page ? " active" : ""}`}
           onClick={() => props.onNav(it.page)}
         >
-          {it.icon} <span>{it.label}</span>
+          {it.icon} <span>{t(it.key)}</span>
         </div>
       ))}
       <div className="sidebar-foot">
-        {props.running ? S.sidebarFoot.running : S.sidebarFoot.stopped}
+        {props.running ? t("sidebar_running") : t("sidebar_stopped")}
         <br />
         {props.version ? `v${props.version}` : ""}
       </div>

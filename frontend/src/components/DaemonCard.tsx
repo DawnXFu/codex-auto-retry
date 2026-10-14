@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ManagementSnapshot } from "../types";
 import { postAction } from "../api";
-import { S } from "../strings";
+import { useI18n } from "../i18n";
 import { relAgo } from "../time";
 
 const SAMPLES = 60;
@@ -10,6 +10,7 @@ const SAMPLES = 60;
 // blue tick marks at scan events (last_scan_at changes), restart button with
 // inline confirm. PID/uptime are not in the snapshot contract — shown as "—".
 export default function DaemonCard(props: { snapshot: ManagementSnapshot | null; now: Date }) {
+  const { t } = useI18n();
   const snap = props.snapshot;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const data = useRef<number[]>([]);
@@ -89,7 +90,7 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
     setConfirming(false);
     const res = await postAction("restart_daemon");
     if (!res.ok) {
-      setRestartMsg(S.daemon.restartPending);
+      setRestartMsg(t("daemon_restart_pending"));
       window.setTimeout(() => setRestartMsg(null), 3500);
     }
   };
@@ -97,46 +98,46 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
   return (
     <div className="card side-card" style={{ marginTop: 10 }}>
       <h3>
-        {S.daemon.title}
-        <span className={`live-dot${running ? "" : " dead"}`} title={S.daemon.live} />
+        {t("daemon_title")}
+        <span className={`live-dot${running ? "" : " dead"}`} title={t("daemon_live")} />
       </h3>
       <div className={`pulse-wrap${running ? "" : " dead"}`}>
         <canvas ref={canvasRef} width={260} height={46} />
         <div className="pulse-meta">
-          <span>{snap ? S.daemon.memory(snap.memory_usage_mb) : "—"}</span>
-          <span>{S.daemon.lastScan(relAgo(snap?.last_scan_at, props.now))}</span>
+          <span>{snap ? t("daemon_memory", { mb: snap.memory_usage_mb.toFixed(1) }) : "—"}</span>
+          <span>{t("daemon_last_scan", { ago: relAgo(snap?.last_scan_at, props.now, t) })}</span>
         </div>
       </div>
       <div className="kv">
-        <span className="k">{S.daemon.pidLimit}</span>
+        <span className="k">{t("daemon_pid_limit")}</span>
         <span className="v">{snap ? `— · ${snap.memory_limit_mb} MB` : "—"}</span>
       </div>
       <div className="kv">
-        <span className="k">{S.daemon.uptime}</span>
+        <span className="k">{t("daemon_uptime")}</span>
         <span className="v">—</span>
       </div>
       <div className="kv">
-        <span className="k">{S.daemon.transport}</span>
+        <span className="k">{t("daemon_transport")}</span>
         <span className="v">{snap?.desktop_transport ?? "—"}</span>
       </div>
       <div className="kv" style={{ paddingBottom: 9 }}>
-        <span className="k">{S.daemon.autoStart}</span>
+        <span className="k">{t("daemon_auto_start")}</span>
         <span className={`v ${snap?.startup_approved === "approved" ? "ok" : ""}`}>
-          {snap ? (snap.startup_approved === "approved" ? S.daemon.autoStartOn : S.daemon.autoStartOff) : "—"}
+          {snap ? (snap.startup_approved === "approved" ? t("daemon_auto_start_on") : t("daemon_auto_start_off")) : "—"}
         </span>
       </div>
       <div className="daemon-actions">
         <button className="mini-btn danger" onClick={() => setConfirming(true)} disabled={!snap}>
-          {S.daemon.restart}
+          {t("daemon_restart")}
         </button>
         {confirming && (
           <div className="restart-confirm">
-            <span>{S.daemon.restartConfirm}</span>
+            <span>{t("daemon_restart_confirm")}</span>
             <button className="mini-btn primary" onClick={() => void confirmRestart()}>
-              {S.daemon.yes}
+              {t("daemon_yes")}
             </button>
             <button className="mini-btn" onClick={() => setConfirming(false)}>
-              {S.daemon.no}
+              {t("daemon_no")}
             </button>
           </div>
         )}

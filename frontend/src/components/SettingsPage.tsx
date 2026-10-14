@@ -1,88 +1,92 @@
 import { useState, type ReactNode } from "react";
 import type { ManagementSnapshot } from "../types";
-import { S } from "../strings";
+import { useI18n } from "../i18n";
+import type { Lang } from "../strings";
 
 // Presentational for now — T5 wires writes. Values reflect the snapshot.
+// The language preference is the exception: it is frontend-side (car.lang in
+// localStorage) and switches live, so it is fully wired here.
 export default function SettingsPage(props: { snapshot: ManagementSnapshot | null }) {
   const snap = props.snapshot;
+  const { t, lang, setLang } = useI18n();
   const [note, setNote] = useState<string | null>(null);
 
   const pending = () => {
-    setNote(S.settings.pendingNote);
+    setNote(t("settings_pending_note"));
     window.setTimeout(() => setNote(null), 3000);
   };
 
   return (
     <section className="page">
-      <h1>{S.settings.title}</h1>
+      <h1>{t("settings_title")}</h1>
       <div className="card fields">
-        <Field name={S.settings.autoResume} desc={S.settings.autoResumeDesc}>
+        <Field name={t("settings_auto_resume")} desc={t("settings_auto_resume_desc")}>
           <Toggle checked={snap ? !snap.paused : true} />
         </Field>
-        <Field name={S.settings.shared} desc={S.settings.sharedDesc(snap?.shared_app_server_port ?? 49621)}>
+        <Field name={t("settings_shared")} desc={t("settings_shared_desc", { port: snap?.shared_app_server_port ?? 49621 })}>
           <Toggle checked={snap?.shared_app_server_enabled ?? false} />
         </Field>
-        <Field name={S.settings.notify} desc={S.settings.notifyDesc}>
+        <Field name={t("settings_notify")} desc={t("settings_notify_desc")}>
           <Toggle checked={snap?.show_notifications ?? true} />
         </Field>
-        <Field name={S.settings.boot} desc={S.settings.bootDesc}>
+        <Field name={t("settings_boot")} desc={t("settings_boot_desc")}>
           <Toggle checked={snap?.startup_approved === "approved"} />
         </Field>
-        <Field name={S.settings.lang} desc={S.settings.langDesc}>
-          <select defaultValue="zh">
-            <option value="zh">简体中文</option>
-            <option value="en">English</option>
+        <Field name={t("settings_lang")} desc={t("settings_lang_desc")}>
+          <select value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
+            <option value="zh">{t("settings_lang_zh")}</option>
+            <option value="en">{t("settings_lang_en")}</option>
           </select>
         </Field>
-        <Field name={S.settings.tz} desc={S.settings.tzDesc}>
+        <Field name={t("settings_tz")} desc={t("settings_tz_desc")}>
           <select defaultValue="sys">
-            <option value="sys">{S.settings.tzSystem}</option>
+            <option value="sys">{t("settings_tz_system")}</option>
             <option value="utc">UTC</option>
           </select>
         </Field>
       </div>
 
-      <h2>{S.settings.retryPolicy}</h2>
+      <h2>{t("settings_retry_policy")}</h2>
       <div className="card fields">
-        <Field name={S.settings.prompt}>
-          <input type="text" style={{ width: 110 }} defaultValue={snap?.retry_prompt ?? "继续"} />
+        <Field name={t("settings_prompt")}>
+          <input type="text" style={{ width: 110 }} defaultValue={snap?.retry_prompt ?? t("settings_prompt_default")} />
         </Field>
-        <Field name={S.settings.recMax}>
+        <Field name={t("settings_rec_max")}>
           <input type="number" defaultValue={snap?.max_recovery_attempts ?? 15} />
         </Field>
-        <Field name={S.settings.noMax}>
+        <Field name={t("settings_no_max")}>
           <input type="number" defaultValue={snap?.max_consecutive_retries ?? 5} />
         </Field>
-        <Field name={S.settings.authMax}>
+        <Field name={t("settings_auth_max")}>
           <input type="number" defaultValue={snap?.auth_max_attempts ?? 3} />
         </Field>
-        <Field name={S.settings.delay}>
+        <Field name={t("settings_delay")}>
           <select defaultValue={snap?.delay_strategy ?? "linear"}>
-            <option value="exponential">{S.settings.strategies.exponential}</option>
-            <option value="fixed">{S.settings.strategies.fixed}</option>
-            <option value="linear">{S.settings.strategies.linear}</option>
+            <option value="exponential">{t("strategy_exponential")}</option>
+            <option value="fixed">{t("strategy_fixed")}</option>
+            <option value="linear">{t("strategy_linear")}</option>
           </select>
         </Field>
-        <Field name={S.settings.initDelay}>
+        <Field name={t("settings_init_delay")}>
           <input type="number" defaultValue={snap?.initial_delay_seconds ?? 30} />
         </Field>
-        <Field name={S.settings.maxDelay}>
+        <Field name={t("settings_max_delay")}>
           <input type="number" defaultValue={snap?.max_delay_seconds ?? 900} />
         </Field>
-        <Field name={S.settings.delayStep}>
+        <Field name={t("settings_delay_step")}>
           <input type="number" defaultValue={snap?.delay_increment_seconds ?? 60} />
         </Field>
-        <Field name={S.settings.memLimit}>
+        <Field name={t("settings_mem_limit")}>
           <input type="number" defaultValue={snap?.memory_limit_mb ?? 1024} />
         </Field>
       </div>
 
       <div style={{ marginTop: 12 }}>
         <button className="btn primary" onClick={pending}>
-          {S.settings.save}
+          {t("settings_save")}
         </button>{" "}
         <button className="btn ghost" onClick={pending}>
-          {S.settings.reset}
+          {t("settings_reset")}
         </button>
       </div>
       {note && (
