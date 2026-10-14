@@ -48,9 +48,7 @@ if (-not $SkipBuild) {
 $watchdog = Join-Path $pluginRoot 'scripts\bin\codex-auto-resume.exe'
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 Assert-CodexBuildProvenance -Root $pluginRoot
-$mcp = Join-Path $pluginRoot 'scripts\bin\codex-auto-retry-mcp.exe'
 Assert-X64PeBinary -Path $watchdog
-Assert-X64PeBinary -Path $mcp
 
 $outputPath = Get-FullPath $OutputDirectory
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
@@ -70,26 +68,17 @@ try {
 
     $payloadRoot = Join-Path $packageRoot 'payload\codex-auto-retry'
     New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
-    foreach ($entry in @('.codex-plugin', '.gitattributes', '.gitignore', '.mcp.json', 'assets', 'docs', 'release', 'skills', 'scripts', 'LICENSE', 'README.md', 'README_zh.md', 'THIRD_PARTY_NOTICES.md')) {
+    foreach ($entry in @('.codex-plugin', '.gitattributes', '.gitignore', 'assets', 'docs', 'release', 'skills', 'scripts', 'LICENSE', 'README.md', 'README_zh.md', 'THIRD_PARTY_NOTICES.md')) {
         $source = Join-Path $pluginRoot $entry
         if (-not (Test-Path -LiteralPath $source)) { throw "Plugin payload entry is missing: $entry" }
         Copy-Item -LiteralPath $source -Destination (Join-Path $payloadRoot $entry) -Recurse -Force
-    }
-
-    $nodeModules = Join-Path $payloadRoot 'scripts\source\internal\watchdog\ui\node_modules'
-    if (Test-Path -LiteralPath $nodeModules -PathType Container) {
-        $nodeModulesItem = Get-Item -LiteralPath $nodeModules -Force
-        if (($nodeModulesItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'The staged node_modules path is a link and cannot be safely removed.'
-        }
-        Remove-Item -LiteralPath $nodeModules -Recurse -Force
     }
 
     $sourceBin = Join-Path $pluginRoot 'scripts\bin'
     $unexpectedSourceBinFiles = @(Get-ChildItem -LiteralPath $sourceBin -File -Recurse -Force |
         Where-Object {
             $_.DirectoryName -ne $sourceBin -or
-            @('codex-auto-resume.exe', 'codex-auto-retry-mcp.exe') -notcontains $_.Name
+            @('codex-auto-resume.exe') -notcontains $_.Name
         })
     if ($unexpectedSourceBinFiles.Count -gt 0) {
         $names = ($unexpectedSourceBinFiles.FullName | Sort-Object) -join ', '
@@ -97,7 +86,7 @@ try {
     }
 
     $stagedBin = Join-Path $payloadRoot 'scripts\bin'
-    $allowedBinFiles = @('codex-auto-resume.exe', 'codex-auto-retry-mcp.exe')
+    $allowedBinFiles = @('codex-auto-resume.exe')
     $unexpectedBinEntries = @(Get-ChildItem -LiteralPath $stagedBin -Force |
         Where-Object { $allowedBinFiles -notcontains $_.Name })
     foreach ($entry in $unexpectedBinEntries) {

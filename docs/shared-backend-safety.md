@@ -6,8 +6,8 @@ The plugin has two deliberately separate modes:
   `CODEX_APP_SERVER_WS_URL` alone, Codex uses its bundled official backend, and
   the watchdog stops retries with `shared_app_server_disabled` instead of
   spinning. Such a stop records zero provider attempts; it is not an attempt
-  limit and is shown as "shared backend disabled" in the tray and panel.
-- Shared mode (explicit): the management panel or installer switch starts the
+  limit and is shown as "shared backend disabled" in the tray and desktop client.
+- Shared mode (explicit): the desktop client or installer switch starts the
   plugin-owned loopback server, verifies the endpoint, WebSocket handshake,
   executable/version marker, PID, command line, and Codex home, then publishes
   the endpoint to the explicit safe launcher's child environment only. A failed
@@ -39,7 +39,7 @@ transport shape therefore falls back to observation instead of being routed
 through an unproven compatibility path.
 
 Windows also stores startup approval separately from the `Run` command. The
-settings window, management panel, and status script show `enabled`, `disabled`,
+desktop client, tray, and status script show `enabled`, `disabled`,
 or `unknown` independently; the supervisor repairs only a disabled marker that
 matches the plugin-owned executable.
 
@@ -75,7 +75,7 @@ only the new Desktop process the verified endpoint. Missing, old, stopped or
 unhealthy services select the official backend instead. `-Official` explicitly
 selects that backend; `-CheckOnly` performs read-only preflight without opening
 Desktop or writing a result record.
-The tray settings window offers the same action when the worker reports
+The desktop client offers the same action when the worker reports
 `codex_restart_required`. That action waits up to 120 seconds for Desktop to
 close and then invokes this launcher; it never terminates an existing Codex
 process or writes a persistent endpoint.
@@ -244,7 +244,7 @@ data are not part of the rollback. The Windows environment-change broadcast is
 advisory and runs through a minimal system process, so an oversized parent
 environment cannot make the transaction fail after the durable registry write.
 
-The tray settings form keeps the health check bounded and responsive. A failed
+Management surfaces keep the health check bounded and responsive. A failed
 or timed-out start removes stale plugin-owned server state when its process has
 already exited, and leaves Codex on its previous backend.
 

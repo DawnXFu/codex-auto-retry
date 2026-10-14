@@ -5,7 +5,6 @@ $ErrorActionPreference = 'Stop'
 
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
 $watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
-$mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $statusPath = Join-Path $installDir 'status.json'
 $configPath = Join-Path $installDir 'config.json'
 $sharedStatePath = Join-Path $installDir 'shared-server.json'
@@ -31,8 +30,6 @@ else {
         Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $watchdogTarget, [System.StringComparison]::OrdinalIgnoreCase) } |
         Select-Object -First 1
 }
-$mcpProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcpTarget, [System.StringComparison]::OrdinalIgnoreCase) })
 $heartbeatFresh = $false
 if ($status -and $status.last_scan_at) {
     $heartbeatFresh = Test-CodexAutoRetryHeartbeatFresh -Value $status.last_scan_at
@@ -67,8 +64,6 @@ $extras = [ordered]@{
     RuntimePath = $installDir
     RuntimePathRedirected = $runtimePathRedirected
     RedirectedPath = if ($runtimePathRedirected) { $redirectedPath } else { $null }
-    MCPServerInstalled = -not $runtimePathRedirected -and (Test-Path -LiteralPath $mcpTarget)
-    MCPServerProcesses = $mcpProcesses.Count
     ProcessRunning = $runtimeRunning
     HeartbeatStale = -not $runtimeRunning
     PID = if ($process) { $process.ProcessId } else { $null }

@@ -14,14 +14,13 @@ loopback app-server that Codex Desktop and the watchdog both use. This keeps one
 in-memory owner for task, workspace, model, permissions, login, conversation,
 and goal state.
 
-The user-facing management panel, sign-in supervisor, and watchdog worker are
-deliberately separate processes. Codex starts the MCP server only when it needs
-plugin tools or the embedded panel; Windows starts the supervisor at sign-in.
+The user-facing desktop client, sign-in supervisor, and watchdog worker are
+deliberately separate processes. Windows starts the supervisor at sign-in.
 The supervisor launches the worker and restarts it after unexpected exits with
 bounded backoff, while a one-shot stop marker preserves intentional shutdowns.
-Closing Codex, closing
-the panel, or ending the MCP stdio connection does not disable the watchdog.
-The Windows tray icon is owned by the watchdog itself, so it adds no second
+The desktop client is a disposable viewer of the worker's loopback Management
+API: closing Codex or the client does not disable the watchdog.
+The tray icon is owned by the watchdog itself, so it adds no second
 resident service and cannot disagree about process lifetime.
 
 ## Recovery Channel Decision
@@ -139,35 +138,37 @@ the explicit launcher, existing-process, stale-shell and self-update boundaries.
 
 ## Management Data Flow
 
-1. Codex launches `codex-auto-retry-mcp.exe mcp` directly through the plugin's
-   stdio declaration. Release deployment rewrites the portable declaration to
-   the installed absolute path before plugin registration. The GUI-subsystem
-   process never opens a console and never starts at Windows sign-in.
-2. `get_auto_retry_status` reads atomic snapshots of `status.json`,
-   `state.json`, `control.json`, and `config.json`. It exposes task IDs,
-   privacy-safe short labels, retry categories, attempts, actions, and due
-   times, but no conversation content.
-3. The MCP App receives structured tool output, refreshes approximately every
-   five seconds, and updates each countdown locally once per second.
- 4. `set_retry_prompt` atomically updates only `config.json`. The runner reloads
+1. The worker serves a loopback Management API on `127.0.0.1` (random port).
+   Port and a per-launch bearer token are written to `api.json` in the data
+   dir; the desktop client reads the descriptor, verifies the recorded PID is
+   a live worker, and calls `GET /snapshot` (see
+   `docs/api/management-api.md`).
+2. The snapshot reads atomic views of `status.json`, `state.json`,
+   `control.json`, and `config.json`. It exposes task IDs, privacy-safe short
+   labels, retry categories, attempts, actions, and due times, but no
+   conversation content.
+3. The desktop client polls the snapshot and updates each countdown locally
+   once per second. It is a pure protocol client and imports no domain code.
+4. A settings write atomically updates only `config.json`. The runner reloads
     that fallback field immediately before dispatching a normal-conversation retry.
     Every config read-modify-write uses the sidecar `config.json.lock`, shared
-    by the worker, MCP process, tray settings helper, and installer.
-5. `set_auto_retry_paused` atomically updates `control.json`. The watchdog keeps
+    by the worker, `save-settings`/`control` command modes, the desktop
+    client, and installer.
+5. The pause switch atomically updates `control.json`. The watchdog keeps
    scanning and tracking active turns while paused, but starts no new retry.
 6. `retry_now` and `cancel_retry` create unique atomic command files. During its
    next scan tick, the watchdog consumes those commands while holding the same
    lock that owns `state.json`.
-7. `set_retry_settings` atomically updates the prompt, both retry limits, wait
+7. A settings write covers the prompt, both retry limits, wait
    strategy, first/fixed delay, maximum delay, and notification preference.
    `restart_retry` converts only an exhausted entry into an immediate first
    attempt with a fresh budget.
 
-The MCP process never edits retry state directly. A retry-now command applies
+Clients never edit retry state directly. A retry-now command applies
 only while the task remains pending. Cancellation also applies only before
 dispatch; an already-started Codex turn is not terminated or falsely reported
-as cancelled. These rules make management commands race-safe even when several
-Codex tasks have panels open.
+as cancelled. These rules make management commands race-safe even when the
+tray and desktop client act at the same time.
 
 ## Tray Data Flow
 
@@ -182,19 +183,12 @@ the icon with its last icon and tooltip. macOS is supported only in cgo builds
 darwin and other unsupported platforms running without a tray.
 
 Left-click or the menu's 打开设置 item launches the desktop client
-(`codex-auto-resume-desktop` next to the watchdog binary). Where no desktop
-client is installed on Windows, the embedded `ui/settings.ps1` opens as the
-legacy fallback until T8 removes it, as one visible Windows
-Forms settings process. The form reads the same privacy-bounded status,
-configuration, control, and retry-state files. It sends validated settings and
-one-use retry commands back through the watchdog executable; it never writes
-`state.json`. The script is embedded in the build input and materialized with
-an explicit UTF-8 BOM so Windows PowerShell renders Chinese labels correctly.
-Only one settings process is launched from a watchdog instance at a time.
-Local commands from the form are polled in short bounded slices while the
-WinForms message loop continues to run. A command that exceeds the 35-second
-UI deadline is terminated as a process tree and reported as a failed save;
-shared-backend enablement therefore cannot leave the window waiting forever.
+(`codex-auto-resume-desktop` next to the watchdog binary). When no client is
+installed the tray logs the miss and posts a notification; there is no
+in-band settings fallback. The client reads the same privacy-bounded
+management snapshot and sends validated settings and one-use retry commands
+back through the watchdog's `save-settings`/`control` modes and the
+`commands/` file queue; it never writes `state.json`.
 
 ## Background Controller Safety
 
@@ -322,7 +316,7 @@ follow the no-progress counter, so useful progress restarts the wait sequence.
 
 Generic 401/403 authentication errors have a conservative budget that can lower
 both configured limits. `auth_max_attempts` defaults to 6 and is editable (1-1000)
-in native settings, the embedded panel and the settings API. Older API clients
+in the desktop client and the `save-settings` command path. Older API clients
 may omit it to preserve the saved value; explicit invalid values reject the
 whole settings update. A binding class-specific ceiling produces
 `auth_attempt_limit`; lower global ceilings retain their own stop reasons.
@@ -344,8 +338,8 @@ restart command after Codex is open again. This prevents a closed desktop from
 causing an unbounded background polling loop.
 
 An elapsed-time circuit breaker stops one automatic recovery chain after 30
-minutes, even when larger numeric limits are configured. The panel reports
-`recovery_time_limit`. Configurations above the recommended 100 recovery
+minutes, even when larger numeric limits are configured. The management
+snapshot reports `recovery_time_limit`. Configurations above the recommended 100 recovery
 attempts or 20 consecutive no-progress retries produce a visible warning
 instead of being silently rewritten.
 
@@ -436,8 +430,8 @@ task ID and cannot replay old events.
 
 `control.json` owns the durable pause switch. One-use `retry_now`,
 `cancel_retry`, and `restart_retry` command files are kept in `commands` only
-until a watchdog tick consumes them. The management MCP server and tray
-settings process can therefore run concurrently with the watchdog without
+until a watchdog tick consumes them. The desktop client and tray
+can therefore run concurrently with the watchdog without
 becoming additional writers for `state.json`.
 
 ## Quota Recovery Lifecycle
@@ -546,24 +540,14 @@ fields; `retry_now` pulls a parked wait forward to dispatch immediately and
   output. It proves that silent continuation sends exactly one additional
   provider request, retains the original prompt in context, creates no visible
   user item, and stores the recovered assistant reply in the same task.
-- `mcp-smoke-test.ps1` launches the GUI-subsystem MCP binary with isolated
-  data. It verifies all seven tools, nested and compatibility UI metadata, the
-  `text/html;profile=mcp-app` resource, structured status, prompt and pause
-  updates, and atomic retry-now/cancel command submission.
-- `tray-smoke-test.ps1` starts an isolated GUI-subsystem watchdog and opens the
-  real Windows Forms settings process through the native tray command. It
-  requires the settings top-level window to be visible, verifies that numeric
-  labels do not overlap their input fields, exercises concurrent status refresh
-  across several watchdog scans, closes it through a test-only signal, and
-  verifies that no stale running status remains.
-- The panel is type-checked, bundled into a single offline HTML resource, and
-  inspected with Playwright at desktop and narrow widths. The MCP Apps client
-  handles host theme variables, safe-area insets, and automatic iframe sizing.
+- `tray-smoke-test.ps1` starts an isolated GUI-subsystem watchdog, verifies
+  the systray message window exists for that process, requires a running
+  heartbeat with no `tray_error` log category, and verifies a clean
+  stop-signal shutdown leaves no stale running status.
 - `release-test.ps1` extracts the distributable ZIP, verifies every listed
   SHA-256 hash, checks its one-folder layout and required payload, checks the
   GUI PE subsystem, parses all deployment scripts with the PowerShell AST
-  parser, executes dry runs, and performs an isolated plugin-only install to
-  prove that the PowerShell fallback is replaced by the direct MCP launcher.
+  parser, executes dry runs, and performs an isolated plugin-only install.
 
 ## Release And Upgrade Boundary
 
@@ -612,8 +596,8 @@ The startup boundary also validates the separate Windows
 `StartupApproved\\Run\\CodexAutoRetry` value. Installation and explicit
 startup enablement update both registry surfaces, while status and the manager
 distinguish a present `Run` value from an approval that Windows has disabled.
-The embedded management snapshot and panel expose the same approval state so
-the Codex UI cannot report a healthy sign-in path from the `Run` value alone.
+The management snapshot and desktop client expose the same approval state so
+no surface reports a healthy sign-in path from the `Run` value alone.
 When shared mode is enabled, startup first validates the existing owned state,
 live process identity, creation time, and WebSocket endpoint. A stale or
 missing owned backend is handled by a durable fail-open marker and a persisted

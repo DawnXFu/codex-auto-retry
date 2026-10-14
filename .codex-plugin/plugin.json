@@ -1,12 +1,11 @@
 {
   "name": "codex-auto-retry",
   "version": "0.7.12+codex.20260921072806",
-  "description": "Automatically resumes Codex tasks after recoverable provider failures, with a Windows tray controller and an embedded Codex panel.",
+  "description": "Automatically resumes Codex tasks after recoverable provider failures, with a cross-platform tray controller and desktop client.",
   "author": {
     "name": "sybxxx (TQY Local Tools)"
   },
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -16,19 +15,18 @@
   ],
   "interface": {
     "displayName": "Codex Auto Retry",
-    "shortDescription": "Recover interrupted tasks with tray and Codex controls.",
-    "longDescription": "Runs a local, provider-independent watchdog that detects explicit provider failures and silent empty responses, then resumes the same task through a shared Codex app-server without adding a visible user message, focusing the App, or switching tasks. A Windows tray controller and embedded Codex panel show live countdowns, bounded controller health, separate per-fault and consecutive no-progress limits, fixed, linear, or doubling waits, queue state, pause controls, and retry settings.",
+    "shortDescription": "Recover interrupted tasks with tray and desktop controls.",
+    "longDescription": "Runs a local, provider-independent watchdog that detects explicit provider failures and silent empty responses, then resumes the same task through a shared Codex app-server without adding a visible user message, focusing the App, or switching tasks. A cross-platform tray controller and desktop client show live countdowns, bounded controller health, separate per-fault and consecutive no-progress limits, fixed, linear, or doubling waits, queue state, pause controls, and retry settings.",
     "developerName": "sybxxx (TQY Local Tools)",
     "category": "Productivity",
     "capabilities": [
       "Automation",
-      "Interactive",
       "Local"
     ],
     "defaultPrompt": [
-      "\u6253\u5f00 Codex Auto Retry \u7ba1\u7406\u9762\u677f\u3002",
-      "\u67e5\u770b\u81ea\u52a8\u91cd\u8bd5\u961f\u5217\u548c\u5012\u8ba1\u65f6\u3002",
-      "\u4fee\u6539 Codex Auto Retry \u7684\u540e\u5907\u91cd\u8bd5\u6587\u5b57\u3002"
+      "Codex Auto Retry 的自动恢复是怎么工作的？",
+      "查看自动重试队列和倒计时。",
+      "修改 Codex Auto Retry 的后备重试文字。"
     ]
   }
 }

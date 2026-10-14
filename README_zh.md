@@ -7,11 +7,11 @@
 
 [English](README.md) | [中文说明]
 
-> **Codex Auto Resume** 是 [sybxxx/codex-auto-retry](https://github.com/sybxxx/codex-auto-retry) 的最小差异 Fork（见 [ADR-0001](docs/adr/0001-fork-strategy.md)），新增配额感知（reset-aware）恢复能力，并以 “Codex Auto Resume” 产品名称发布；Codex 插件/MCP 集成面保留 `codex-auto-retry` 命名。
+> **Codex Auto Resume** 是 [sybxxx/codex-auto-retry](https://github.com/sybxxx/codex-auto-retry) 的最小差异 Fork（见 [ADR-0001](docs/adr/0001-fork-strategy.md)），新增配额感知（reset-aware）恢复能力，并以 “Codex Auto Resume” 产品名称发布；Codex 插件集成面保留 `codex-auto-retry` 命名。
 
 Codex Auto Retry 是一款专为 Windows 平台 Codex 打造的开源可靠性守护与原地自动恢复工具。它可以在后台静默监测 Codex 任务生命周期，在遭遇网络波动、服务限流（Rate Limit）、请求超时、服务器异常或模型空回复时，**在原任务中安全、自动地原地恢复运行**，同时完整保留任务工作区、模型配置与推理参数。
 
-该工具作为 Windows 本地后台轻量守护服务运行，无需在每个 Codex 会话中手动引用或重复发送提示词。同时提供任务栏通知区域托盘控制器以及 Codex 原生内嵌管理面板（基于 MCP 协议），界面开闭均不影响后台自动恢复。
+该工具作为 Windows 本地后台轻量守护服务运行，无需在每个 Codex 会话中手动引用或重复发送提示词。同时提供任务栏通知区域托盘控制器以及桌面客户端，界面开闭均不影响后台自动恢复。
 
 最新 Windows x64 二进制发布包可前往 [GitHub Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) 页面直接下载。参与贡献与安全漏洞披露准则请参见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [SECURITY.md](SECURITY.md)。
 
@@ -29,7 +29,7 @@ Codex Auto Retry 是一款专为 Windows 平台 Codex 打造的开源可靠性�
   - [可重试与不可重试边界](#可重试与不可重试边界)
 - [用户交互界面](#用户交互界面)
   - [Windows 任务栏托盘控制器](#windows-任务栏托盘控制器)
-  - [Codex 内嵌管理面板（MCP Apps）](#codex-内嵌管理面板mcp-apps)
+  - [桌面客户端](#桌面客户端)
 - [隐私与安全保障](#隐私与安全保障)
 - [安装、维护与卸载](#安装维护与卸载)
 - [故障安全设计（Fail-Open）](#故障安全设计fail-open)
@@ -64,7 +64,7 @@ Codex Auto Retry 是一款专为 Windows 平台 Codex 打造的开源可靠性�
 1. **下载**：从 [Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) 下载最新的 Windows x64 绿色免安装 ZIP。
 2. **解压**：解压到普通的本地文件夹（请勿在压缩包预览中直接运行）。
 3. **安装**：完整退出 Codex 后，双击运行 `安装.cmd`，等待提示安装成功。
-4. **验证**：打开 Codex App 并新建一个任务，发送提示词：`打开 Codex Auto Retry 管理面板` 即可呼出内嵌监控面板。
+4. **验证**：打开 Codex App 并新建一个任务；点击托盘图标打开桌面客户端即可查看实时状态。
 5. 更多通道检查与安全启动行为，请参阅随包附带的 [Windows 安装说明](release/windows/README-安装说明.txt)。
 
 ---
@@ -96,7 +96,7 @@ Codex Auto Retry 是一款专为 Windows 平台 Codex 打造的开源可靠性�
 
 ### 双重安全上限与退避策略
 
-从 0.7.12 开始，两个设置面板均显示“登录异常恢复上限”（`auth_max_attempts`，默认 6，范围 1–1000）。普通登录异常与两个通用上限取较小值；临时 `auth_unavailable` 故障仍使用通用上限。分类变化或调低上限不会缩小已累计次数，例如 `19/6` 表示实际已重试 19 次后，适用上限降为 6；旧版已截断的历史计数不会推测还原。
+从 0.7.12 开始，桌面客户端与设置接口均显示“登录异常恢复上限”（`auth_max_attempts`，默认 6，范围 1–1000）。普通登录异常与两个通用上限取较小值；临时 `auth_unavailable` 故障仍使用通用上限。分类变化或调低上限不会缩小已累计次数，例如 `19/6` 表示实际已重试 19 次后，适用上限降为 6；旧版已截断的历史计数不会推测还原。
 
 为杜绝死循环重试和过度消耗 API 配额，内置两道独立安全防线：
 
@@ -139,36 +139,28 @@ Codex Auto Retry 是一款专为 Windows 平台 Codex 打造的开源可靠性�
 
 - **状态悬浮提示**：鼠标悬停在托盘图标上，即刻显示当前守护状态（运行中、暂停、等待中、活跃、已停止）及最近任务的重试倒计时。
 - **资源管理器崩溃自愈**：若 Windows Explorer 意外重启，systray 库会自动重新注册托盘图标并恢复实时状态。
-- **左键交互**：单击托盘图标即可打开桌面客户端（未安装客户端时，Windows 上回退到旧版设置窗口）。
+- **左键交互**：单击托盘图标即可打开桌面客户端。
 - **右键快捷菜单**：显示状态行与配额等待任务的「立即恢复 / 取消」项，支持快速暂停/继续任务调度、打开设置或退出守护程序。
 - **Linux 运行时依赖**：托盘基于 D-Bus StatusNotifierItem，需要桌面环境提供通知宿主（KDE Plasma 内置；GNOME 需安装 AppIndicator/KStatusNotifierItem 扩展）；无桌面环境可用 `--no-tray` 运行。
 
-在设置窗口中可以轻松配置：
+在设置界面中可以轻松配置：
 - 两项独立重试次数上限（本次故障恢复上限、连续无进展重试上限）；
 - 退避曲线（固定间隔、线性递增、指数翻倍）与最大等待封顶；
 - 后备重试文本（限 500 字符）；
 - 达到重试上限时的 Windows 系统气泡提醒开关；
 - 简体中文 / 英文一键无缝切换。
 
-<p align="center">
-  <img src="assets/settings_zh.png" alt="Codex Auto Retry 设置窗口（简体中文）" width="520" />
-</p>
+### 桌面客户端
 
-### Codex 内嵌管理面板（MCP Apps）
-
-直接在 Codex 内部通过自然语言随时呼出：
-> `打开 Codex Auto Retry 管理面板`
-
-<p align="center">
-  <img src="assets/panel.png" alt="Codex 内嵌管理面板（MCP）" width="620" />
-</p>
-
-面板使用轻量 TypeScript 构建并通过 Go 原生 `embed` 嵌入到 MCP 二进制文件中，无需安装 Node.js 环境，运行时零外网网络请求：
-- 实时展示守护服务状态、监控的会话目录与最近扫描时间戳；
+桌面客户端（`codex-auto-resume-desktop`，随守护程序一同安装的 Wails 应用）是完整的管理界面。它通过守护进程的本地回环 Management API 读取实时快照（始终是最新状态，不存在第二份状态视图），可展示：
+- 实时守护服务状态、监控的会话目录与最近扫描时间戳；
 - 队列视图：展示所有等待中与运行中的任务及精确秒级倒计时；
+- 配额窗口：剩余百分比与重置倒计时；
 - 便捷操作：支持对等待中任务一键“立即重试（Retry Now）”或手动取消；
 - 耗尽任务重置：直观列出因达到上限而停止的任务，可一键刷新重试预算重新开始；
-- 全局暂停开关。
+- 全局暂停开关及全部重试设置。
+
+关闭客户端仅退出查看界面；守护进程、托盘与自动恢复继续运行。
 
 ---
 

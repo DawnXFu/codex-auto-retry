@@ -5,7 +5,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $watchdogSource = Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe'
-$mcpSource = Join-Path $PSScriptRoot 'bin\codex-auto-retry-mcp.exe'
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
 $watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
 $legacyWatchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
@@ -277,7 +276,6 @@ function Wait-Heartbeat {
 }
 
 if (-not (Test-Path -LiteralPath $watchdogSource -PathType Leaf)) { throw "Built watchdog not found: $watchdogSource" }
-if (-not (Test-Path -LiteralPath $mcpSource -PathType Leaf)) { throw "Built MCP server not found: $mcpSource" }
 [void](Assert-CodexAutoRetryHostPath -Path $installDir)
 
 if (Test-CodexDesktopRunning) {
@@ -406,19 +404,18 @@ try {
     $candidateRoot = Join-Path $transactionRoot 'candidate'
     New-Item -ItemType Directory -Force -Path $candidateRoot | Out-Null
     $candidateWatchdog = Join-Path $candidateRoot 'codex-auto-resume.exe'
-    $candidateMcp = Join-Path $candidateRoot 'codex-auto-retry-mcp.exe'
     Copy-Item -LiteralPath $watchdogSource -Destination $candidateWatchdog -Force
-    Copy-Item -LiteralPath $mcpSource -Destination $candidateMcp -Force
-    if ((Get-FileHash -LiteralPath $watchdogSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidateWatchdog -Algorithm SHA256).Hash -or
-        (Get-FileHash -LiteralPath $mcpSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidateMcp -Algorithm SHA256).Hash) {
+    if ((Get-FileHash -LiteralPath $watchdogSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidateWatchdog -Algorithm SHA256).Hash) {
         throw 'Candidate binary verification failed.'
     }
     $journal.phase = 'candidate_verified'
     Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     Copy-Item -LiteralPath $candidateWatchdog -Destination $watchdogTarget -Force
-    Copy-Item -LiteralPath $candidateMcp -Destination $mcpTarget -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\internal\watchdog\ui\settings.ps1') -Destination $settingsTarget -Force
     Remove-Item -LiteralPath $legacyWatchdogTarget -Force -ErrorAction SilentlyContinue
+    # Retire the MCP executable and settings.ps1 left by pre-desktop-client
+    # installs; the desktop client replaces both surfaces (ADR-0004).
+    Remove-Item -LiteralPath $mcpTarget -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $settingsTarget -Force -ErrorAction SilentlyContinue
     Set-SupervisedStartupEntry
     $journal.phase = 'startup_registered'
     Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
@@ -439,7 +436,6 @@ try {
         Version = $status.version
         PID = $status.pid
         Paused = [bool]$status.paused
-        MCPServerInstalled = Test-Path -LiteralPath $mcpTarget
         InstallDirectory = $installDir
         Startup = 'Current user sign-in'
         SharedAppServerEnabled = [bool]$EnableSharedAppServer

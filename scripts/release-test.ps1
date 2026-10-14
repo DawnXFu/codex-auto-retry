@@ -29,33 +29,6 @@ function Get-PeSubsystem {
     return [BitConverter]::ToUInt16($bytes, $optionalHeader + 68)
 }
 
-function Test-ReleasePathEquals {
-    param(
-        [Parameter(Mandatory = $true)][string]$Actual,
-        [Parameter(Mandatory = $true)][string]$Expected
-    )
-
-    try {
-        $actualPath = [IO.Path]::GetFullPath($Actual)
-        $expectedPath = [IO.Path]::GetFullPath($Expected)
-        foreach ($candidate in @($actualPath, $expectedPath)) {
-            $parent = Get-Item -LiteralPath (Split-Path -Parent $candidate) -ErrorAction SilentlyContinue
-            if ($null -eq $parent) { continue }
-            $canonical = Join-Path $parent.FullName (Split-Path -Leaf $candidate)
-            if ($candidate -eq $actualPath) { $actualPath = $canonical }
-            else { $expectedPath = $canonical }
-        }
-        return [string]::Equals(
-            $actualPath.TrimEnd('\'),
-            $expectedPath.TrimEnd('\'),
-            [StringComparison]::OrdinalIgnoreCase
-        )
-    }
-    catch {
-        return $false
-    }
-}
-
 try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
     Expand-Archive -LiteralPath $archive -DestinationPath $testRoot -Force
@@ -81,8 +54,6 @@ try {
         'release-manifest.json',
         'SHA256SUMS.txt',
         'payload\codex-auto-retry\.codex-plugin\plugin.json',
-        'payload\codex-auto-retry\.mcp.json',
-        'payload\codex-auto-retry\scripts\source\internal\watchdog\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\launch-codex.ps1',
         'payload\codex-auto-retry\scripts\launch-codex-smoke-test.ps1',
@@ -101,11 +72,20 @@ try {
         'payload\codex-auto-retry\scripts\shared-server-status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
-        'payload\codex-auto-retry\scripts\bin\codex-auto-resume.exe',
-        'payload\codex-auto-retry\scripts\bin\codex-auto-retry-mcp.exe'
+        'payload\codex-auto-retry\scripts\bin\codex-auto-resume.exe'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required))) {
             throw "Release archive is missing: $required"
+        }
+    }
+
+    foreach ($removed in @(
+        'payload\codex-auto-retry\.mcp.json',
+        'payload\codex-auto-retry\scripts\bin\codex-auto-retry-mcp.exe',
+        'payload\codex-auto-retry\scripts\source\internal\watchdog\ui'
+    )) {
+        if (Test-Path -LiteralPath (Join-Path $root $removed)) {
+            throw "Release archive still contains a retired surface: $removed"
         }
     }
 
@@ -140,16 +120,8 @@ try {
     $payloadRoot = Join-Path $root 'payload\codex-auto-retry'
     . (Join-Path $payloadRoot 'scripts\build-provenance.ps1')
     Assert-CodexBuildProvenance -Root $payloadRoot
-    $payloadMcpConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $payloadRoot '.mcp.json') | ConvertFrom-Json
-    $payloadMcpServer = $payloadMcpConfig.mcpServers.'codex-auto-retry'
-    $payloadArgs = @($payloadMcpServer.args)
-    if ([string]$payloadMcpServer.command -ne 'powershell.exe' -or
-        [Array]::IndexOf($payloadArgs, '-WindowStyle') -lt 0 -or
-        [Array]::IndexOf($payloadArgs, 'Hidden') -lt 0) {
-        throw 'Portable MCP fallback is not configured to remain hidden.'
-    }
-    if ((Get-PeSubsystem (Join-Path $payloadRoot 'scripts\bin\codex-auto-retry-mcp.exe')) -ne 2) {
-        throw 'MCP executable must use the Windows GUI subsystem.'
+    if ((Get-PeSubsystem (Join-Path $payloadRoot 'scripts\bin\codex-auto-resume.exe')) -ne 2) {
+        throw 'Watchdog executable must use the Windows GUI subsystem.'
     }
 
     foreach ($script in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'close-codex.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1')) {
@@ -198,37 +170,6 @@ try {
         -not $sharedStatusSource.Contains('CreationDate') -or
         -not $sharedStatusSource.Contains('Test-CodexAutoRetryTcpEndpoint')) {
         throw 'Shared-server status does not verify process identity, creation time, and endpoint liveness.'
-    }
-    $settingsPath = Join-Path $root 'payload\codex-auto-retry\scripts\source\internal\watchdog\ui\settings.ps1'
-    $settingsSource = [System.IO.File]::ReadAllText($settingsPath, [System.Text.UTF8Encoding]::new($false))
-    $settingsTokens = $null
-    $settingsErrors = $null
-    [void][System.Management.Automation.Language.Parser]::ParseInput(
-        $settingsSource,
-        [ref]$settingsTokens,
-        [ref]$settingsErrors
-    )
-    if ($settingsErrors.Count -gt 0) {
-        throw "PowerShell parse error in tray settings script: $($settingsErrors[0].Message)"
-    }
-    if ($settingsSource.Contains('.WaitForExit()')) {
-        throw 'Tray settings still contains an unbounded local-command wait.'
-    }
-    $reservedPortMessage = ([string][char]0x88AB) + ' Windows ' + ([char]0x4FDD) + ([char]0x7559)
-    $boundedLocalWait = $settingsSource.Contains('.WaitForExit(100)') -or
-        ($settingsSource.Contains('Start-Sleep -Milliseconds 50') -and
-            $settingsSource.Contains('[System.Windows.Forms.Application]::DoEvents()'))
-    if (-not $boundedLocalWait -or
-        -not $settingsSource.Contains('[System.Windows.Forms.Application]::DoEvents()') -or
-        -not $settingsSource.Contains('$localCommandTimeoutMilliseconds') -or
-        -not $settingsSource.Contains('$localCommandExitPortReserved') -or
-        -not $settingsSource.Contains($reservedPortMessage)) {
-        throw 'Tray settings does not keep local commands responsive and bounded.'
-    }
-    if (-not $settingsSource.Contains('Start-SafeCodexLaunch') -or
-        -not $settingsSource.Contains('WaitForExitSeconds') -or
-        -not $settingsSource.Contains('safe_launch_running')) {
-        throw 'Tray settings does not expose the bounded safe Codex launcher.'
     }
     $installerSource = [System.IO.File]::ReadAllText(
         (Join-Path $root 'payload\codex-auto-retry\scripts\install.ps1'),
@@ -381,21 +322,20 @@ try {
         -SkipRuntimeInstall 2>&1 | Out-String)
         $isolatedExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = $savedPreference }
-    $directMcpInstall = 'passed'
+    $isolatedInstall = 'passed'
     if ($isolatedExit -ne 0) {
         if ($installOutput -notmatch 'Close Codex completely before installing or upgrading' -or
             (Test-Path -LiteralPath (Join-Path $testProfile 'plugins\codex-auto-retry'))) {
             throw "Isolated installer test failed:`n$installOutput"
         }
-        $directMcpInstall = 'blocked_by_live_desktop; no plugin files changed'
+        $isolatedInstall = 'blocked_by_live_desktop; no plugin files changed'
     } else {
-    $installedMcpConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $testProfile 'plugins\codex-auto-retry\.mcp.json') | ConvertFrom-Json
-    $installedMcpServer = $installedMcpConfig.mcpServers.'codex-auto-retry'
-    $installedMcpArgs = @($installedMcpServer.args)
-    $expectedMcpCommand = Join-Path $testLocalAppData 'CodexAutoRetry\codex-auto-retry-mcp.exe'
-    if (-not (Test-ReleasePathEquals -Actual ([string]$installedMcpServer.command) -Expected $expectedMcpCommand) -or
-        $installedMcpArgs.Count -ne 1 -or [string]$installedMcpArgs[0] -ne 'mcp') {
-        throw "Installed plugin did not replace the shell wrapper with the direct MCP launcher. Actual command: $([string]$installedMcpServer.command); expected: $expectedMcpCommand; args: $($installedMcpArgs -join ',')"
+    $installedManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $testProfile 'plugins\codex-auto-retry\.codex-plugin\plugin.json') | ConvertFrom-Json
+    if ([string]$installedManifest.name -ne 'codex-auto-retry') {
+        throw 'Isolated install did not place the expected plugin manifest.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $testProfile 'plugins\codex-auto-retry\.mcp.json')) {
+        throw 'Isolated install still carries the retired MCP registration file.'
     }
     }
 
@@ -404,9 +344,8 @@ try {
         TopLevelFolder = $roots[0].Name
         FilesVerified = $sumCount
         InstallerDryRun = 'passed'
-        DirectMcpInstall = $directMcpInstall
+        IsolatedInstall = $isolatedInstall
         UninstallerDryRun = 'passed'
-        SettingsCommandWait = 'bounded-and-responsive'
         StartupManager = 'verified'
         FailOpenInstallGuard = 'present'
         RuntimePathGuard = 'verified'

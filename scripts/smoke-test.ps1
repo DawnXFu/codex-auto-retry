@@ -1,9 +1,5 @@
 [CmdletBinding()]
-param(
-    # Watchdog binary handed to auth-settings-smoke-test.ps1; other children
-    # resolve scripts\bin themselves like mcp-smoke-test.ps1 does.
-    [string]$BinaryPath = (Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe')
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -13,7 +9,6 @@ $ErrorActionPreference = 'Stop'
 #   manual-only   = not scheduled; run by hand
 #
 #   app-server-protocol-smoke-test.ps1        manual-only  needs an installed standalone Codex CLI (@openai/codex) and drives a real local app-server
-#   auth-settings-smoke-test.ps1              runner       needs a desktop session for the settings form; binary via -BinaryPath
 #   build-provenance-smoke-test.ps1           manual-only  self-contained fixtures; provenance write/assert is already exercised by build.ps1 in CI
 #   empty-response-protocol-smoke-test.ps1    manual-only  needs standalone Codex CLI + node.exe and a local fake provider
 #   environment-smoke-test.ps1                runner
@@ -21,7 +16,6 @@ $ErrorActionPreference = 'Stop'
 #   installer-cli-smoke-test.ps1              CI           powershell.exe 5.1 step in ci.yml
 #   installer-close-smoke-test.ps1            CI           powershell.exe 5.1 step in ci.yml
 #   launch-codex-smoke-test.ps1               manual-only  mock-based launcher checks; not scheduled by any runner
-#   mcp-smoke-test.ps1                        CI           pwsh protocol step in ci.yml (needs built scripts\bin)
 #   path-safety-smoke-test.ps1                CI           executed against the payload by release-test.ps1
 #   safe-disable-smoke-test.ps1               runner
 #   shared-app-server-smoke-test.ps1          runner
@@ -31,7 +25,7 @@ $ErrorActionPreference = 'Stop'
 #   startup-manager-smoke-test.ps1            CI           executed against the payload by release-test.ps1
 #   status-smoke-test.ps1                     manual-only  needs a live installed watchdog under %LOCALAPPDATA%\CodexAutoRetry
 #   supervisor-smoke-test.ps1                 runner + CI  also in the ci.yml protocol step
-#   tray-smoke-test.ps1                       manual-only  needs an interactive desktop/tray; starts a real watchdog and settings form
+#   tray-smoke-test.ps1                       manual-only  needs an interactive desktop/tray; starts a real watchdog and checks the systray window
 #   upgrade-rollback-smoke-test.ps1           CI           powershell.exe 5.1 step in ci.yml
 
 $startupApprovalResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'startup-approval-smoke-test.ps1')
@@ -55,9 +49,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Safe-disable smoke test failed.' }
 $supervisorResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'supervisor-smoke-test.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Supervisor smoke test failed.' }
 
-$authSettingsResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'auth-settings-smoke-test.ps1') -BinaryPath $BinaryPath
-if ($LASTEXITCODE -ne 0) { throw 'Auth settings smoke test failed.' }
-
 [pscustomobject]@{
     Status = 'passed'
     StartupApproval = ($startupApprovalResult -join [Environment]::NewLine)
@@ -67,6 +58,5 @@ if ($LASTEXITCODE -ne 0) { throw 'Auth settings smoke test failed.' }
     EnvironmentOwnership = ($environmentResult -join [Environment]::NewLine)
     SafeDisable = ($safeDisableResult -join [Environment]::NewLine)
     Supervisor = ($supervisorResult -join [Environment]::NewLine)
-    AuthSettings = ($authSettingsResult -join [Environment]::NewLine)
     RealProviderUsed = $false
 }

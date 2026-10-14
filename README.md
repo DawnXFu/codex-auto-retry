@@ -6,13 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-blue.svg)](#)
 
-> **Codex Auto Resume** is a minimal-diff fork of [sybxxx/codex-auto-retry](https://github.com/sybxxx/codex-auto-retry) (see [ADR-0001](docs/adr/0001-fork-strategy.md)) that adds reset-aware quota recovery and ships under the "Codex Auto Resume" product identity. The Codex plugin/MCP integration surface intentionally keeps the `codex-auto-retry` name.
+> **Codex Auto Resume** is a minimal-diff fork of [sybxxx/codex-auto-retry](https://github.com/sybxxx/codex-auto-retry) (see [ADR-0001](docs/adr/0001-fork-strategy.md)) that adds reset-aware quota recovery and ships under the "Codex Auto Resume" product identity. The Codex plugin integration surface intentionally keeps the `codex-auto-retry` name.
 
 [English] | [中文说明](README_zh.md)
 
 Codex Auto Retry is an open-source reliability and automatic recovery tool for Codex on Windows. It monitors Codex task lifecycle events and safely resumes the exact interrupted task after recoverable provider, network, rate-limit, timeout, or empty-response failures while preserving working context, permissions, and runtime settings.
 
-It runs as a local Windows watchdog service and does not require a per-task prompt. The watchdog provides a notification-area tray controller and an embedded Codex management panel (via MCP), while recovery remains independent of either interface being open. The latest Windows x64 release is available from the [GitHub Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) page.
+It runs as a local Windows watchdog service and does not require a per-task prompt. The watchdog provides a notification-area tray controller and a desktop client, while recovery remains independent of either interface being open. The latest Windows x64 release is available from the [GitHub Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest) page.
 
 For contribution boundaries and vulnerability disclosure, see [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
@@ -29,8 +29,8 @@ For contribution boundaries and vulnerability disclosure, see [CONTRIBUTING.md](
   - [Dual Safety Limits & Backoff Strategies](#dual-safety-limits--backoff-strategies)
   - [Retryable & Non-Retryable Fault Boundaries](#retryable--non-retryable-fault-boundaries)
 - [User Interfaces](#user-interfaces)
-  - [Windows Tray Controller](#windows-tray-controller)
-  - [Embedded Management Panel (MCP)](#embedded-management-panel-mcp)
+  - [Tray Controller](#tray-controller)
+  - [Desktop Client](#desktop-client)
 - [Safety and Privacy](#safety-and-privacy)
 - [Installation and Maintenance](#installation-and-maintenance)
 - [Fail-Open Shared Backend Safety](#fail-open-shared-backend-safety)
@@ -66,7 +66,7 @@ Long-running Codex work can be interrupted after tools have already executed or 
 1. **Download**: Grab the latest Windows x64 ZIP from [Releases](https://github.com/sybxxx/codex-auto-retry/releases/latest).
 2. **Extract**: Extract it to a standard local folder (do not run directly from inside the archive preview).
 3. **Install**: Fully close Codex, then double-click `安装.cmd`. The installer verifies the package and starts the watchdog service.
-4. **Verify**: Open Codex and create a new task. The watchdog will automatically detect active tasks. You can also say `打开 Codex Auto Retry 管理面板` to open the embedded control panel.
+4. **Verify**: Open Codex and create a new task. The watchdog will automatically detect active tasks. Click the tray icon to open the desktop client for live status.
 5. See [Windows installation notes](release/windows/README-安装说明.txt) for route verification, shared backend details, and safe-launch behavior.
 
 ---
@@ -108,7 +108,7 @@ To prevent runaway retry loops and excessive resource consumption, two independe
 - **Backoff Strategies**: Supports fixed, linear, or doubling (exponential) delays capped at a configurable maximum. Linear waits add a configurable number of seconds each time. Increasing waits follow the consecutive no-progress count, so visible progress resets the delay sequence.
 - **Turn Correlation**: Correlates the new `task_started` turn ID with its matching `task_complete`. An unrelated successful turn cannot falsely mark a retry as recovered.
 
-**Authentication ceiling:** Both settings panels expose `auth_max_attempts` (default 6, range 1-1000). Limited authentication errors use the smaller of this ceiling and each global limit. Temporary `auth_unavailable` failures use the global limits. If an error changes category or a limit is lowered, historical counts remain intact: `19/6` means 19 attempts preceded the newly applicable six-attempt ceiling. Already-truncated old records are not reconstructed.
+**Authentication ceiling:** The desktop client and settings API expose `auth_max_attempts` (default 6, range 1-1000). Limited authentication errors use the smaller of this ceiling and each global limit. Temporary `auth_unavailable` failures use the global limits. If an error changes category or a limit is lowered, historical counts remain intact: `19/6` means 19 attempts preceded the newly applicable six-attempt ceiling. Already-truncated old records are not reconstructed.
 
 ### Retryable & Non-Retryable Fault Boundaries
 
@@ -141,36 +141,28 @@ The watchdog runs as a single lightweight background process with a notification
 
 - **Hover Tooltip**: Displays the current status (running, paused, waiting, active, stopped) and live countdown for the nearest pending retry.
 - **Explorer Restart Recovery**: If Windows Explorer restarts, the systray library automatically re-registers the tray icon and restores current state.
-- **Left-Click**: Opens the desktop client (on Windows, the legacy settings window when no client is installed).
+- **Left-Click**: Opens the desktop client.
 - **Right-Click Context Menu**: Shows the status line, per-task Resume Now / Cancel rows for quota waits, and allows quick pausing/resuming of dispatch, opening settings, or exiting the watchdog.
 - **Linux runtime dependency**: the tray is a D-Bus StatusNotifierItem, so it needs a notifier host in the desktop (built into KDE Plasma; on GNOME install an AppIndicator/KStatusNotifierItem extension); headless systems run with `--no-tray`.
 
-The settings window allows configuring:
+The settings view allows configuring:
 - Recovery limits (`Recoveries This Outage` and `Consecutive No Progress`);
 - Delay curves (fixed, linear increment, or doubling backoff, with custom initial and max caps);
 - Fallback retry text (up to 500 characters);
 - Watchdog notification preferences;
 - One-click Chinese/English localization toggle.
 
-<p align="center">
-  <img src="assets/settings_en.png" alt="Codex Auto Retry Settings Window (English)" width="520" />
-</p>
+### Desktop Client
 
-### Embedded Management Panel (MCP)
-
-Users can open the management panel directly inside Codex by asking:
-> `打开 Codex Auto Retry 管理面板` *(Open Codex Auto Retry Management Panel)*
-
-<p align="center">
-  <img src="assets/panel.png" alt="Codex Embedded Management Panel (MCP)" width="620" />
-</p>
-
-Built with vanilla TypeScript and embedded into the Go MCP binary via Go `embed`, the panel requires no Node.js runtime and performs zero external network requests. It displays:
+The desktop client (`codex-auto-resume-desktop`, a Wails app installed next to the watchdog) is the full management surface. It reads the watchdog's loopback Management API — always a fresh snapshot, never a second view of state — and displays:
 - Watchdog health, monitored session directories, and timestamp of last scan;
 - Active and pending retry queues with real-time countdown timers;
+- Quota windows with remaining percent and reset countdowns;
 - Immediate retry (`Retry Now`) and cancellation controls;
 - Exhausted task list with a one-click attempt budget reset button;
-- Global pause/resume toggle.
+- Global pause/resume toggle and every retry setting.
+
+Closing the client only closes the viewer; the watchdog, tray, and recovery keep running.
 
 ---
 

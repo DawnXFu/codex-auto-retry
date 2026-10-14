@@ -211,23 +211,6 @@ function Assert-ExistingPluginIsOurs {
     }
 }
 
-function Set-InstalledMcpLauncher {
-    param([string]$PluginPath, [string]$RuntimePath)
-
-    $configPath = Join-Path $PluginPath '.mcp.json'
-    $config = Read-JsonDocument -Path $configPath
-    if ($null -eq $config -or $null -eq $config.PSObject.Properties['mcpServers'] -or
-        $null -eq $config.mcpServers.PSObject.Properties['codex-auto-retry']) {
-        throw 'The plugin MCP configuration is missing codex-auto-retry.'
-    }
-
-    $server = $config.mcpServers.'codex-auto-retry'
-    $mcpPath = Join-Path $RuntimePath 'codex-auto-retry-mcp.exe'
-    Set-ObjectProperty -Object $server -Name 'command' -Value $mcpPath
-    Set-ObjectProperty -Object $server -Name 'args' -Value @('mcp')
-    Write-JsonAtomic -Path $configPath -Value $config
-}
-
 function Install-Runtime {
     param([string]$PluginPath, [bool]$EnableSharedAppServer)
 
@@ -413,25 +396,6 @@ function Verify-Installation {
         throw 'The installed plugin source could not be verified.'
     }
 
-    $mcpConfig = Read-JsonDocument -Path (Join-Path $PluginPath '.mcp.json')
-    $mcpServer = if ($null -eq $mcpConfig -or $null -eq $mcpConfig.PSObject.Properties['mcpServers'] -or
-        $null -eq $mcpConfig.mcpServers.PSObject.Properties['codex-auto-retry']) {
-        $null
-    }
-    else {
-        $mcpConfig.mcpServers.'codex-auto-retry'
-    }
-    $expectedMcpPath = Join-Path $RuntimePath 'codex-auto-retry-mcp.exe'
-    $mcpArgs = @()
-    if ($null -ne $mcpServer -and $null -ne $mcpServer.PSObject.Properties['args']) {
-        $mcpArgs = @($mcpServer.args)
-    }
-    if ($null -eq $mcpServer -or
-        -not [string]::Equals([string]$mcpServer.command, $expectedMcpPath, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $mcpArgs.Count -ne 1 -or [string]$mcpArgs[0] -ne 'mcp') {
-        throw 'The installed plugin does not use the direct background MCP launcher.'
-    }
-
     if ($VerifyPlugin) {
         $listDocument = Get-VerifiedPluginList -Cli $Cli -PluginId $PluginId
         $matches = @($listDocument.installed | Where-Object { $_.pluginId -eq $PluginId -and $_.installed -and $_.enabled })
@@ -443,9 +407,7 @@ function Verify-Installation {
 
     if ($VerifyRuntime) {
         $watchdog = Join-Path $RuntimePath 'codex-auto-resume.exe'
-        $mcp = Join-Path $RuntimePath 'codex-auto-retry-mcp.exe'
         Assert-X64PeBinary -Path $watchdog
-        Assert-X64PeBinary -Path $mcp
 
         $status = Read-JsonDocument -Path (Join-Path $RuntimePath 'status.json')
         if ($null -eq $status -or -not $status.running -or [string]$status.version -ne $ExpectedBaseVersion) {
@@ -499,7 +461,6 @@ if ($null -eq $pluginManifest -or [string]$pluginManifest.name -ne 'codex-auto-r
     throw 'The payload plugin manifest does not match the release manifest.'
 }
 Assert-X64PeBinary -Path (Join-Path $payloadRoot 'scripts\bin\codex-auto-resume.exe')
-Assert-X64PeBinary -Path (Join-Path $payloadRoot 'scripts\bin\codex-auto-retry-mcp.exe')
 
 Write-Step 'Verifying release files...'
 $checkedFiles = Test-ReleaseIntegrity -Root $packageRootPath
@@ -671,7 +632,6 @@ try {
     elseif (Test-Path -LiteralPath $gitMetadataBackup -PathType Leaf) {
         Copy-Item -LiteralPath $gitMetadataBackup -Destination $gitMetadataTarget -Force
     }
-    Set-InstalledMcpLauncher -PluginPath $pluginTarget -RuntimePath $runtimePath
     $journal.phase = 'plugin_replaced'
     Write-JsonAtomic -Path $upgradeJournalPath -Value $journal
     Write-JsonAtomic -Path (Join-Path $pluginTarget '.codex-auto-retry-release.json') -Value ([pscustomobject][ordered]@{
@@ -715,10 +675,10 @@ try {
 
     Write-Step 'Installation completed successfully.'
     if ($EnableSharedAppServer) {
-        Write-Host 'Restart Codex once so it connects to the shared recovery service, then open a new task to load the management panel.'
+        Write-Host 'Restart Codex once so it connects to the shared recovery service, then open the desktop client or tray icon for status.'
     }
     else {
-        Write-Host 'Shared recovery remains disabled; open a new task to load the management panel.'
+        Write-Host 'Shared recovery remains disabled; open the desktop client or tray icon for status.'
     }
     [pscustomobject]@{
         Installed = $true

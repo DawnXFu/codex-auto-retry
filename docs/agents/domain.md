@@ -19,7 +19,8 @@ Single-context repo:
 ├── docs/adr/
 │   ├── 0001-fork-strategy.md
 │   ├── 0002-quota-recovery-semantics.md
-│   └── 0003-per-limit-evidence-spaces.md
+│   ├── 0003-per-limit-evidence-spaces.md
+│   └── 0004-desktop-gui-and-cross-platform.md
 └── scripts/source/                   ← Go module (watchdog code in internal/watchdog, entrypoint in cmd/auto-resume)
 ```
 

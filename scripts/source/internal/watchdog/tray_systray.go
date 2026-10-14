@@ -43,9 +43,6 @@ type trayApp struct {
 	lastPauseTitle  string
 	notified        trayNotifyCounts
 	initialized     bool
-
-	settingsMu   sync.Mutex
-	settingsOpen bool
 }
 
 func runTray(ctx context.Context, cancel context.CancelFunc, dataDir string, logger *safeLogger) error {
@@ -210,8 +207,9 @@ func (a *trayApp) notify(title, text string) {
 }
 
 // openSettings launches the desktop client next to the watchdog binary, using
-// the same executable-relative resolution as the data dir. When the client is
-// not installed the legacy settings surface opens instead.
+// the same executable-relative resolution as the data dir. When no client is
+// installed the miss is logged and surfaced as a notification; there is no
+// in-band settings fallback anymore (ADR-0004).
 func (a *trayApp) openSettings() {
 	if client := desktopClientPath(); client != "" {
 		if err := exec.Command(client).Start(); err != nil {
@@ -219,7 +217,8 @@ func (a *trayApp) openSettings() {
 		}
 		return
 	}
-	a.openLegacySettings()
+	a.logger.Printf("desktop client not found category=settings_client")
+	a.notify("Codex Auto Resume", "Desktop client is not installed next to the watchdog.")
 }
 
 func desktopClientPath() string {

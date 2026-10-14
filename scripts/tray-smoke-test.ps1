@@ -6,8 +6,6 @@ $binary = Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe'
 $testRoot = Join-Path $env:TEMP ("codex-auto-retry-tray-" + [guid]::NewGuid().ToString('N'))
 $dataDir = Join-Path $testRoot 'data'
 $process = $null
-$settingsProcess = $null
-$oldSettingsSmoke = $env:CODEX_AUTO_RETRY_SETTINGS_SMOKE
 
 Add-Type -TypeDefinition @'
 using System;
@@ -15,22 +13,24 @@ using System.Runtime.InteropServices;
 public static class CodexAutoRetryTrayProbe {
     private delegate bool EnumWindowsProc(IntPtr window, IntPtr state);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern IntPtr FindWindow(string className, string windowName);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr state);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maxCount);
 
-    public static IntPtr FindVisibleWindow(uint targetProcessId) {
+    // fyne.io/systray registers a hidden message window with the fixed class
+    // name "SystrayClass" on Windows; other products use the same name, so the
+    // probe matches by owning process id rather than by class alone.
+    public static IntPtr FindProcessWindow(uint targetProcessId, string wantedClass) {
         IntPtr match = IntPtr.Zero;
         EnumWindows(delegate(IntPtr window, IntPtr state) {
             uint processId;
             GetWindowThreadProcessId(window, out processId);
-            if (processId == targetProcessId && IsWindowVisible(window)) {
+            if (processId != targetProcessId) { return true; }
+            var name = new System.Text.StringBuilder(256);
+            if (GetClassName(window, name, name.Capacity) == 0) { return true; }
+            if (string.Equals(name.ToString(), wantedClass, StringComparison.Ordinal)) {
                 match = window;
                 return false;
             }
@@ -69,20 +69,17 @@ try {
         ($config | ConvertTo-Json -Depth 5),
         [System.Text.UTF8Encoding]::new($false)
     )
-    $env:CODEX_AUTO_RETRY_SETTINGS_SMOKE = '1'
     $process = Start-Process -FilePath $binary -ArgumentList @('run', '--data-dir', $dataDir) -WindowStyle Hidden -PassThru
-    $env:CODEX_AUTO_RETRY_SETTINGS_SMOKE = $oldSettingsSmoke
-    $className = "CodexAutoRetryTray-$($process.Id)"
     $deadline = (Get-Date).AddSeconds(15)
     $trayWindow = [IntPtr]::Zero
     do {
         Start-Sleep -Milliseconds 200
         $process.Refresh()
         if ($process.HasExited) { throw "Watchdog exited before creating the tray icon (exit=$($process.ExitCode))." }
-        $trayWindow = [CodexAutoRetryTrayProbe]::FindWindow($className, $className)
+        $trayWindow = [CodexAutoRetryTrayProbe]::FindProcessWindow([uint32]$process.Id, 'SystrayClass')
     } while ($trayWindow -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline)
     if ($trayWindow -eq [IntPtr]::Zero) {
-        throw 'Tray window was not created.'
+        throw 'Systray window was not created.'
     }
     $statusPath = Join-Path $dataDir 'status.json'
     $deadline = (Get-Date).AddSeconds(10)
@@ -95,52 +92,6 @@ try {
     } while ((-not $status -or -not $status.running -or $status.pid -ne $process.Id) -and (Get-Date) -lt $deadline)
     if (-not $status -or -not $status.running -or $status.pid -ne $process.Id) {
         throw 'Tray watchdog did not publish a valid heartbeat.'
-    }
-    if (-not [CodexAutoRetryTrayProbe]::PostMessage($trayWindow, 0x0111, [IntPtr]1001, [IntPtr]::Zero)) {
-        throw 'Could not request the graphical settings window through the tray controller.'
-    }
-    $settingsMarker = Join-Path $dataDir 'settings-smoke.ok'
-    $deadline = (Get-Date).AddSeconds(10)
-    do { Start-Sleep -Milliseconds 200 } while (-not (Test-Path -LiteralPath $settingsMarker) -and (Get-Date) -lt $deadline)
-    if (-not (Test-Path -LiteralPath $settingsMarker)) {
-        throw 'The tray settings window did not initialize.'
-    }
-    $settingsLayoutMarker = Join-Path $dataDir 'settings-layout-smoke.ok'
-    if (-not (Test-Path -LiteralPath $settingsLayoutMarker) -or
-        (Get-Content -Raw -Encoding UTF8 -LiteralPath $settingsLayoutMarker).Trim() -ne 'separated') {
-        throw 'The tray settings labels overlap their numeric fields.'
-    }
-    $settingsScript = Join-Path $dataDir 'settings.ps1'
-    $deadline = (Get-Date).AddSeconds(5)
-    $settingsCim = $null
-    do {
-        $settingsCim = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.ParentProcessId -eq $process.Id -and $_.CommandLine -and
-                $_.CommandLine.IndexOf($settingsScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-            } |
-            Select-Object -First 1
-        if (-not $settingsCim) { Start-Sleep -Milliseconds 100 }
-    } while (-not $settingsCim -and (Get-Date) -lt $deadline)
-    if (-not $settingsCim) {
-        throw 'The tray settings process was not found.'
-    }
-    $settingsProcess = Get-Process -Id $settingsCim.ProcessId -ErrorAction Stop
-    $settingsWindow = [CodexAutoRetryTrayProbe]::FindVisibleWindow([uint32]$settingsProcess.Id)
-    if ($settingsWindow -eq [IntPtr]::Zero) {
-        throw 'The tray settings window exists but is not visible.'
-    }
-    $refreshDeadline = (Get-Date).AddSeconds(4)
-    do {
-        Start-Sleep -Milliseconds 200
-        $process.Refresh()
-        if ($process.HasExited) {
-            throw 'The watchdog stopped while the settings window was refreshing.'
-        }
-    } while ((Get-Date) -lt $refreshDeadline)
-    New-Item -ItemType File -Force -Path (Join-Path $dataDir 'settings-smoke-close.signal') | Out-Null
-    if (-not $settingsProcess.WaitForExit(10000)) {
-        throw 'The tray settings window did not close cleanly.'
     }
     $logPath = Join-Path $dataDir 'logs\daemon.log'
     $log = if (Test-Path -LiteralPath $logPath) { Get-Content -Raw -Encoding UTF8 -LiteralPath $logPath } else { '' }
@@ -157,24 +108,14 @@ try {
     }
     [pscustomobject]@{
         Status = 'passed'
-        TrayWindowCreated = $true
-        SettingsWindowInitialized = $true
-        SettingsWindowVisible = $true
-        SettingsLayoutSeparated = $true
-        ConcurrentRefreshStable = $true
-        SettingsProcessClosed = $true
+        SystrayWindowCreated = $true
         HeartbeatPublished = $true
         FinalStateClean = $true
     }
 }
 finally {
-    if ($null -ne $oldSettingsSmoke) { $env:CODEX_AUTO_RETRY_SETTINGS_SMOKE = $oldSettingsSmoke }
-    else { Remove-Item Env:CODEX_AUTO_RETRY_SETTINGS_SMOKE -ErrorAction SilentlyContinue }
     if ($process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-    }
-    if ($settingsProcess -and -not $settingsProcess.HasExited) {
-        Stop-Process -Id $settingsProcess.Id -Force -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)

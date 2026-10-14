@@ -13,5 +13,3 @@
 *.exe binary
 *.png binary
 *.zip binary
-
-scripts/source/internal/watchdog/ui/dist/panel.html -whitespace linguist-generated=true

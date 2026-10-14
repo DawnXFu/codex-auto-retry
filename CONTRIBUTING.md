@@ -16,9 +16,8 @@ From the repository root:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 ```
 
-The build script installs the locked frontend dependencies, type-checks and
-builds the management panel, formats and tests the Go sources, runs `go vet`,
-and records build provenance for the two Windows binaries.
+The build script formats and tests the Go sources, runs `go vet`, builds the
+watchdog binary, and records build provenance.
 
 Useful focused checks are:
 
@@ -31,10 +30,9 @@ try {
 } finally {
   Pop-Location
 }
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\mcp-smoke-test.ps1
 ```
 
-The MCP smoke test uses an isolated local fixture. The optional
+The optional
 `empty-response-protocol-smoke-test.ps1` and
 `app-server-protocol-smoke-test.ps1` also require a standalone Codex CLI and
 are intended for a machine where that CLI is already installed. Do not run

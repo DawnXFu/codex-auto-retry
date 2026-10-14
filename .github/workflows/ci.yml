@@ -29,18 +29,7 @@ jobs:
           go-version-file: scripts/source/go.mod
           cache-dependency-path: scripts/source/go.sum
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22.x
-          cache: npm
-          cache-dependency-path: scripts/source/internal/watchdog/ui/package-lock.json
-
-      - name: Pin npm version
-        shell: pwsh
-        run: npm install --global npm@10.9.2
-
-      - name: Build and validate binaries and panel
+      - name: Build and validate binaries
         shell: pwsh
         run: .\scripts\build.ps1
 
@@ -51,7 +40,6 @@ jobs:
       - name: Run focused protocol smoke tests
         shell: pwsh
         run: |
-          .\scripts\mcp-smoke-test.ps1
           .\scripts\path-safety-smoke-test.ps1
           .\scripts\startup-approval-smoke-test.ps1
           .\scripts\supervisor-smoke-test.ps1

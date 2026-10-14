@@ -90,7 +90,7 @@ const (
 func Main() {
 	arguments := os.Args[1:]
 	mode := "run"
-	if len(arguments) > 0 && (arguments[0] == "run" || arguments[0] == "supervise" || arguments[0] == "mcp" || arguments[0] == "save-settings" || arguments[0] == "control") {
+	if len(arguments) > 0 && (arguments[0] == "run" || arguments[0] == "supervise" || arguments[0] == "save-settings" || arguments[0] == "control") {
 		mode = arguments[0]
 		arguments = arguments[1:]
 	}
@@ -123,8 +123,6 @@ func Main() {
 		runSaveSettingsCommand(dataDir, *settingsFileFlag)
 	case "control":
 		runControlCommand(dataDir, *actionFlag, *threadIDFlag)
-	case "mcp":
-		runMCPCommand(dataDir)
 	case "supervise":
 		runSuperviseCommand(dataDir, *noTrayFlag)
 	default:
@@ -141,12 +139,6 @@ func runSaveSettingsCommand(dataDir, settingsPath string) {
 func runControlCommand(dataDir, action, threadID string) {
 	if err := runLocalControl(dataDir, action, threadID); err != nil {
 		os.Exit(1)
-	}
-}
-
-func runMCPCommand(dataDir string) {
-	if err := runManagementMCP(dataDir); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "Codex Auto Resume MCP server stopped:", err)
 	}
 }
 

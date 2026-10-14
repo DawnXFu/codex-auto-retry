@@ -17,8 +17,8 @@ PowerShell writers).
 | --- | --- |
 | Worker | `codex-auto-resume.exe run` — the supervised watchdog (`daemon.go`); also serves the loopback Management API (`api.go`, `main.go:336`) |
 | Supervisor | `codex-auto-resume.exe supervise` — sign-in entry that restarts the worker (`supervisor.go`) |
-| MCP server | `codex-auto-retry-mcp.exe mcp` — per-invocation management surface (`mcp_server.go`, `management.go`) |
-| Settings helper | `codex-auto-resume.exe save-settings` / `control` — one-shot modes used by `ui/settings.ps1` (`main.go:121-131`) |
+| Desktop client | `codex-auto-resume-desktop[.exe]` — Wails GUI; reads the Management API, writes via `commands/` and the one-shot modes (`desktop/`) |
+| Settings helper | `codex-auto-resume.exe save-settings` / `control` — one-shot modes used by the desktop client (`main.go:121-131`) |
 | Installer / managers | `scripts/install.ps1`, `uninstall.ps1`, `startup-manager.ps1`, `safe-disable.ps1`, `release/windows/deploy.ps1` |
 | Safe launcher | `scripts/launch-codex.ps1` — child-scoped Codex launcher |
 
@@ -52,8 +52,8 @@ Versioning rules:
 ## Locking and atomicity
 
 - **`config.json.lock`** is a sidecar lock file that serializes every
-  read-modify-write of `config.json` across the worker, MCP process, settings
-  helper, and installer (`withConfigFileLock`, `config_lock.go:15-25`;
+  read-modify-write of `config.json` across the worker, settings
+  helper, desktop client, and installer (`withConfigFileLock`, `config_lock.go:15-25`;
   10-second `configLockTimeout`, `config_lock.go:9`). It is a separate file so
   atomic replacement of `config.json` never invalidates a held lock.
 - **`daemon.lock`** is the worker single-instance lock
@@ -61,7 +61,8 @@ Versioning rules:
   supervisor single-instance lock (`supervisor.go:28`). Both are created and
   held while the owning process runs (`lock_windows.go:14`).
 - **`state.json`** is written only by the worker while it holds its in-process
-  state mutex; the MCP server reads it unlocked.
+  state mutex; management readers (tray, desktop client via the API) read it
+  unlocked.
 - **All Go-written JSON files** go through `writeJSONAtomic`
   (`jsonio.go:16-50`): temp file `.codex-auto-resume-*.tmp` in the same
   directory → `fsync` → close → rename with up to 12 retries
@@ -72,9 +73,10 @@ Versioning rules:
 
 ## `config.json` — durable settings
 
-- **Producers:** worker (`loadOrCreateConfig`, `updateConfigFile`), MCP
-  server (`management.go` mutators), `save-settings` mode, installer
-  (`Set-ConfigSharedMode`), `launch-codex.ps1`-triggered shared recovery.
+- **Producers:** worker (`loadOrCreateConfig`, `updateConfigFile`), management
+  mutators (`management.go`, reached via the `save-settings`/`control` modes),
+  installer (`Set-ConfigSharedMode`), `launch-codex.ps1`-triggered shared
+  recovery.
 - **Consumers:** every actor above plus `status.ps1`,
   `startup-manager.ps1`, `safe-disable.ps1`, `deploy.ps1` readers.
 - **Schema** (`Config`, `config.go:13-40`; `powershell_executable` is the only
@@ -139,10 +141,10 @@ measured with `utf8.RuneCountInString`, `config.go:272`). Cross-field rule:
 
 ## `control.json` — pause switch
 
-- **Producers:** MCP `set_auto_retry_paused`, `save-settings` mode, settings
-  UI (`saveControlState`, `control.go:69-79`).
+- **Producers:** `save-settings` mode and other management callers
+  (`saveControlState`, `control.go:69-79`).
 - **Consumers:** worker tick (`daemon.go` loads via
-  `loadOrCreateControlState`, `control.go:48-67`), MCP snapshots.
+  `loadOrCreateControlState`, `control.go:48-67`), management snapshots.
 - **Schema** (`ControlState`, `control.go:18-22`):
 
 ```json
@@ -163,7 +165,7 @@ unmigrated format.
 
 ## `commands/<timestamp>-<random>.json` — one-shot thread commands
 
-- **Producers:** MCP thread tools and `control` mode via
+- **Producers:** desktop client and `control` mode via
   `queueControlCommand` (`control.go:81-104`); filename is
   `<UTC 20060102T150405.000000000Z>-<8-byte hex>.json` (`control.go:99`).
 - **Consumers:** worker only — `loadControlCommandFiles` (`control.go:122-150`)
@@ -190,8 +192,8 @@ unmigrated format.
 
 - **Producers:** worker only (`writeRuntimeStateAtomic`, `state.go:256-265`,
   under the daemon mutex).
-- **Consumers:** worker on startup; MCP server for queue snapshots
-  (`management.go:131`); `mcp-smoke-test.ps1` fixtures.
+- **Consumers:** worker on startup; the management service for queue
+  snapshots (`management.go:131`).
 - **Bounds:** read fails above `maxRuntimeStateBytes = 8 MiB`
   (`state.go:16,37-39`); pruning enforces `maxProcessedEventEntries = 20000`,
   `maxFileCursorEntries = 2000`, `maxThreadEntries = 500` (`state.go:12-17`).
@@ -294,7 +296,7 @@ legacy fields rather than rejecting the file; `QuotaSnapshot.UnmarshalJSON`
 
 - **Producer:** worker only, via `writeStatusLocked` (`daemon.go:1100-1166`)
   → `writeJSONAtomic`.
-- **Consumers:** MCP snapshots (`loadStatusSnapshot`,
+- **Consumers:** management snapshots (`loadStatusSnapshot`,
   `management.go:497-510`), `status.ps1`, `startup-manager.ps1`,
   `launch-codex.ps1`, `safe-disable.ps1`, `deploy.ps1`.
 - **Schema** (`StatusSnapshot`, `model.go:245-275`; `omitempty` fields marked
@@ -353,7 +355,7 @@ legacy fields rather than rejecting the file; `QuotaSnapshot.UnmarshalJSON`
      process creation time is within −2 s..+60 s of `started_at`
      (`launch-codex.ps1:60-77`); and
   2. `last_scan_at` is present and fresh — within `staleAfter =
-     max(4 × poll_interval_seconds, 15 s)` for the MCP snapshot
+     max(4 × poll_interval_seconds, 15 s)` for the management snapshot
      (`management.go:140-146`), within 15 s and not in the future for the
      launcher (`launch-codex.ps1:92-95, 157-158`).
   A file that is missing, unparsable, or fails either check means "worker not

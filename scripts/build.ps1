@@ -4,34 +4,11 @@ param()
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 $sourceDir = Join-Path $PSScriptRoot 'source'
-$uiDir = Join-Path $sourceDir 'internal\watchdog\ui'
 $binDir = Join-Path $PSScriptRoot 'bin'
 $watchdogOutput = Join-Path $binDir 'codex-auto-resume.exe'
-$mcpOutput = Join-Path $binDir 'codex-auto-retry-mcp.exe'
-$settingsScript = Join-Path $sourceDir 'internal\watchdog\ui\settings.ps1'
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 
-$settingsSource = [System.IO.File]::ReadAllText($settingsScript, [System.Text.UTF8Encoding]::new($false))
-$tokens = $null
-$parseErrors = $null
-[void][System.Management.Automation.Language.Parser]::ParseInput($settingsSource, [ref]$tokens, [ref]$parseErrors)
-if ($parseErrors.Count -gt 0) {
-    throw "Tray settings script has a PowerShell parse error: $($parseErrors[0].Message)"
-}
-
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-Push-Location $uiDir
-try {
-    & npm ci
-    if ($LASTEXITCODE -ne 0) { throw 'Panel dependencies failed to install.' }
-    & npm run typecheck
-    if ($LASTEXITCODE -ne 0) { throw 'Panel type check failed.' }
-    & npm run build
-    if ($LASTEXITCODE -ne 0) { throw 'Panel build failed.' }
-}
-finally {
-    Pop-Location
-}
 
 Push-Location $sourceDir
 try {
@@ -45,10 +22,6 @@ try {
     $buildFlags = '-s -w -H=windowsgui -X codex-auto-retry/internal/watchdog.buildSourceHash=' + $sourceHash
     & go build -trimpath -ldflags $buildFlags -o $watchdogOutput ./cmd/auto-resume
     if ($LASTEXITCODE -ne 0) { throw 'Watchdog build failed.' }
-    # The MCP transport still uses inherited stdio handles, but the GUI
-    # subsystem prevents Windows from allocating a visible console window.
-    & go build -trimpath -ldflags $buildFlags -o $mcpOutput ./cmd/auto-resume
-    if ($LASTEXITCODE -ne 0) { throw 'MCP server build failed.' }
 }
 finally {
     Pop-Location
@@ -57,12 +30,9 @@ finally {
 $watchdogBinary = Get-Item -LiteralPath $watchdogOutput
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 Write-CodexBuildProvenance -Root $pluginRoot
-$mcpBinary = Get-Item -LiteralPath $mcpOutput
 [pscustomobject]@{
     PluginRoot = $pluginRoot
     WatchdogBinary = $watchdogBinary.FullName
     WatchdogBytes = $watchdogBinary.Length
-    MCPBinary = $mcpBinary.FullName
-    MCPBytes = $mcpBinary.Length
     Status = 'built'
 }

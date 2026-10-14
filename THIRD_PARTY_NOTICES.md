@@ -24,43 +24,6 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## Model Context Protocol Go SDK 1.6.1 And MCP Apps SDK 1.7.5
-
-Copyright (c) 2024-2026 Model Context Protocol, a Series of LF Projects, LLC,
-and contributors.
-
-The MCP project is transitioning from the MIT License to the Apache License,
-Version 2.0. New contributions and contributions for which relicensing consent
-has been obtained are licensed under Apache-2.0. Earlier contributions whose
-authors have not granted relicensing consent remain under the MIT License.
-
-Source and complete license text:
-
-- https://github.com/modelcontextprotocol/go-sdk
-- https://github.com/modelcontextprotocol/ext-apps
-
-## Model Context Protocol TypeScript SDK
-
-Copyright (c) 2024 Anthropic, PBC.
-
-Licensed under the MIT License. Source and license text:
-https://github.com/modelcontextprotocol/typescript-sdk
-
-## Zod
-
-Copyright (c) 2025 Colin McDonnell.
-
-Licensed under the MIT License. Source and license text:
-https://github.com/colinhacks/zod
-
-## Lucide
-
-Copyright (c) 2026 Lucide Icons and Contributors.
-
-Licensed under the ISC License. Some icons are derived from Feather and remain
-licensed under the MIT License, Copyright (c) 2013-present Cole Bemis. Source
-and complete license text: https://github.com/lucide-icons/lucide
-
 ## Go System Calls
 
 `golang.org/x/sys/windows` is used for the native Windows notification-area
@@ -81,8 +44,8 @@ Copyright (c) 2017, Milan Nikolic <gen2brain>. Licensed under the BSD
 2-Clause License. Source and license text:
 https://github.com/gen2brain/beeep
 
-## Panel Build Tooling
+## Frontend Build Tooling
 
-Vite and vite-plugin-singlefile are used only to build the embedded offline
-panel and are licensed under the MIT License. They are not required on the
-installed machine at runtime.
+Vite is used only to build the desktop client's frontend bundle and is
+licensed under the MIT License. It is not required on the installed machine
+at runtime.

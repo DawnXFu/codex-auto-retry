@@ -50,7 +50,6 @@ function Invoke-UpgradeFixture {
     New-Item -ItemType Directory -Path $pluginTarget, $runtimePath, (Join-Path $payloadRoot 'scripts') -Force | Out-Null
     Write-JsonAtomic (Join-Path $pluginTarget '.codex-plugin\plugin.json') ([pscustomobject]@{name='codex-auto-retry';version='old'})
     Write-JsonAtomic (Join-Path $payloadRoot '.codex-plugin\plugin.json') ([pscustomobject]@{name='codex-auto-retry';version='new'})
-    Write-JsonAtomic (Join-Path $payloadRoot '.mcp.json') ([pscustomobject]@{mcpServers=@{'codex-auto-retry'=@{command='powershell.exe';args=@()}}})
     Write-JsonAtomic $marketplacePath ([pscustomobject]@{name='personal';plugins=@()})
     $marketplace = Read-OrCreateMarketplace $marketplacePath
     $marketplace = Ensure-MarketplaceEntry $marketplace
@@ -81,8 +80,12 @@ function Stop-CodexAutoRetrySharedServerIfUnused { param($DataDir) $script:share
     function Install-Runtime {
         param($PluginPath,$EnableSharedAppServer)
         $script:installCalls++
-        foreach ($file in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe','settings.ps1')) { [IO.File]::WriteAllText((Join-Path $runtimePath $file), 'new runtime') }
-        Remove-Item -LiteralPath (Join-Path $runtimePath 'codex-auto-retry.exe') -Force -ErrorAction SilentlyContinue
+        # Mirrors install.ps1: only the watchdog ships now; the MCP executable
+        # and settings.ps1 from pre-desktop installs are retired, not rewritten.
+        [IO.File]::WriteAllText((Join-Path $runtimePath 'codex-auto-resume.exe'), 'new runtime')
+        foreach ($file in @('codex-auto-retry.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
+            Remove-Item -LiteralPath (Join-Path $runtimePath $file) -Force -ErrorAction SilentlyContinue
+        }
         $script:runValue = '"{0}" supervise' -f (Join-Path $runtimePath 'codex-auto-resume.exe')
         $script:approvalBytes = [byte[]](2,0,0,0,0,0,0,0,0,0,0,0)
         if ($Scenario -eq 'foreign-startup') { $script:runValue = 'foreign.exe' }
@@ -126,8 +129,9 @@ function Stop-CodexAutoRetrySharedServerIfUnused { param($DataDir) $script:share
         if ($failure -or $script:installedVersion -ne 'new' -or $script:installCalls -ne 1 -or
             (Test-Path -LiteralPath $upgradeJournalPath)) { throw "Successful install with warning was rolled back: $failure" }
         if (Test-Path -LiteralPath (Join-Path $runtimePath 'codex-auto-retry.exe')) { throw 'Successful install left the legacy watchdog executable behind.' }
-        foreach ($file in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe','settings.ps1')) {
-            if ([IO.File]::ReadAllText((Join-Path $runtimePath $file)) -ne 'new runtime') { throw 'Successful runtime was replaced by old files.' }
+        if ([IO.File]::ReadAllText((Join-Path $runtimePath 'codex-auto-resume.exe')) -ne 'new runtime') { throw 'Successful runtime was replaced by old files.' }
+        foreach ($file in @('codex-auto-retry-mcp.exe','settings.ps1')) {
+            if (Test-Path -LiteralPath (Join-Path $runtimePath $file)) { throw "Successful install left retired runtime file: $file" }
         }
         return
     }

@@ -6,7 +6,7 @@ try {
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'scripts\bin'))
     $source = Join-Path $root 'scripts\source\internal\watchdog\main.go'
     [IO.File]::WriteAllText($source,'package main')
-    foreach ($name in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe')) { [IO.File]::WriteAllText((Join-Path $root ('scripts\bin\'+$name)), 'fixture only') }
+    foreach ($name in @('codex-auto-resume.exe')) { [IO.File]::WriteAllText((Join-Path $root ('scripts\bin\'+$name)), 'fixture only') }
     $rejected = $false
     try { Assert-CodexBuildProvenance $root } catch { $rejected = $true }
     if (-not $rejected) { throw 'Missing provenance accepted.' }

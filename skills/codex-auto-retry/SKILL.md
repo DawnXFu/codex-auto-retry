@@ -5,14 +5,14 @@ description: Inspect, configure, install, repair, or remove Codex Auto Resume. U
 
 # Codex Auto Resume
 
-This plugin includes a local Windows watchdog and a small sign-in supervisor.
-Once installed, the supervisor starts the watchdog globally at Windows sign-in
+This plugin includes a local watchdog and a small sign-in supervisor.
+Once installed, the supervisor starts the watchdog globally at sign-in
 and restarts it after unexpected exits with bounded backoff. The user does not need to invoke this
-plugin in each Codex task. Its MCP management panel is optional and does not
+plugin in each Codex task. Its desktop client is optional and does not
 need to remain open for retries to work.
 
-The watchdog worker owns a Windows notification-area icon. Double-click opens
-the graphical settings window; right-click shows status, pause/resume, settings,
+The watchdog worker owns a notification-area icon. Opening it launches
+the desktop client; the right-click menu shows status, pause/resume, settings,
 and exit. This is not a second watchdog or a separate retry engine.
 
 ## Recovery Behavior
@@ -22,8 +22,8 @@ and exit. This is not a second watchdog or a separate retry engine.
   state is attributable to the same provider failure. Codex creates the goal
   continuation turn itself. An immediate native turn after an empty reply is
   adopted into the same recovery chain, so its counters are not reset as
-  manual work. At either limit, the goal is changed to `blocked` and the panel
-  reports that repeated empty replies stopped it.
+  manual work. At either limit, the goal is changed to `blocked` and the
+  desktop client reports that repeated empty replies stopped it.
 - A user or AI pause, including a goal waiting for review, overrides goal
   recovery. Pauses during the failed turn, countdown, or dispatch cancel that
   retry. Only a later explicit `active` goal update clears the goal hold.
@@ -61,7 +61,7 @@ and exit. This is not a second watchdog or a separate retry engine.
   completed tool result (5 by default, 1-100). Visible progress resets only the
   second count; success or a new user turn resets both. Controller failures
   consume neither budget. A closed Codex App immediately stops the affected
-  recovery with `codex_not_running`; restart it manually from the panel after
+  recovery with `codex_not_running`; restart it manually from the desktop client after
   Codex is open again. Other controller failures stop after three consecutive
   failures by default instead of refreshing the countdown forever.
   `codex_restart_required` means an older Desktop build has no verified recovery
@@ -77,27 +77,29 @@ and exit. This is not a second watchdog or a separate retry engine.
   chain when a verified route returns, without resetting either retry budget or
   the thirty-minute deadline. Historical/expired stops, new user turns, aborts,
   held goals, closed-App stops and ambiguous dispatches are not auto-reopened.
-  The tray settings window exposes the same safe-launch action when this state is
+  The desktop client exposes the same safe-launch action when this state is
   detected. It waits up to two minutes for the current Desktop process to close,
   then starts the verified process-scoped launcher without terminating Codex.
 
-## Embedded Management
+## Desktop Client
 
-When the MCP tools are available, use `get_auto_retry_status` to display the
-embedded panel and return current state. The panel shows all pending and active
-tasks, live countdowns, pause state, shared-backend opt-in state, and the
-compatibility fallback text.
+The management surface is the desktop client, opened from the tray icon. It
+shows all pending and active tasks, live countdowns, pause state,
+shared-backend opt-in state, quota windows, and the compatibility fallback
+text. All of its controls are also reachable as file-based commands and
+one-shot watchdog modes (`save-settings`, `control`), so the guidance below
+applies to any management caller.
 
-- Use `set_shared_app_server_enabled` only when the user explicitly requests
-  silent shared-backend recovery. Enabling runs ownership and health checks;
+- Enable shared-backend recovery only when the user explicitly requests it.
+  Enabling runs ownership and health checks;
   failure leaves Codex's environment unchanged. Disabling restores only the
   plugin-owned endpoint and stops only the plugin-owned server.
 
-- Use `set_retry_prompt` to change only the fallback text. The default is
-  `继续`, the maximum is 500 characters, and changes apply without restarting
-  the watchdog. Normal retries do not send this text when silent continuation
+- The fallback text can be changed without restarting
+  the watchdog. The default is `继续`, the maximum is 500 characters.
+  Normal retries do not send this text when silent continuation
   is supported.
-- Use `set_retry_settings` to change the fallback text, both retry limits,
+- Retry settings cover the fallback text, both retry limits,
   fixed, linear, or doubling waits, first/fixed delay, linear increment,
   maximum delay, and the watchdog's retry-limit notification.
 - `show_notifications` controls only the watchdog alert shown when a retry limit
@@ -108,13 +110,13 @@ compatibility fallback text.
   question notifications independently configurable.
 - Goal recovery never sends the fallback text; it continues to activate the
   native Codex goal.
-- Use `set_auto_retry_paused` to pause or resume new dispatches. Do not claim
+- The pause switch pauses or resumes new dispatches. Do not claim
   that pausing terminates a retry that already started.
-- Use `retry_now` or `cancel_retry` only with a task ID returned in the pending
+- Retry-now and cancel commands take a task ID from the pending
   queue. Cancel cannot undo a retry that already started.
-- Use `restart_retry` only for a task reported as stopped at its retry limit.
+- Restart applies only to a task reported as stopped at its retry limit.
   It starts a fresh attempt budget and requests an immediate retry.
-- Never open the panel automatically, navigate to another task, or focus Codex.
+- Never navigate to another task or focus Codex on the user's behalf.
 
 ## Status
 
@@ -124,8 +126,8 @@ Run:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\status.ps1"
 ```
 
-Report whether the process is running, its version and PID, pause state, MCP
-server installation, startup mode, endpoint presence, shared-server state, the
+Report whether the process is running, its version and PID, pause state,
+startup mode, endpoint presence, shared-server state, the
 last scan time, pending and active retry counts, shared app-server memory
 usage/limit, and the privacy-safe log path. The status and startup manager
 verify the shared server's executable hash, command line, creation time, exact
@@ -150,7 +152,6 @@ and installer:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\build.ps1"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\mcp-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\tray-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\path-safety-smoke-test.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\plugins\codex-auto-retry\scripts\supervisor-smoke-test.ps1"
@@ -170,26 +171,24 @@ changing the host runtime, startup entry, or environment in that situation.
 Never report the redirected `OpenAI.Codex_*\LocalCache` copy as installed and
 never compensate by publishing a shared endpoint that points at it.
 
-The MCP smoke test uses isolated local data and verifies all management tools,
-the embedded HTML resource, prompt changes, pause state, and atomic control
-commands. The tray smoke test verifies the native notification-area window,
-visible graphical settings window, heartbeat, and clean final status without
+The tray smoke test verifies the systray window, heartbeat, and clean
+final status without
 touching Codex. The shared-server smoke test uses two WebSocket clients and a
 local fake provider to prove that a watchdog-started retry is visible to the
 simulated Desktop client. The environment test uses a random test-only user
 variable and restores it. The isolated app-server tests use temporary
 `CODEX_HOME` directories; the empty-response test also uses a local fake
 provider and no real account.
-Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces both
-executables, retires only legacy plugin-owned `CODEX_APP_SERVER_WS_URL` values
+Neither test uses Codex App UI. The installer preserves and migrates `config.json`, replaces the watchdog
+executable, retires only legacy plugin-owned `CODEX_APP_SERVER_WS_URL` values
 without ever publishing a new persistent route, registers per-user Windows
-startup in `supervise` mode rather than the legacy direct `run` mode, points the plugin at the direct installed MCP
-executable, starts both GUI-subsystem processes without a visible console, and
+startup in `supervise` mode rather than the legacy direct `run` mode, retires the pre-desktop
+MCP executable and settings.ps1 left by older installs, starts the GUI-subsystem watchdog without a visible console, and
 launches the shared Codex app-server with one hidden inherited console so its
 Playwright, Node REPL, code-mode, and shell descendants do not create separate
 Windows Terminal windows. An older detached server is replaced automatically
 after Codex fully exits, and the installer verifies the watchdog heartbeat.
-The worker and MCP settings path use `config.json.lock` for cross-process
+The worker and settings command modes use `config.json.lock` for cross-process
 read-modify-write operations. State is bounded to 20,000 processed events,
 2,000 file cursors, and 500 inactive task records, with an 8 MB serialized
 limit; logs rotate at 5 MB with three backups. Each automatic recovery chain
@@ -197,8 +196,7 @@ also stops after 30 minutes, and unusually high numeric retry limits produce a
 warning instead of being silently changed.
 
 Fully exit and use the safe Codex launcher after enabling shared mode or changing its
-launch mode; then open a new task so Codex discovers the updated MCP tools and
-panel.
+launch mode.
 
 At startup, shared mode validates the recorded owned process and endpoint
 before `Ensure` can adopt or launch anything. Missing or dead owned state while
@@ -276,7 +274,7 @@ the fallback prompt or app-server error bodies.
   stopped with an explicit goal-block failure reason.
 - Lower limited budgets may apply to generic 401/403 authentication failures
   and unknown errors.
-  `auth_max_attempts` is editable in both panels and via `set_retry_settings`
+  `auth_max_attempts` is editable in the desktop client and via the settings command
   (1-1000, default 6; omitted API values preserve the current setting).
   Both global ceilings still apply. `auth_attempt_limit` identifies this extra
   guard, whereas temporary `auth_unavailable` failures use the global limits.
