@@ -228,6 +228,8 @@ func capabilityForControllerState(state string, sharedEnabled bool) desktopCapab
 		return desktopCapability{Transport: "official_stdio", RecoveryMode: "safe_launcher_required", Reason: "official_stdio_not_externally_controllable"}
 	case "codex_not_running":
 		return desktopCapability{Transport: "stopped", RecoveryMode: "none", Reason: "codex_not_running"}
+	case "desktop_transport_not_supported":
+		return desktopCapability{Transport: "unsupported", RecoveryMode: "none", Reason: state}
 	case "codex_app_not_ready":
 		return desktopCapability{Transport: "unknown", RecoveryMode: "none", Reason: "desktop_connection_not_proven"}
 	case "shared_app_server_disabled":

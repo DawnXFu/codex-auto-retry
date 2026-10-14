@@ -4,8 +4,14 @@ package watchdog
 
 import "os/exec"
 
-type supervisorLock struct{}
+// acquireSupervisorLock uses the same flock-based instance lock as the
+// worker so a duplicate supervisor launch exits instead of racing the
+// existing worker lifecycle.
+func acquireSupervisorLock(path string) (supervisorLocker, error) {
+	return acquireInstanceLock(path)
+}
 
-func acquireSupervisorLock(string) (supervisorLocker, error) { return &supervisorLock{}, nil }
-func (supervisorLock) Close() error                          { return nil }
-func configureSupervisorWorker(*exec.Cmd)                    {}
+// configureSupervisorWorker needs no process-attribute tweaks on unix: the
+// worker is a plain child process, and the supervisor tracks it through
+// worker.Wait plus the supervisor.stop marker file.
+func configureSupervisorWorker(*exec.Cmd) {}
