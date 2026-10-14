@@ -19,10 +19,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const (
-	sharedServerOwner        = "codex-auto-retry"
-	sharedFailOpenMarkerName = "shared-fail-open.json"
-)
+const sharedServerOwner = "codex-auto-retry"
 
 // Tests replace only this registry name with a random test-only name. No
 // environment or configuration option can change the production routing key.

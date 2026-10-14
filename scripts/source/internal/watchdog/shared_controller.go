@@ -66,11 +66,8 @@ type appLoadedThreadsResult struct {
 func newSharedAppServerController(config Config, dataDir string, logger *safeLogger) *sharedAppServerController {
 	server := newSharedServerManager(config, dataDir, logger)
 	return &sharedAppServerController{
-		server: server,
-		checker: powerShellDesktopTransportChecker{
-			configuredExecutable: config.PowerShellExecutable,
-			expectedEndpoint:     server.Endpoint,
-		},
+		server:            server,
+		checker:           newDesktopTransportChecker(config, server.Endpoint),
 		officialIPC:       newOfficialDesktopIPC(),
 		settingsForThread: findThreadResumeSettings,
 		configPath:        filepath.Join(dataDir, "config.json"),
@@ -87,6 +84,9 @@ func (c *sharedAppServerController) Prepare(ctx context.Context) error {
 	}
 	if state == "codex_restart_required" {
 		return errCodexRestartRequired
+	}
+	if state == "desktop_transport_not_supported" {
+		return &controllerReasonError{reason: state}
 	}
 	return nil
 }
@@ -411,6 +411,11 @@ func (c *sharedAppServerController) preflight(ctx context.Context, parentNotifie
 	state, err := c.checker.State(ctx)
 	if err != nil {
 		return DispatchResult{}, false, desktopUnknown, err
+	}
+	if state == desktopUnsupported {
+		// The platform has no Desktop transport probe at all; report the
+		// unsupported state honestly instead of probing a shared endpoint.
+		return retryLaterResult("desktop_transport_not_supported", parentNotified), false, state, nil
 	}
 	if state == desktopLegacyStdio && c.officialIPCReady(ctx) {
 		return DispatchResult{}, true, desktopOfficialIPC, nil

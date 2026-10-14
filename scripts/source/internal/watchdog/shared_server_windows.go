@@ -28,14 +28,6 @@ const (
 
 var desktopRunningProbe = codexDesktopRunning
 
-var (
-	errSharedServerUnavailable       = errors.New("shared Codex app-server is unavailable")
-	errSharedServerOwnershipUnknown  = errors.New("shared Codex app-server ownership could not be verified")
-	errSharedServerPortConflict      = errors.New("shared Codex app-server port is occupied")
-	errSharedServerPortReserved      = errors.New("shared Codex app-server port is reserved by Windows")
-	errSharedServerMigrationDeferred = errors.New("shared Codex app-server migration is waiting for Codex to close")
-)
-
 type sharedServerState struct {
 	PID            int       `json:"pid"`
 	Endpoint       string    `json:"endpoint"`

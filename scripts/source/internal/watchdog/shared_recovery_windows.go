@@ -8,30 +8,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"time"
 )
 
-type sharedRecoveryRequest struct {
-	ID        string    `json:"id"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-type sharedAvailability struct {
-	Reason                   string    `json:"reason"`
-	AutomaticRecoveryAllowed bool      `json:"automatic_recovery_allowed"`
-	UpdatedAt                time.Time `json:"updated_at"`
-}
-
-var sharedRecoveryID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var recoverSharedBackend = enableSharedAppServer
-
-func recordSharedUnavailable(dataDir, reason string) error {
-	return writeJSONAtomic(filepath.Join(dataDir, "shared-availability.json"), sharedAvailability{
-		Reason: reason, UpdatedAt: time.Now().UTC(),
-		AutomaticRecoveryAllowed: reason != "shared_app_server_memory_limit_exceeded" && reason != "memory_limit_exceeded",
-	})
-}
 
 // Only the worker performs automatic preparation, serialized with its normal
 // cleanup tick. Requests expire so a launch that fell back cannot wake later.

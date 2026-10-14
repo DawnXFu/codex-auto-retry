@@ -47,7 +47,8 @@ func (d *daemon) dispatchDueLocked(now time.Time) []RetryJob {
 		return jobs
 	}
 	if d.controllerState != "official_ipc_ready" && (!d.config.SharedAppServerEnabled ||
-		d.controllerState == "shared_app_server_disabled" || d.controllerState == "shared_app_server_config_invalid") {
+		d.controllerState == "shared_app_server_disabled" || d.controllerState == "shared_app_server_config_invalid" ||
+		d.controllerState == "desktop_transport_not_supported") {
 		// No verified recovery transport is available. Do not
 		// promote a due item to AwaitingRetry: doing so looks like a retry was
 		// started and then failed, even though Codex never received a request.
@@ -105,7 +106,8 @@ func (d *daemon) dispatchDueGoalStopsLocked(now time.Time, available int) ([]Ret
 
 func (d *daemon) stopDuePendingForControllerLocked(now time.Time, suspended bool) {
 	stopReason := "shared_app_server_disabled"
-	if controllerFailureNeedsFailOpen(d.controllerState) || d.controllerState == "codex_not_running" {
+	if controllerFailureNeedsFailOpen(d.controllerState) || d.controllerState == "codex_not_running" ||
+		d.controllerState == "desktop_transport_not_supported" {
 		stopReason = d.controllerState
 	}
 	for threadID, thread := range d.state.Threads {

@@ -14,23 +14,16 @@ import (
 	"time"
 )
 
-type desktopTransportState string
-
-const (
-	desktopStopped      desktopTransportState = "stopped"
-	desktopLegacyStdio  desktopTransportState = "legacy_stdio"
-	desktopSharedServer desktopTransportState = "shared_server"
-	desktopOfficialIPC  desktopTransportState = "official_ipc"
-	desktopUnknown      desktopTransportState = "unknown"
-)
-
-type desktopTransportChecker interface {
-	State(context.Context) (desktopTransportState, error)
-}
-
 type powerShellDesktopTransportChecker struct {
 	configuredExecutable string
 	expectedEndpoint     func() string
+}
+
+func newDesktopTransportChecker(config Config, expectedEndpoint func() string) desktopTransportChecker {
+	return powerShellDesktopTransportChecker{
+		configuredExecutable: config.PowerShellExecutable,
+		expectedEndpoint:     expectedEndpoint,
+	}
 }
 
 const desktopTransportScript = `$ErrorActionPreference = 'Stop'
