@@ -349,6 +349,21 @@ func TestDaemonPauseAndQueuedControls(t *testing.T) {
 	}
 }
 
+func TestDaemonRestartCommandExitsForRespawn(t *testing.T) {
+	d := newTestDaemon(t, isolatedConfig(t.TempDir()), successfulRunner())
+	now := time.Now().UTC()
+	if _, err := queueControlCommand(d.commandDir, commandRestartDaemon, "", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.tick(context.Background(), now); !errors.Is(err, errRestartRequested) {
+		t.Fatalf("restart command did not stop the watchdog cleanly: %v", err)
+	}
+	commands, _, err := loadControlCommandFiles(d.commandDir)
+	if err != nil || len(commands) != 0 {
+		t.Fatalf("restart command file was not consumed: commands=%+v err=%v", commands, err)
+	}
+}
+
 func TestDaemonStopsAfterConfiguredRetryLimitAndCanRestart(t *testing.T) {
 	config := isolatedConfig(filepath.Join(t.TempDir(), ".codex"))
 	config.MaxRecoveryAttempts = 2

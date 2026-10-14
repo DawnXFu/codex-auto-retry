@@ -13,6 +13,11 @@ import (
 
 var errStopRequested = errors.New("stop requested")
 
+// errRestartRequested is the clean-exit signal for the restart_daemon control
+// command. Unlike errStopRequested it must NOT write supervisor.stop: the
+// supervisor treats the exit as unexpected and respawns the worker.
+var errRestartRequested = errors.New("restart requested")
+
 type daemon struct {
 	config      Config
 	dataDir     string
@@ -35,6 +40,7 @@ type daemon struct {
 	controllerState                     string
 	lastControllerProbe                 time.Time
 	paused                              bool
+	restartRequested                    bool
 	memoryUsageBytes                    uint64
 	memoryGuardTriggered                bool
 	sharedAppServerMemoryBytes          uint64
@@ -155,6 +161,14 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 		d.reopenRestartRequiredLocked(now)
 	}
 	d.refreshControlsLocked(now)
+	if d.restartRequested {
+		// Persist the state built up this tick (including any thread commands
+		// applied just before the restart request) before exiting for respawn.
+		_ = d.persistStateLocked()
+		_ = d.writeStatusLocked(true, len(roots))
+		d.mu.Unlock()
+		return errRestartRequested
+	}
 	d.expireUnacknowledgedLocked(now)
 	sharedBackendEnabled := d.config.SharedAppServerEnabled
 	// Acknowledged turns normally finish through rollout events. If a previous

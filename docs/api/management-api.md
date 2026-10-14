@@ -71,6 +71,10 @@ Fields a client needs beyond the obvious counters:
 - `running`/`heartbeat_stale` describe the worker heartbeat; a daemon that
   is down still answers if some process is listening, but `running` is the
   source of truth for protection status.
+- `daemon_pid`/`daemon_started_at` (both omitempty) identify the live worker
+  process from `status.json` and are present only while that process is
+  alive; `data_dir` (omitempty) is the runtime data directory for the About
+  surface and diagnostics.
 
 ## Errors
 

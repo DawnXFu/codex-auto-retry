@@ -57,6 +57,9 @@ export function buildPreviewSnapshot(): ManagementSnapshot {
     stopped_retries: 1,
     waiting_for_reset: 2,
     watched_roots: 3,
+    daemon_pid: 4242,
+    daemon_started_at: iso(-2 * 86400_000 - 7 * 3600_000),
+    data_dir: "C:\\Users\\you\\AppData\\Local\\CodexAutoRetry",
     controller_state: "ready",
     quota: {
       used_percent: 100,

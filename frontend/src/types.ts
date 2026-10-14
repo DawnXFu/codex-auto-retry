@@ -94,6 +94,9 @@ export interface ManagementSnapshot {
   stopped_retries: number;
   waiting_for_reset: number;
   watched_roots: number;
+  daemon_pid?: number;
+  daemon_started_at?: string;
+  data_dir?: string;
   last_error?: string;
   controller_state?: string;
   notice?: string;

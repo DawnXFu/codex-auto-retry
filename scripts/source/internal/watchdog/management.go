@@ -77,6 +77,9 @@ type ManagementSnapshot struct {
 	StoppedRetries                      int            `json:"stopped_retries" jsonschema:"number of currently visible retry chains that have stopped"`
 	WaitingForReset                     int            `json:"waiting_for_reset" jsonschema:"number of tasks parked waiting for a quota reset"`
 	WatchedRoots                        int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
+	DaemonPID                           int            `json:"daemon_pid,omitempty" jsonschema:"watchdog worker process id, present only while the worker is alive"`
+	DaemonStartedAt                     string         `json:"daemon_started_at,omitempty" jsonschema:"watchdog worker start time in RFC 3339 format"`
+	DataDir                             string         `json:"data_dir,omitempty" jsonschema:"watchdog runtime data directory"`
 	LastError                           string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
 	ControllerState                     string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
 	Notice                              string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
@@ -200,6 +203,7 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		RecoveryMode:                 "none",
 		StartupApproved:              readStartupApprovalStatus(),
 		Now:                          now.Format(time.RFC3339Nano),
+		DataDir:                      m.dataDir,
 		PendingRetries:               pending,
 		ActiveRetries:                active,
 		StoppedRetries:               stopped,
@@ -208,6 +212,12 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 	}
 	snapshot.Quota = quotaSummary(state.Quota, waiting)
 	if statusFound {
+		if processRunning {
+			snapshot.DaemonPID = status.PID
+			if !status.StartedAt.IsZero() {
+				snapshot.DaemonStartedAt = status.StartedAt.Format(time.RFC3339Nano)
+			}
+		}
 		if running {
 			snapshot.Version = status.Version
 		}

@@ -28,12 +28,14 @@ export default function AboutPage(props: { snapshot: ManagementSnapshot | null }
         <div className="kv" style={{ padding: "8px 14px" }}>
           <span className="k">{t("about_daemon_pid")}</span>
           <span>
-            {snap ? `— · ${snap.memory_usage_mb} MB / ${snap.memory_limit_mb} MB` : t("about_unknown")}
+            {snap
+              ? `${snap.daemon_pid ?? t("about_unknown")} · ${snap.memory_usage_mb} MB / ${snap.memory_limit_mb} MB`
+              : t("about_unknown")}
           </span>
         </div>
         <div className="kv" style={{ padding: "8px 14px" }}>
           <span className="k">{t("about_data_dir")}</span>
-          <span>{t("about_unknown")}</span>
+          <span>{snap?.data_dir ?? t("about_unknown")}</span>
         </div>
         <div className="kv" style={{ padding: "8px 14px" }}>
           <span className="k">{t("about_log")}</span>

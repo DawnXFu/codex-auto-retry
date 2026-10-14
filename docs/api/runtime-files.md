@@ -171,7 +171,7 @@ unmigrated format.
   (`daemon.go:430-435`), and deletes each file after use; files failing JSON
   or `validate()` are deleted as invalid (`daemon.go:424-429`).
 - **Schema** (`ControlCommand`, `control.go:32-37`; actions at
-  `control.go:27-29`):
+  `control.go:27-30`):
 
 ```json
 {
@@ -179,8 +179,8 @@ unmigrated format.
   "required": ["version", "action", "thread_id", "created_at"],
   "properties": {
     "version": { "type": "integer", "const": 1 },
-    "action": { "type": "string", "enum": ["retry_now", "cancel_retry", "restart_retry"] },
-    "thread_id": { "type": "string", "description": "lowercase Codex thread id; validate() rejects ids that are not path-form thread ids (control.go:113)" },
+    "action": { "type": "string", "enum": ["retry_now", "cancel_retry", "restart_retry", "restart_daemon"] },
+    "thread_id": { "type": "string", "description": "lowercase Codex thread id; validate() rejects ids that are not path-form thread ids (control.go:120-121). Empty and required-empty for restart_daemon, which asks the worker to exit cleanly so the supervisor respawns it (daemon.go restartRequested → errRestartRequested)." },
     "created_at": { "type": "string", "format": "date-time" }
   }
 }
