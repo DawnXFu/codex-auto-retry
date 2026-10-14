@@ -47,3 +47,11 @@ _Avoid_: failed, dead, stopped (Stopped is upstream's distinct state)
 **Grace**:
 Fixed delay after `resets_at` before the reset is considered due. Default 30 seconds.
 _Avoid_: buffer, margin
+
+**Desktop Client**:
+The Wails GUI process: a disposable viewer/controller for the watchdog. Closing it exits only the client; the watchdog and tray are unaffected. (ADR-0004.)
+_Avoid_: the app, settings window, GUI (as if it were the product)
+
+**Management API**:
+The watchdog's localhost HTTP surface (`127.0.0.1`, token via `api.json`). The single place that assembles a snapshot; every client reads through it, writes stay on the `commands/` file queue. (ADR-0004.)
+_Avoid_: REST service, control channel, IPC server
