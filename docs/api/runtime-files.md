@@ -427,7 +427,9 @@ legacy fields rather than rejecting the file; `QuotaSnapshot.UnmarshalJSON`
   `request_expired`, `desktop_already_running`, `worker_busy`,
   `config_unavailable`, `preference_disabled`, `manual_recovery_required`,
   `availability_unreadable`, `recovery_cancelled`, `cleanup_not_safe`,
-  `backend_prepare_failed`, `prepared`. The launcher polls it for up to 10 s
+  `backend_prepare_failed`, `prepared`. On non-Windows builds the stub
+  `processSharedRecovery` (`shared_server_nonwindows.go`) also emits
+  `desktop_transport_not_supported`. The launcher polls it for up to 10 s
   (`launch-codex.ps1:167-172`).
 
 ## Auxiliary files (name + role)

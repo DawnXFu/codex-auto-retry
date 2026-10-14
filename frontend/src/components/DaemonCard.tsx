@@ -186,6 +186,9 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
           </div>
         )}
         {restartMsg && <div className="restart-confirm">{restartMsg}</div>}
+        <div className="qmeta" style={{ marginTop: 8 }}>
+          {t("daemon_bg_note")}
+        </div>
       </div>
     </div>
   );

@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -161,13 +162,17 @@ func (a *App) RestartDaemon() error {
 		if waitForFreshDaemon(oldPID, 10*time.Second) {
 			return nil
 		}
-		// Soft request went unread — the worker is wedged. Kill it and let
-		// the supervisor bring back a fresh one.
-		if err := killPID(oldPID); err != nil {
-			return fmt.Errorf("kill wedged daemon pid %d: %w", oldPID, err)
-		}
-		if waitForFreshDaemon(oldPID, 15*time.Second) {
-			return nil
+		// Soft request went unread. Escalate to a hard kill only while the
+		// recorded pid still names a live process — a pid that already exited
+		// (or was recycled) skips straight to the supervisor spawn below.
+		if pidAlive(oldPID) {
+			killed, err := killVerifiedDaemonPID(dir, oldPID)
+			if err != nil {
+				return fmt.Errorf("kill wedged daemon pid %d: %w", oldPID, err)
+			}
+			if killed && waitForFreshDaemon(oldPID, 15*time.Second) {
+				return nil
+			}
 		}
 	}
 	exe, err := daemonExecutable(dir)
@@ -388,6 +393,42 @@ func killPID(pid int) error {
 	}
 	defer proc.Release()
 	return proc.Kill()
+}
+
+// killVerifiedDaemonPID force-kills pid only after proving the live process
+// image is the watchdog binary. status.json can be stale and Windows recycles
+// pids, so an unverified kill could take down an unrelated process. A refused
+// or failed verification reports (false, nil) — the caller logs the refusal
+// and escalates to the supervisor spawn instead of guessing.
+func killVerifiedDaemonPID(dir string, pid int) (bool, error) {
+	exe, err := daemonExecutable(dir)
+	if err != nil {
+		return false, err
+	}
+	matches, err := processImageMatches(pid, exe)
+	switch {
+	case err != nil:
+		log.Printf("daemon restart: refusing to kill pid %d: process image unreadable: %v", pid, err)
+		return false, nil
+	case !matches:
+		log.Printf("daemon restart: refusing to kill pid %d: live image is not %s", pid, exe)
+		return false, nil
+	}
+	return true, killPID(pid)
+}
+
+// OpenLogDir reveals <dataDir>/logs in the platform file manager (Explorer /
+// Finder / xdg-open). Bound as window.go.main.App.OpenLogDir.
+func (a *App) OpenLogDir() error {
+	dir, err := requireDataDir()
+	if err != nil {
+		return err
+	}
+	logs := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		return err
+	}
+	return openPathInFileManager(logs)
 }
 
 func requireDataDir() (string, error) {

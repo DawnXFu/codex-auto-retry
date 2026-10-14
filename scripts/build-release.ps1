@@ -49,6 +49,12 @@ $watchdog = Join-Path $pluginRoot 'scripts\bin\codex-auto-resume.exe'
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 Assert-CodexBuildProvenance -Root $pluginRoot
 Assert-X64PeBinary -Path $watchdog
+$desktopClient = Join-Path $pluginRoot 'scripts\bin\codex-auto-resume-desktop.exe'
+if (Test-Path -LiteralPath $desktopClient -PathType Leaf) {
+    Assert-X64PeBinary -Path $desktopClient
+} else {
+    Write-Warning 'Desktop client was not built (npm missing?) — packaging a watchdog-only release.'
+}
 
 $outputPath = Get-FullPath $OutputDirectory
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
@@ -78,7 +84,7 @@ try {
     $unexpectedSourceBinFiles = @(Get-ChildItem -LiteralPath $sourceBin -File -Recurse -Force |
         Where-Object {
             $_.DirectoryName -ne $sourceBin -or
-            @('codex-auto-resume.exe') -notcontains $_.Name
+            @('codex-auto-resume.exe', 'codex-auto-resume-desktop.exe') -notcontains $_.Name
         })
     if ($unexpectedSourceBinFiles.Count -gt 0) {
         $names = ($unexpectedSourceBinFiles.FullName | Sort-Object) -join ', '
@@ -86,7 +92,7 @@ try {
     }
 
     $stagedBin = Join-Path $payloadRoot 'scripts\bin'
-    $allowedBinFiles = @('codex-auto-resume.exe')
+    $allowedBinFiles = @('codex-auto-resume.exe', 'codex-auto-resume-desktop.exe')
     $unexpectedBinEntries = @(Get-ChildItem -LiteralPath $stagedBin -Force |
         Where-Object { $allowedBinFiles -notcontains $_.Name })
     foreach ($entry in $unexpectedBinEntries) {

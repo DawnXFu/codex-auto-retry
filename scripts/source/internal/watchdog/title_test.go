@@ -60,6 +60,28 @@ func TestReadThreadTitleTruncatesAndSkipsWrappers(t *testing.T) {
 	}
 }
 
+func TestReadThreadTitleSkipsToolWrapperTags(t *testing.T) {
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0428"
+	// Live verification: an external_codex_apps tool envelope leaked into a
+	// user-message slot must not become the task title.
+	path := writeRollout(t, t.TempDir(), threadID+".jsonl", []string{
+		`{"timestamp":"2026-10-15T03:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>"}]}}`,
+		`{"timestamp":"2026-10-15T03:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Real user prompt"}]}}`,
+	})
+	if title := readThreadTitle(path); title != "Real user prompt" {
+		t.Fatalf("title = %q", title)
+	}
+	// A leading "<3", "<-", or "<div>" is user text, not a wrapper tag.
+	for _, text := range []string{"<3 this feature", "<- fix this edge", "<div> markup question"} {
+		if title := normalizeTitle(text); title == "" {
+			t.Fatalf("user text %q was treated as a wrapper tag", text)
+		}
+	}
+	if title := normalizeTitle("<unknown_wrapper_tag>payload</unknown_wrapper_tag>"); title != "" {
+		t.Fatalf("generic wrapper tag produced title %q", title)
+	}
+}
+
 func TestManagedRetriesResolveTitle(t *testing.T) {
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0426"
 	rollout := writeRollout(t, t.TempDir(), threadID+".jsonl", []string{

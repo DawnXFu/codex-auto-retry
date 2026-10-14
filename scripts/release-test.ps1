@@ -72,7 +72,8 @@ try {
         'payload\codex-auto-retry\scripts\shared-server-status-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\app-server-protocol-smoke-test.ps1',
         'payload\codex-auto-retry\scripts\empty-response-protocol-smoke-test.ps1',
-        'payload\codex-auto-retry\scripts\bin\codex-auto-resume.exe'
+        'payload\codex-auto-retry\scripts\bin\codex-auto-resume.exe',
+        'payload\codex-auto-retry\scripts\bin\codex-auto-resume-desktop.exe'
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required))) {
             throw "Release archive is missing: $required"
@@ -122,6 +123,9 @@ try {
     Assert-CodexBuildProvenance -Root $payloadRoot
     if ((Get-PeSubsystem (Join-Path $payloadRoot 'scripts\bin\codex-auto-resume.exe')) -ne 2) {
         throw 'Watchdog executable must use the Windows GUI subsystem.'
+    }
+    if ((Get-PeSubsystem (Join-Path $payloadRoot 'scripts\bin\codex-auto-resume-desktop.exe')) -ne 2) {
+        throw 'Desktop client executable must use the Windows GUI subsystem.'
     }
 
     foreach ($script in @('common.ps1', 'native-command.ps1', 'upgrade-runtime.ps1', 'close-codex.ps1', 'deploy.ps1', 'uninstall-release.ps1', 'startup-manager.ps1')) {

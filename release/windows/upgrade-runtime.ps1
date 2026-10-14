@@ -18,7 +18,7 @@ function Backup-UpgradeRuntime {
     Assert-UpgradePlainPath $TransactionRoot
     $backup = Join-Path $TransactionRoot 'runtime-backup'
     New-Item -ItemType Directory -Path $backup | Out-Null
-    $files = foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')) {
+    $files = foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'codex-auto-resume-desktop.exe', 'settings.ps1')) {
         $path = Join-Path $RuntimePath $name
         Assert-UpgradePlainPath $path
         $present = Test-Path -LiteralPath $path -PathType Leaf
@@ -48,20 +48,25 @@ function Restore-UpgradeRuntime {
     $backup = Join-Path $TransactionRoot 'runtime-backup'
     $record = Read-JsonDocument (Join-Path $backup 'snapshot.json')
     if ($null -eq $record -or $record.schema_version -ne 1) { throw 'Runtime rollback snapshot is missing or invalid.' }
-    $names = @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')
-    if (@($record.files).Count -ne $names.Count) { throw 'Runtime rollback file list is invalid.' }
-    # Verify every backup before changing any target. Never guess after damage.
-    foreach ($name in $names) {
+    $names = @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'codex-auto-resume-desktop.exe', 'settings.ps1')
+    # Snapshots recorded by an older installer cover fewer names; a missing
+    # entry means the file did not exist then, not that the record is invalid.
+    if (@($record.files).Count -gt $names.Count) { throw 'Runtime rollback file list is invalid.' }
+    $resolved = foreach ($name in $names) {
         $entries = @($record.files | Where-Object name -eq $name)
-        if ($entries.Count -ne 1) { throw 'Runtime rollback file identity is invalid.' }
-        $entry = $entries[0]
-        $source = Join-Path $backup $name
+        if ($entries.Count -gt 1) { throw 'Runtime rollback file identity is invalid.' }
+        if ($entries.Count -eq 1) { $entries[0] }
+        else { [pscustomobject]@{ name = $name; present = $false; hash = '' } }
+    }
+    # Verify every backup before changing any target. Never guess after damage.
+    foreach ($entry in $resolved) {
+        $source = Join-Path $backup $entry.name
         Assert-UpgradePlainPath $source
-        Assert-UpgradePlainPath (Join-Path $RuntimePath $name)
+        Assert-UpgradePlainPath (Join-Path $RuntimePath $entry.name)
         if ($entry.present -and ((-not (Test-Path -LiteralPath $source -PathType Leaf)) -or
             (Get-FileHash -LiteralPath $source).Hash -ne $entry.hash)) { throw 'Runtime rollback backup checksum failed.' }
     }
-    foreach ($entry in $record.files) {
+    foreach ($entry in $resolved) {
         $target = Join-Path $RuntimePath $entry.name
         if ($entry.present) {
             Copy-Item -LiteralPath (Join-Path $backup $entry.name) -Destination $target -Force

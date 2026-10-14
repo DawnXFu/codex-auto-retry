@@ -26,6 +26,33 @@ var titleWrapperPrefixes = []string{
 	"<user_instructions",
 	"<collaboration_mode",
 	"<app_context",
+	"<external_codex_apps",
+}
+
+// leadingWrapperTag reports whether text opens with a "<name...>" tool or
+// wrapper tag rather than real user text. Wrapper names are snake_case
+// identifiers — they always contain an underscore (environment_context,
+// external_codex_apps_open_page, ...) — so a leading "<3", "<-", or "<div>"
+// stays eligible as a title.
+func leadingWrapperTag(text string) bool {
+	if !strings.HasPrefix(text, "<") {
+		return false
+	}
+	name := text[1:]
+	if end := strings.IndexAny(name, " >"); end >= 0 {
+		name = name[:end]
+	}
+	underscore := false
+	for i, c := range name {
+		switch {
+		case c == '_':
+			underscore = true
+		case c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+	return underscore && len(name) > 0
 }
 
 func readThreadTitle(path string) string {
@@ -114,6 +141,9 @@ func normalizeTitle(text string) string {
 		if strings.HasPrefix(text, prefix) {
 			return ""
 		}
+	}
+	if leadingWrapperTag(text) {
+		return ""
 	}
 	if utf8.RuneCountInString(text) > maxTitleRunes {
 		text = string([]rune(text)[:maxTitleRunes])

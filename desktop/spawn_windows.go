@@ -28,3 +28,15 @@ func detachChildProcess(cmd *exec.Cmd) {
 		CreationFlags: createNewConsole | createNewProcessGroup,
 	}
 }
+
+// openPathInFileManager reveals a directory in Explorer. explorer.exe reports
+// exit code 1 on many successful invocations, so the process is started and
+// released — never waited on.
+func openPathInFileManager(path string) error {
+	cmd := exec.Command("explorer.exe", path)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}

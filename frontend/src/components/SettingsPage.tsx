@@ -3,6 +3,7 @@ import type { ManagementSnapshot } from "../types";
 import { saveSettings, setPaused, setSharedAppServer } from "../api";
 import { useI18n } from "../i18n";
 import type { Lang } from "../strings";
+import { setTzMode, tzMode, type TzMode } from "../time";
 
 // Settings draft: the retry-policy block the daemon's save-settings mode
 // persists. Toggles with their own bound setters (pause, shared backend)
@@ -47,6 +48,7 @@ export default function SettingsPage(props: {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [tz, setTz] = useState<TzMode>(tzMode);
 
   // Keep the form synced to the daemon until the user edits it; a dirty form
   // is never clobbered by the 3s snapshot poll.
@@ -151,8 +153,10 @@ export default function SettingsPage(props: {
             onChange={(v) => patch({ show_notifications: v })}
           />
         </Field>
-        <Field name={t("settings_boot")} desc={t("settings_boot_desc")}>
-          <Toggle checked={snap?.startup_approved === "approved"} disabled />
+        <Field name={t("settings_boot")} desc={`${t("settings_boot_desc")} · ${t("settings_boot_managed")}`}>
+          <span title={t("settings_boot_managed")}>
+            <Toggle checked={snap?.startup_approved === "approved"} disabled />
+          </span>
         </Field>
         <Field name={t("settings_lang")} desc={t("settings_lang_desc")}>
           <select value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
@@ -161,8 +165,15 @@ export default function SettingsPage(props: {
           </select>
         </Field>
         <Field name={t("settings_tz")} desc={t("settings_tz_desc")}>
-          <select defaultValue="sys">
-            <option value="sys">{t("settings_tz_system")}</option>
+          <select
+            value={tz}
+            onChange={(e) => {
+              const mode = e.target.value as TzMode;
+              setTz(mode);
+              setTzMode(mode);
+            }}
+          >
+            <option value="local">{t("settings_tz_system")}</option>
             <option value="utc">UTC</option>
           </select>
         </Field>

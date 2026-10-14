@@ -27,6 +27,30 @@ finally {
     Pop-Location
 }
 
+# The desktop client lives next to the watchdog binary in the installed
+# layout. It needs npm to build frontend/dist before the Go embed compiles,
+# so a toolchain without npm still produces a working watchdog-only build —
+# the miss is loud, not silent, and install.ps1 installs the client whenever
+# this step produced it.
+$desktopOutput = Join-Path $binDir 'codex-auto-resume-desktop.exe'
+$desktopBuilt = $false
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    & (Join-Path $pluginRoot 'desktop\build.ps1') -FrontendOnly
+    if ($LASTEXITCODE -ne 0) { throw 'Desktop frontend build failed.' }
+    Push-Location (Join-Path $pluginRoot 'desktop')
+    try {
+        & go build -trimpath -ldflags '-s -w -H=windowsgui' -o $desktopOutput .
+        if ($LASTEXITCODE -ne 0) { throw 'Desktop client build failed.' }
+    }
+    finally {
+        Pop-Location
+    }
+    $desktopBuilt = $true
+}
+else {
+    Write-Warning 'npm is not on PATH — skipping the desktop client build. The watchdog installs alone, but the tray has no settings window until the client is built.'
+}
+
 $watchdogBinary = Get-Item -LiteralPath $watchdogOutput
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 Write-CodexBuildProvenance -Root $pluginRoot
@@ -34,5 +58,6 @@ Write-CodexBuildProvenance -Root $pluginRoot
     PluginRoot = $pluginRoot
     WatchdogBinary = $watchdogBinary.FullName
     WatchdogBytes = $watchdogBinary.Length
+    DesktopBinary = if ($desktopBuilt) { $desktopOutput } else { $null }
     Status = 'built'
 }

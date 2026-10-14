@@ -1,28 +1,61 @@
 import type { TFunc } from "./i18n";
 
-// Locale rule: every wall-clock renders in the user's local timezone with
+// Locale rule: every wall-clock renders in the user's chosen timezone with
 // today/tomorrow/MM-DD relative-day labels, computed at render time — never
-// baked. Countdowns are durations, not wall times. Language-aware helpers
-// take a `t` accessor so they stay pure and testable.
+// baked. The timezone is a frontend-side preference (localStorage car.tz,
+// "local" | "utc") — the daemon never sees it. Countdowns are durations, not
+// wall times. Language-aware helpers take a `t` accessor so they stay pure
+// and testable.
+
+export type TzMode = "local" | "utc";
+
+const LS_TZ = "car.tz";
+
+export function tzMode(): TzMode {
+  try {
+    return window.localStorage.getItem(LS_TZ) === "utc" ? "utc" : "local";
+  } catch {
+    return "local";
+  }
+}
+
+export function setTzMode(mode: TzMode): void {
+  try {
+    window.localStorage.setItem(LS_TZ, mode);
+  } catch {
+    // storage unavailable — in-memory choice still applies for this session
+  }
+}
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-function sameDay(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+function sameDay(a: Date, b: Date, utc: boolean): boolean {
+  return utc
+    ? a.getUTCFullYear() === b.getUTCFullYear() &&
+        a.getUTCMonth() === b.getUTCMonth() &&
+        a.getUTCDate() === b.getUTCDate()
+    : a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-/** "今天 14:30" / "Tomorrow 09:15" / "10-18 09:15" in local time. */
+/** "今天 14:30" / "Tomorrow 09:15" / "10-18 09:15" in the chosen timezone. */
 export function dayLabel(iso: string, now: Date, t: TFunc, withTime = true): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const utc = tzMode() === "utc";
+  const hm = `${pad2(utc ? d.getUTCHours() : d.getHours())}:${pad2(utc ? d.getUTCMinutes() : d.getMinutes())}`;
   const tomorrow = new Date(now);
-  tomorrow.setDate(now.getDate() + 1);
-  if (sameDay(d, now)) return withTime ? `${t("time_today")} ${hm}` : t("time_today");
-  if (sameDay(d, tomorrow)) return withTime ? `${t("time_tomorrow")} ${hm}` : t("time_tomorrow");
-  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hm}`;
+  if (utc) {
+    tomorrow.setUTCDate(now.getUTCDate() + 1);
+  } else {
+    tomorrow.setDate(now.getDate() + 1);
+  }
+  if (sameDay(d, now, utc)) return withTime ? `${t("time_today")} ${hm}` : t("time_today");
+  if (sameDay(d, tomorrow, utc)) return withTime ? `${t("time_tomorrow")} ${hm}` : t("time_tomorrow");
+  const month = utc ? d.getUTCMonth() : d.getMonth();
+  const day = utc ? d.getUTCDate() : d.getDate();
+  return `${pad2(month + 1)}-${pad2(day)} ${hm}`;
 }
 
 /** HH:MM:SS duration; clamps negatives to zero. Language-neutral. */
@@ -72,5 +105,8 @@ export function clockTime(iso: string | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
+  if (tzMode() === "utc") {
+    return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
+  }
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }

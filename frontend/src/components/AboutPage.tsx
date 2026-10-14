@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ManagementSnapshot } from "../types";
+import { openLogDir } from "../api";
 import { useI18n } from "../i18n";
 
 export default function AboutPage(props: { snapshot: ManagementSnapshot | null }) {
@@ -43,7 +44,9 @@ export default function AboutPage(props: { snapshot: ManagementSnapshot | null }
         </div>
       </div>
       <div style={{ marginTop: 12 }}>
-        <button className="btn ghost">{t("about_open_log")}</button>{" "}
+        <button className="btn ghost" onClick={() => void openLogDir()}>
+          {t("about_open_log")}
+        </button>{" "}
         <button className="btn ghost" onClick={() => void copyDiag()}>
           {copied ? t("about_copied") : t("about_copy_diag")}
         </button>

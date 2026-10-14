@@ -54,6 +54,7 @@ declare global {
           SetRetryPrompt?: (prompt: string) => Promise<void>;
           SaveSettings?: (payload: SettingsPayload) => Promise<void>;
           RestartDaemon?: () => Promise<void>;
+          OpenLogDir?: () => Promise<void>;
         };
       };
     };
@@ -150,10 +151,8 @@ export function postAction(action: string, threadID = ""): Promise<ActionResult>
   switch (action) {
     case "retry_now":
       return invoke(app?.RetryNow ? () => app.RetryNow!(threadID) : undefined);
-    case "cancel":
     case "cancel_retry":
       return invoke(app?.CancelRetry ? () => app.CancelRetry!(threadID) : undefined);
-    case "restart":
     case "restart_retry":
       return invoke(app?.RestartRetry ? () => app.RestartRetry!(threadID) : undefined);
     case "pause":
@@ -180,4 +179,9 @@ export function setPaused(paused: boolean): Promise<ActionResult> {
 export function setSharedAppServer(enabled: boolean): Promise<ActionResult> {
   const app = window.go?.main?.App;
   return invoke(app?.SetSharedAppServer ? () => app.SetSharedAppServer!(enabled) : undefined);
+}
+
+export function openLogDir(): Promise<ActionResult> {
+  const app = window.go?.main?.App;
+  return invoke(app?.OpenLogDir ? () => app.OpenLogDir!() : undefined);
 }

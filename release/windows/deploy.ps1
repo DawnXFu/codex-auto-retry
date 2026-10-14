@@ -255,6 +255,10 @@ function Stop-RuntimeForUpgrade {
     @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcp, [System.StringComparison]::OrdinalIgnoreCase) }) |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    $desktopClient = Join-Path $RuntimePath 'codex-auto-resume-desktop.exe'
+    @(Get-CimInstance Win32_Process -ErrorAction Stop |
+        Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $desktopClient, [System.StringComparison]::OrdinalIgnoreCase) }) |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $stopSignal -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $supervisorStop -Force -ErrorAction SilentlyContinue
     return $wasRunning
@@ -408,6 +412,12 @@ function Verify-Installation {
     if ($VerifyRuntime) {
         $watchdog = Join-Path $RuntimePath 'codex-auto-resume.exe'
         Assert-X64PeBinary -Path $watchdog
+        # The desktop client is optional at build time but required when the
+        # payload carries it — a missing install would leave the tray with no
+        # settings window.
+        if (Test-Path -LiteralPath (Join-Path $PluginPath 'scripts\bin\codex-auto-resume-desktop.exe') -PathType Leaf) {
+            Assert-X64PeBinary -Path (Join-Path $RuntimePath 'codex-auto-resume-desktop.exe')
+        }
 
         $status = Read-JsonDocument -Path (Join-Path $RuntimePath 'status.json')
         if ($null -eq $status -or -not $status.running -or [string]$status.version -ne $ExpectedBaseVersion) {
@@ -461,6 +471,10 @@ if ($null -eq $pluginManifest -or [string]$pluginManifest.name -ne 'codex-auto-r
     throw 'The payload plugin manifest does not match the release manifest.'
 }
 Assert-X64PeBinary -Path (Join-Path $payloadRoot 'scripts\bin\codex-auto-resume.exe')
+$payloadDesktopClient = Join-Path $payloadRoot 'scripts\bin\codex-auto-resume-desktop.exe'
+if (Test-Path -LiteralPath $payloadDesktopClient -PathType Leaf) {
+    Assert-X64PeBinary -Path $payloadDesktopClient
+}
 
 Write-Step 'Verifying release files...'
 $checkedFiles = Test-ReleaseIntegrity -Root $packageRootPath

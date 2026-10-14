@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
 $watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
 $legacyWatchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
+$desktopTarget = Join-Path $installDir 'codex-auto-resume-desktop.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
 $stopSignal = Join-Path $installDir 'stop.signal'
@@ -61,6 +62,11 @@ $mcpProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $mcpTarget, [System.StringComparison]::OrdinalIgnoreCase) }
 if ($mcpProcesses) {
     $mcpProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+$desktopProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $desktopTarget, [System.StringComparison]::OrdinalIgnoreCase) }
+if ($desktopProcesses) {
+    $desktopProcesses | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 $settingsProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
@@ -139,6 +145,7 @@ if (Test-Path -LiteralPath $installDir) {
     if ($KeepData) {
         foreach ($runtimeFile in @(
             $watchdogTarget,
+            $desktopTarget,
             $mcpTarget,
             $stopSignal,
             $supervisorStop,

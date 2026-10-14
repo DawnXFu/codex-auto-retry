@@ -14,10 +14,21 @@ function Get-CodexBuildSourceHash {
     finally { $sha.Dispose() }
 }
 
+function Get-CodexBuildBinaries {
+    param([string]$Root)
+    # The desktop client is optional at build time (needs npm) but is provenance-
+    # tracked whenever it exists: a stale or untracked copy must never ship.
+    $names = @('codex-auto-resume.exe')
+    if (Test-Path -LiteralPath (Join-Path $Root 'scripts\bin\codex-auto-resume-desktop.exe') -PathType Leaf) {
+        $names += 'codex-auto-resume-desktop.exe'
+    }
+    return $names
+}
+
 function Write-CodexBuildProvenance {
     param([string]$Root)
     $record = [ordered]@{ schema = 1; source_hash = Get-CodexBuildSourceHash $Root }
-    foreach ($name in @('codex-auto-resume.exe')) {
+    foreach ($name in @(Get-CodexBuildBinaries -Root $Root)) {
         $record[$name] = (Get-FileHash -LiteralPath (Join-Path $Root ('scripts\bin\' + $name))).Hash
     }
     [IO.File]::WriteAllText((Join-Path $Root 'scripts\build-info.json'), ($record | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
@@ -29,7 +40,14 @@ function Assert-CodexBuildProvenance {
     if (-not (Test-Path -LiteralPath $path)) { throw 'Build provenance missing. Run scripts/build.ps1; do not package stale executables.' }
     $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     if ($record.schema -ne 1 -or $record.source_hash -ne (Get-CodexBuildSourceHash $Root)) { throw 'Sources changed since the last build. Rebuild before packaging.' }
-    foreach ($name in @('codex-auto-resume.exe')) {
-        if ($record.$name -ne (Get-FileHash -LiteralPath (Join-Path $Root ('scripts\bin\' + $name))).Hash) { throw "Build binary mismatch: $name" }
+    foreach ($name in @(Get-CodexBuildBinaries -Root $Root)) {
+        if ($null -eq $record.PSObject.Properties[$name] -or
+            $record.$name -ne (Get-FileHash -LiteralPath (Join-Path $Root ('scripts\bin\' + $name))).Hash) {
+            throw "Build binary mismatch: $name"
+        }
+    }
+    if ($null -ne $record.PSObject.Properties['codex-auto-resume-desktop.exe'] -and
+        -not (Test-Path -LiteralPath (Join-Path $Root 'scripts\bin\codex-auto-resume-desktop.exe') -PathType Leaf)) {
+        throw 'Build binary mismatch: codex-auto-resume-desktop.exe (recorded but missing)'
     }
 }

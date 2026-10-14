@@ -5,8 +5,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $watchdogSource = Join-Path $PSScriptRoot 'bin\codex-auto-resume.exe'
+$desktopSource = Join-Path $PSScriptRoot 'bin\codex-auto-resume-desktop.exe'
 $installDir = Join-Path $env:LOCALAPPDATA 'CodexAutoRetry'
 $watchdogTarget = Join-Path $installDir 'codex-auto-resume.exe'
+$desktopTarget = Join-Path $installDir 'codex-auto-resume-desktop.exe'
 $legacyWatchdogTarget = Join-Path $installDir 'codex-auto-retry.exe'
 $mcpTarget = Join-Path $installDir 'codex-auto-retry-mcp.exe'
 $settingsTarget = Join-Path $installDir 'settings.ps1'
@@ -64,6 +66,9 @@ function Stop-InstalledRuntime {
         if ($existing.Count -gt 0) { throw 'The watchdog did not stop gracefully. Runtime installation was cancelled.' }
     }
     Stop-OwnedProcessPath $mcpTarget
+    # The desktop client sits next to the watchdog exe and is replaced by the
+    # same transaction; a running copy would hold a lock on the target file.
+    Stop-OwnedProcessPath $desktopTarget
     @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($settingsTarget, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 }) |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
@@ -155,7 +160,7 @@ function Recover-IncompleteInstall {
         throw 'The incomplete runtime install is missing its backup directory; refusing a guessed rollback.'
     }
     Stop-InstalledRuntime
-    foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1')) {
+    foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'codex-auto-resume-desktop.exe', 'settings.ps1')) {
         $target = Join-Path $installDir $name
         $backup = Join-Path $backupRoot $name
         $recorded = $journal.files.PSObject.Properties[$name]
@@ -301,6 +306,7 @@ $oldConfigBytes = $null
 $oldWatchdog = $false
 $oldSettings = $false
 $oldMcp = $false
+$oldDesktop = $false
 $oldLegacyWatchdog = $false
 $oldEnvironment = $null
 $oldEnvironmentPresent = $false
@@ -356,6 +362,7 @@ try {
         @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-resume.exe')),
         @($legacyWatchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe')),
         @($mcpTarget, (Join-Path $backupRoot 'codex-auto-retry-mcp.exe')),
+        @($desktopTarget, (Join-Path $backupRoot 'codex-auto-resume-desktop.exe')),
         @($settingsTarget, (Join-Path $backupRoot 'settings.ps1'))
     )) {
         if (Test-Path -LiteralPath $pair[0] -PathType Leaf) {
@@ -363,13 +370,14 @@ try {
             if ($pair[0] -eq $watchdogTarget) { $oldWatchdog = $true }
             if ($pair[0] -eq $legacyWatchdogTarget) { $oldLegacyWatchdog = $true }
             if ($pair[0] -eq $mcpTarget) { $oldMcp = $true }
+            if ($pair[0] -eq $desktopTarget) { $oldDesktop = $true }
             if ($pair[0] -eq $settingsTarget) { $oldSettings = $true }
         }
     }
     $runtimeProcessesBefore = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.ExecutablePath -and (@($watchdogTarget, $legacyWatchdogTarget) -contains $_.ExecutablePath) })
     $runtimeBackupFiles = [ordered]@{}
-    foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'settings.ps1', 'config.json', 'environment-backup.json', 'shared-server.json')) {
+    foreach ($name in @('codex-auto-resume.exe', 'codex-auto-retry.exe', 'codex-auto-retry-mcp.exe', 'codex-auto-resume-desktop.exe', 'settings.ps1', 'config.json', 'environment-backup.json', 'shared-server.json')) {
         $source = Join-Path $installDir $name
         $runtimeBackupFiles[$name] = Test-Path -LiteralPath $source -PathType Leaf
         if ($runtimeBackupFiles[$name]) {
@@ -408,9 +416,22 @@ try {
     if ((Get-FileHash -LiteralPath $watchdogSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidateWatchdog -Algorithm SHA256).Hash) {
         throw 'Candidate binary verification failed.'
     }
+    # The desktop client is optional at build time but required once built:
+    # when scripts\bin carries it, the same candidate-verify-copy path applies.
+    $desktopClientIncluded = Test-Path -LiteralPath $desktopSource -PathType Leaf
+    if ($desktopClientIncluded) {
+        $candidateDesktop = Join-Path $candidateRoot 'codex-auto-resume-desktop.exe'
+        Copy-Item -LiteralPath $desktopSource -Destination $candidateDesktop -Force
+        if ((Get-FileHash -LiteralPath $desktopSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $candidateDesktop -Algorithm SHA256).Hash) {
+            throw 'Candidate desktop client verification failed.'
+        }
+    }
     $journal.phase = 'candidate_verified'
     Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     Copy-Item -LiteralPath $candidateWatchdog -Destination $watchdogTarget -Force
+    if ($desktopClientIncluded) {
+        Copy-Item -LiteralPath (Join-Path $candidateRoot 'codex-auto-resume-desktop.exe') -Destination $desktopTarget -Force
+    }
     Remove-Item -LiteralPath $legacyWatchdogTarget -Force -ErrorAction SilentlyContinue
     # Retire the MCP executable and settings.ps1 left by pre-desktop-client
     # installs; the desktop client replaces both surfaces (ADR-0004).
@@ -437,6 +458,7 @@ try {
         PID = $status.pid
         Paused = [bool]$status.paused
         InstallDirectory = $installDir
+        DesktopClient = [bool]$desktopClientIncluded
         Startup = 'Current user sign-in'
         SharedAppServerEnabled = [bool]$EnableSharedAppServer
         SharedAppServer = if ($EnableSharedAppServer) { 'ws://127.0.0.1:' + (Get-CodexAutoRetrySharedAppServerPort -ConfigPath $configPath) } else { $null }
@@ -491,6 +513,7 @@ catch {
             @($watchdogTarget, (Join-Path $backupRoot 'codex-auto-resume.exe'), $oldWatchdog),
             @($legacyWatchdogTarget, (Join-Path $backupRoot 'codex-auto-retry.exe'), $oldLegacyWatchdog),
             @($mcpTarget, (Join-Path $backupRoot 'codex-auto-retry-mcp.exe'), $oldMcp),
+            @($desktopTarget, (Join-Path $backupRoot 'codex-auto-resume-desktop.exe'), $oldDesktop),
             @($settingsTarget, (Join-Path $backupRoot 'settings.ps1'), $oldSettings)
         )) {
             if ($pair[2] -and (Test-Path -LiteralPath $pair[1] -PathType Leaf)) { Copy-Item -LiteralPath $pair[1] -Destination $pair[0] -Force }

@@ -1,21 +1,7 @@
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #fafafa;
-  --color-sidebar: #14161b;
-  --color-sidebar-active: #24272f;
-  --color-sidebar-text: #8b91a0;
-  --color-card: #ffffff;
-  --color-border: #e8eaee;
-  --color-ink: #1f2329;
-  --color-muted: #8a8f9a;
-  --color-ok: #16a34a;
-  --color-warn: #d97706;
-  --color-danger: #dc2626;
-  --color-info: #2563eb;
-  --color-quota: #7c3aed;
-}
-
+/* Palette lives only in :root — the hand-rolled classes below consume these
+   vars directly and no tailwind utility classes are used in markup. */
 :root {
   --bg: #fafafa;
   --sidebar: #14161b;

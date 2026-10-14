@@ -95,7 +95,7 @@ export default function QueueItem(props: {
           </button>
         )}
         {r.can_restart && (
-          <button className="mini-btn" onClick={() => props.onAction("restart", r.thread_id)}>
+          <button className="mini-btn" onClick={() => props.onAction("restart_retry", r.thread_id)}>
             {t("queue_btn_restart")}
           </button>
         )}
@@ -103,7 +103,7 @@ export default function QueueItem(props: {
           <button
             className="mini-btn danger"
             title={t("queue_btn_cancel")}
-            onClick={() => props.onAction("cancel", r.thread_id)}
+            onClick={() => props.onAction("cancel_retry", r.thread_id)}
           >
             ✕
           </button>
