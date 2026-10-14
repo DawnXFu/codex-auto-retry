@@ -16,6 +16,7 @@ import (
 type ManagedRetry struct {
 	ThreadID              string       `json:"thread_id" jsonschema:"Codex task identifier"`
 	Label                 string       `json:"label" jsonschema:"privacy-safe short task label"`
+	Title                 string       `json:"title,omitempty" jsonschema:"task title from session metadata, empty when undiscoverable"`
 	State                 string       `json:"state" jsonschema:"pending, starting, or running"`
 	Class                 FailureClass `json:"class" jsonschema:"provider failure category"`
 	DueAt                 string       `json:"due_at,omitempty" jsonschema:"next retry time in RFC 3339 format"`
@@ -100,6 +101,15 @@ type managementService struct {
 	statePath   string
 	statusPath  string
 	mu          sync.Mutex
+	titles      map[string]cachedThreadTitle
+}
+
+// cachedThreadTitle memoizes one rollout head-read per thread. The candidate
+// path list is part of the key so a cache entry is re-read when state starts
+// pointing at a different rollout.
+type cachedThreadTitle struct {
+	key   string
+	title string
 }
 
 func newManagementService(dataDir string) *managementService {
@@ -144,7 +154,7 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 	processRunning := statusFound && processOwnsRuntime(status.PID, m.dataDir)
 	heartbeatStale := !statusFound || !processRunning || status.LastScanAt.IsZero() || now.Sub(status.LastScanAt) > staleAfter
 	running := statusFound && status.Running && !heartbeatStale
-	retries := managedRetries(state, now)
+	retries := managedRetries(state, now, m.threadTitle)
 	visibleRetries := retries[:0]
 	pending, active, stopped, waiting := 0, 0, 0, 0
 	for _, retry := range retries {
@@ -509,9 +519,39 @@ func loadStatusSnapshot(path string) (StatusSnapshot, bool, error) {
 	return status, true, nil
 }
 
-func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
+// threadTitleResolver maps a thread to its session title; candidates are
+// rollout paths ordered by preference. It may return "" when nothing is
+// discoverable — the label field remains the fallback.
+type threadTitleResolver func(threadID string, candidates []string) string
+
+// threadTitle is called under the service mutex; the cached key keeps the
+// lookup to one file read per thread until the rollout path changes.
+func (m *managementService) threadTitle(threadID string, candidates []string) string {
+	key := strings.Join(candidates, "\n")
+	if cached, ok := m.titles[threadID]; ok && cached.key == key {
+		return cached.title
+	}
+	title := ""
+	for _, path := range candidates {
+		if title = readThreadTitle(path); title != "" {
+			break
+		}
+	}
+	if m.titles == nil {
+		m.titles = make(map[string]cachedThreadTitle)
+	}
+	m.titles[threadID] = cachedThreadTitle{key: key, title: title}
+	return title
+}
+
+func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleResolver) []ManagedRetry {
 	retries := make([]ManagedRetry, 0)
+	filePaths := rolloutPathsByThread(state)
 	for threadID, thread := range state.Threads {
+		title := ""
+		if resolveTitle != nil {
+			title = resolveTitle(threadID, threadTitleCandidates(thread, filePaths[threadID]))
+		}
 		if thread.Pending != nil {
 			remaining := int64(0)
 			if duration := thread.Pending.DueAt.Sub(now); duration > 0 {
@@ -520,6 +560,7 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
 				Label:                 "任务 " + shortThreadID(threadID),
+				Title:                 title,
 				State:                 "pending",
 				Class:                 thread.Pending.Class,
 				DueAt:                 thread.Pending.DueAt.Format(time.RFC3339Nano),
@@ -545,6 +586,7 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 			retries = append(retries, ManagedRetry{
 				ThreadID:         threadID,
 				Label:            "任务 " + shortThreadID(threadID),
+				Title:            title,
 				State:            stateName,
 				Class:            wait.Class,
 				DueAt:            wait.DueAt.Format(time.RFC3339Nano),
@@ -562,6 +604,7 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
 				Label:                 "任务 " + shortThreadID(threadID),
+				Title:                 title,
 				State:                 stateName,
 				Class:                 thread.Awaiting.Class,
 				RecoveryAttempt:       thread.Awaiting.Attempt,
@@ -579,6 +622,7 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
 				Label:                 "任务 " + shortThreadID(threadID),
+				Title:                 title,
 				State:                 stateName,
 				Class:                 thread.Stopped.Class,
 				RecoveryAttempt:       thread.Stopped.Attempts,
@@ -606,6 +650,50 @@ func managedRetries(state RuntimeState, now time.Time) []ManagedRetry {
 		return retries[i].ThreadID < retries[j].ThreadID
 	})
 	return retries
+}
+
+// rolloutPathsByThread indexes the scan cursors by thread so a retry whose
+// records lost their rollout_path can still find its session file.
+func rolloutPathsByThread(state RuntimeState) map[string][]string {
+	paths := make(map[string][]string)
+	for path := range state.Files {
+		if id := threadIDFromPath(path); id != "" {
+			paths[id] = append(paths[id], path)
+		}
+	}
+	for _, list := range paths {
+		sort.Strings(list)
+	}
+	return paths
+}
+
+func threadTitleCandidates(thread ThreadState, discovered []string) []string {
+	candidates := make([]string, 0, 4+len(discovered))
+	seen := make(map[string]bool, cap(candidates))
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		candidates = append(candidates, path)
+	}
+	if thread.Pending != nil {
+		add(thread.Pending.RolloutPath)
+	}
+	if thread.Awaiting != nil {
+		add(thread.Awaiting.RolloutPath)
+	}
+	if thread.QuotaWait != nil {
+		add(thread.QuotaWait.RolloutPath)
+	}
+	if thread.Stopped != nil {
+		add(thread.Stopped.RolloutPath)
+	}
+	for _, path := range discovered {
+		add(path)
+	}
+	return candidates
 }
 
 func stoppedRetryIsVisible(stopped *StoppedRetry, now time.Time) bool {
