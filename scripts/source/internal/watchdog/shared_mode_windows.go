@@ -1,0 +1,650 @@
+//go:build windows
+
+package watchdog
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
+)
+
+const (
+	sharedServerOwner        = "codex-auto-retry"
+	sharedFailOpenMarkerName = "shared-fail-open.json"
+)
+
+// Tests replace only this registry name with a random test-only name. No
+// environment or configuration option can change the production routing key.
+var sharedAppServerEnvironmentName = "CODEX_APP_SERVER_WS_URL"
+
+type sharedEnvironmentBackup struct {
+	SchemaVersion   int       `json:"schema_version"`
+	Name            string    `json:"name"`
+	PreviousPresent bool      `json:"previous_present"`
+	PreviousValue   string    `json:"previous_value"`
+	InstalledValue  string    `json:"installed_value"`
+	RecordedAt      time.Time `json:"recorded_at"`
+}
+
+type sharedEnvironmentResult struct {
+	Changed       bool
+	Restored      bool
+	ChangedByUser bool
+}
+
+// These probes are variables so the startup boundary can be tested without
+// launching Codex or depending on a particular PID in the test process.
+var startupSharedServerProcessIsRunning = processIsRunning
+var startupSharedServerOwnershipProbe = func(ctx context.Context, manager *sharedServerManager, state sharedServerState) bool {
+	return manager.ownsProcess(ctx, state)
+}
+var startupSharedServerEndpointProbe = func(ctx context.Context, endpoint string) error {
+	manager := &sharedServerManager{endpoint: endpoint}
+	return manager.probe(ctx)
+}
+var writeSharedFailOpenMarker = func(path string, value any) error { return writeJSONAtomic(path, value) }
+var writeSharedFailOpenConfig = func(path string, value any) error { return writeJSONAtomic(path, value) }
+var restoreSharedEnvironmentForFailOpen = restoreOwnedSharedEnvironment
+var stopSharedServerForFailOpen = func(ctx context.Context, dataDir string, config Config) error {
+	return newSharedServerManager(config, dataDir, nil).StopOwned(ctx)
+}
+
+// checkSharedServerStartupState is deliberately read-only. Ensure may start a
+// new server when its old state is stale, but startup must first decide whether
+// that state is a failed plugin-owned backend and fail open before doing so.
+// Missing state is allowed only when there is no endpoint or ownership backup
+// to clean up. That is the first-enable path used by the installer; a stale
+// endpoint or backup turns the same missing-state condition into fail-open.
+func (m *sharedServerManager) checkSharedServerStartupState(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	state, err := m.readState()
+	if errors.Is(err, os.ErrNotExist) {
+		if m.ownedEnvironmentBackupMatchesCurrent() {
+			return fmt.Errorf("%w: owned shared-server state is missing", errSharedServerUnavailable)
+		}
+		if present, presentErr := m.nonemptySharedEnvironmentPresent(); presentErr != nil {
+			return fmt.Errorf("%w: shared-server environment could not be checked", errSharedServerUnavailable)
+		} else if present {
+			return fmt.Errorf("%w: shared-server environment has no owned state", errSharedAppServerEnvironmentConflict)
+		}
+		return nil
+	}
+	if err != nil {
+		// An unreadable state file is not enough proof to terminate a process. A
+		// matching environment backup still proves the endpoint was published by
+		// this plugin, so cleanup can consume that backup. Even without that
+		// proof, startup must fail open rather than let Ensure publish a second
+		// endpoint beside an unreadable ownership record.
+		if m.ownedEnvironmentBackupMatchesCurrent() {
+			return fmt.Errorf("%w: owned shared-server state is unreadable", errSharedServerUnavailable)
+		}
+		if present, presentErr := m.nonemptySharedEnvironmentPresent(); presentErr != nil {
+			return fmt.Errorf("%w: shared-server environment could not be checked", errSharedServerUnavailable)
+		} else if present {
+			return fmt.Errorf("%w: shared-server environment has no owned state", errSharedAppServerEnvironmentConflict)
+		}
+		return fmt.Errorf("%w: shared-server state is unreadable", errSharedServerUnavailable)
+	}
+	if !m.sharedServerStateOwnedForCleanup(state) {
+		if present, presentErr := m.nonemptySharedEnvironmentPresent(); presentErr != nil {
+			return fmt.Errorf("%w: shared-server environment could not be checked", errSharedServerUnavailable)
+		} else if present {
+			return fmt.Errorf("%w: shared-server environment has no owned state", errSharedAppServerEnvironmentConflict)
+		}
+		return fmt.Errorf("%w: shared-server state is not owned by this plugin", errSharedServerUnavailable)
+	}
+	if !startupSharedServerProcessIsRunning(state.PID) {
+		return fmt.Errorf("%w: owned shared-server process is not running", errSharedServerUnavailable)
+	}
+	if !startupSharedServerOwnershipProbe(ctx, m, state) {
+		return fmt.Errorf("%w: shared-server process ownership could not be verified", errSharedServerUnavailable)
+	}
+	if !validSharedServerEndpoint(state.Endpoint, endpointPort(state.Endpoint)) {
+		return fmt.Errorf("%w: owned shared-server endpoint is invalid", errSharedServerUnavailable)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := startupSharedServerEndpointProbe(probeCtx, state.Endpoint); err != nil {
+		return fmt.Errorf("%w: owned shared-server endpoint is not listening", errSharedServerUnavailable)
+	}
+	return nil
+}
+
+func (m *sharedServerManager) nonemptySharedEnvironmentPresent() (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	value, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	return present && strings.TrimSpace(value) != "", err
+}
+
+func enableSharedAppServer(ctx context.Context, dataDir string, config Config) (Config, error) {
+	manager := newSharedServerManager(config, dataDir, nil)
+	manager.allowAlternatePort = true
+	manager.config.SharedAppServerEnabled = true
+	if err := manager.Ensure(ctx); err != nil {
+		return config, fmt.Errorf("shared app-server health check failed: %w", err)
+	}
+	config = manager.config
+	if err := manager.ValidateOwned(ctx); err != nil {
+		cleanupSharedServer(manager)
+		return config, fmt.Errorf("shared app-server ownership check failed: %w", err)
+	}
+	endpoint := manager.Endpoint()
+	if !validSharedServerEndpoint(endpoint, config.SharedAppServerPort) {
+		cleanupSharedServer(manager)
+		return config, errors.New("shared app-server endpoint is not the expected loopback address")
+	}
+	if err := manager.EnsureOwnedEnvironment(ctx); err != nil {
+		cleanupSharedServer(manager)
+		return config, err
+	}
+	return manager.config, nil
+}
+
+// EnsureOwnedEnvironment retires the legacy persistent route. Shared routing
+// now belongs exclusively to the explicit Desktop launcher's child process.
+// Removing a registry value does not disconnect an existing Desktop process.
+func (m *sharedServerManager) EnsureOwnedEnvironment(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, err := restoreOwnedSharedEnvironment(m.dataDir, m.ownedLegacyEndpoints(ctx)...)
+	if err != nil {
+		if m.logger != nil {
+			category := "shared_app_server_environment"
+			if errors.Is(err, errSharedAppServerEnvironmentConflict) {
+				category = "shared_app_server_environment_conflict"
+			}
+			m.logger.Printf("shared app-server environment reconciliation failed category=%s port=%d", category, m.config.SharedAppServerPort)
+		}
+		return err
+	}
+	if present, readErr := m.nonemptySharedEnvironmentPresent(); readErr != nil {
+		return readErr
+	} else if present {
+		return errSharedAppServerEnvironmentConflict
+	}
+	if result.Restored && m.logger != nil {
+		m.logger.Printf("legacy shared route retired category=process_scoped_launch")
+	}
+	return nil
+}
+
+func cleanupSharedServer(manager *sharedServerManager) {
+	if manager == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = manager.CleanupIfUnused(cleanupCtx)
+}
+
+func disableSharedAppServer(ctx context.Context, dataDir string, config Config) error {
+	manager := newSharedServerManager(config, dataDir, nil)
+	return manager.CleanupIfUnused(ctx)
+}
+
+// failOpenSharedAppServer persists the disabled preference before cleanup. It
+// restores the plugin-owned environment even when Desktop is still running;
+// an already-running process has its environment snapshot, while future Codex
+// launches must not inherit a dead loopback endpoint. StopOwned still defers
+// terminating a live process while Desktop may be using it.
+func failOpenSharedAppServer(ctx context.Context, configPath, dataDir string, config Config) (Config, error) {
+	config.SharedAppServerEnabled = false
+	if err := config.validate(); err != nil {
+		return config, err
+	}
+	// Record the safety transition before mutating the durable preference. If
+	// the process is interrupted while config.json is locked, the next worker
+	// retries fail-open instead of treating the old enabled setting as fresh.
+	markerPath := filepath.Join(dataDir, sharedFailOpenMarkerName)
+	marker := map[string]any{
+		"schema_version": 1,
+		"reason":         "shared_app_server_startup_fail_open",
+		"created_at":     time.Now().UTC(),
+	}
+	markerErr := writeSharedFailOpenMarker(markerPath, marker)
+	persistErr := withConfigFileLock(configPath, func() error {
+		latest, err := loadOrCreateConfigInsideLock(configPath)
+		if err != nil {
+			return err
+		}
+		latest.SharedAppServerEnabled = false
+		if err := latest.validate(); err != nil {
+			return err
+		}
+		config = latest
+		return writeSharedFailOpenConfig(configPath, latest)
+	})
+	cleanupErr := failOpenSharedBackendCleanup(ctx, dataDir, config)
+	if markerErr == nil && persistErr == nil && cleanupErr != nil &&
+		errors.Is(cleanupErr, errSharedServerMigrationDeferred) &&
+		cleanupErr.Error() == errSharedServerMigrationDeferred.Error() {
+		// The disabled preference is already durable. A live Desktop connection
+		// only defers process teardown; the normal worker reconciler will finish
+		// it after Desktop closes and should not make fail-open look unsuccessful.
+		cleanupErr = nil
+	}
+	if markerErr == nil && persistErr == nil && cleanupErr == nil {
+		// Once the disabled preference is durable, a cleanup-only error (for
+		// example a live Desktop connection) can be retried by the normal worker
+		// boundary and does not need to hold the startup marker open.
+		_ = os.Remove(markerPath)
+	}
+	return config, errors.Join(markerErr, persistErr, cleanupErr)
+}
+
+func failOpenSharedBackendCleanup(ctx context.Context, dataDir string, config Config) error {
+	manager := newSharedServerManager(config, dataDir, nil)
+	ownedEvidence := manager.hasOwnedCleanupArtifacts()
+	environmentResult, environmentErr := restoreSharedEnvironmentForFailOpen(dataDir, manager.ownedLegacyEndpoints(ctx)...)
+	if present, presentErr := manager.nonemptySharedEnvironmentPresent(); presentErr != nil {
+		// An inability to read the environment is itself a fail-closed result;
+		// the caller must not continue while it cannot prove the dead endpoint is
+		// gone.
+		environmentErr = errors.Join(environmentErr, fmt.Errorf("%w: shared endpoint ownership could not be checked: %v", errSharedAppServerEnvironmentConflict, presentErr))
+	} else if present && (environmentErr != nil || !ownedEvidence ||
+		(!environmentResult.Restored && !environmentResult.ChangedByUser)) {
+		// An enabled shared preference plus a non-empty endpoint is not enough to
+		// prove that this plugin owns the value. Keep a user-owned endpoint
+		// untouched, but do not let the worker claim that Codex has safely
+		// returned to its official backend while the value is still present.
+		environmentErr = errors.Join(environmentErr, fmt.Errorf("%w: shared endpoint ownership is unknown", errSharedAppServerEnvironmentConflict))
+	}
+	processErr := stopSharedServerForFailOpen(ctx, dataDir, config)
+	return errors.Join(environmentErr, processErr)
+}
+
+// cleanupSharedBackend is used at process boundaries and by the worker's
+// disabled-mode reconciler. It never changes the persisted preference; it
+// only removes artifacts that are proven to belong to this plugin.
+func cleanupSharedBackend(ctx context.Context, dataDir string) error {
+	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
+	if err == nil {
+		return disableSharedAppServer(ctx, dataDir, config)
+	}
+	// A malformed or unreadable config must never prevent process-boundary
+	// cleanup. Reconstruct only the cleanup inputs from the plugin-owned state
+	// record; do not rewrite the user's damaged config file. This is the last
+	// line of defense against leaving CODEX_APP_SERVER_WS_URL pointed at a dead
+	// loopback port after a crash or interrupted upgrade.
+	if cleanupErr := cleanupSharedBackendWithoutConfig(ctx, dataDir); cleanupErr != nil {
+		return fmt.Errorf("config unavailable: %v; fallback cleanup: %w", err, cleanupErr)
+	}
+	return nil
+}
+
+// cleanupSharedBackendWithoutConfig performs the minimum ownership-checked
+// cleanup that is safe when config.json cannot be parsed. The persisted state
+// carries the actual endpoint and Codex home used by the server, so an older
+// or custom port can be handled without guessing from a default alone.
+func cleanupSharedBackendWithoutConfig(ctx context.Context, dataDir string) error {
+	config := defaultConfig()
+	manager := newSharedServerManager(config, dataDir, nil)
+	state, stateErr := manager.readState()
+	if stateErr == nil {
+		port := endpointPort(state.Endpoint)
+		if port < 1024 || port > 65535 || !validSharedServerEndpoint(state.Endpoint, port) {
+			stateErr = errors.New("shared app-server state has an invalid endpoint")
+		} else {
+			// The state record is the source of truth for the endpoint during
+			// cleanup. Keep the current user's CODEX_HOME out of this decision;
+			// an upgrade or shell change may have altered it since the server was
+			// started.
+			config.SharedAppServerPort = port
+			manager = newSharedServerManager(config, dataDir, nil)
+			manager.codexHome = expandPath(state.CodexHome)
+			if !manager.sharedServerStateOwnedByPlugin(state) {
+				stateErr = errors.New("shared app-server state is not owned by this plugin")
+			}
+		}
+	}
+
+	return manager.CleanupIfUnused(ctx)
+}
+
+func (m *sharedServerManager) shouldDeferStopForDesktop() bool {
+	if m == nil || !m.desktopIsRunning() {
+		return false
+	}
+	state, err := m.readState()
+	return err == nil && m.sharedServerStateOwnedForCleanup(state) && processIsRunning(state.PID)
+}
+
+// hasOwnedCleanupArtifacts is intentionally stricter than checking whether a
+// port is occupied. Only a plugin ownership record or a matching environment
+// backup can authorize deferred cleanup; user-owned endpoints are untouched.
+func (m *sharedServerManager) hasOwnedCleanupArtifacts() bool {
+	if m == nil {
+		return false
+	}
+	if state, err := m.readState(); err == nil && m.sharedServerStateOwnedForCleanup(state) {
+		return true
+	}
+	return m.ownedEnvironmentBackupMatchesCurrent()
+}
+
+func (m *sharedServerManager) ownedEnvironmentBackupMatchesCurrent() bool {
+	if m == nil {
+		return false
+	}
+	backupPath := filepath.Join(m.dataDir, "environment-backup.json")
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		return false
+	}
+	var backup sharedEnvironmentBackup
+	if json.Unmarshal(data, &backup) != nil || backup.SchemaVersion != 1 || backup.Name != sharedAppServerEnvironmentName ||
+		!validSharedServerEndpoint(backup.InstalledValue, endpointPort(backup.InstalledValue)) {
+		return false
+	}
+	current, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	return err == nil && present && current == backup.InstalledValue
+}
+
+// CleanupIfUnused restores the owned environment and stops the owned server
+// only after Codex Desktop is gone when that server is still alive. A dead
+// server has no process to disrupt, so its stale state and endpoint backup can
+// be removed immediately.
+func (m *sharedServerManager) CleanupIfUnused(ctx context.Context) error {
+	if m == nil || !m.hasOwnedCleanupArtifacts() {
+		return nil
+	}
+	if m.shouldDeferStopForDesktop() {
+		return errSharedServerMigrationDeferred
+	}
+	_, environmentErr := restoreOwnedSharedEnvironment(m.dataDir, m.ownedLegacyEndpoints(ctx)...)
+	processErr := m.StopOwned(ctx)
+	return errors.Join(environmentErr, processErr)
+}
+
+// ownedLegacyEndpoints returns an endpoint that may be cleaned up when the
+// ownership backup is absent. A configured port alone is not proof of
+// ownership: only a matching, versioned shared-server state record qualifies.
+func (m *sharedServerManager) ownedLegacyEndpoints(ctx context.Context) []string {
+	state, err := m.readState()
+	if err != nil || !m.sharedServerStateOwnedForCleanup(state) {
+		return nil
+	}
+	if processIsRunning(state.PID) && !m.ownsProcess(ctx, state) {
+		return nil
+	}
+	return []string{state.Endpoint}
+}
+
+func (m *sharedServerManager) ValidateOwned(ctx context.Context) error {
+	state, err := m.readState()
+	if err != nil {
+		return err
+	}
+	if !m.sharedServerStateOwnedForCleanup(state) {
+		return errors.New("shared app-server state is not owned by this plugin")
+	}
+	if err := m.adoptSharedServerState(&state); err != nil {
+		return fmt.Errorf("adopt shared app-server state: %w", err)
+	}
+	if !validSharedServerEndpoint(state.Endpoint, m.config.SharedAppServerPort) || !m.SupportsHome(state.CodexHome) {
+		return errors.New("shared app-server state failed endpoint or home validation")
+	}
+	if info, err := os.Stat(state.Executable); err != nil || info.IsDir() {
+		return errors.New("shared app-server executable is missing")
+	}
+	if state.ExecutableHash == "" || state.ExecutableHash != executableHash(state.Executable) {
+		return errors.New("shared app-server executable hash does not match owned state")
+	}
+	if !m.ownsProcess(ctx, state) {
+		return errors.New("shared app-server process is not owned by the plugin")
+	}
+	if err := m.probe(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *sharedServerManager) StopOwned(ctx context.Context) error {
+	state, err := m.readState()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return nil
+	}
+	if !m.sharedServerStateOwnedForCleanup(state) {
+		return nil
+	}
+	if m.desktopIsRunning() && processIsRunning(state.PID) {
+		// Do not terminate a live server while Desktop may still be using it.
+		return errSharedServerMigrationDeferred
+	}
+	if processIsRunning(state.PID) {
+		// A live PID must still prove ownership before it can be terminated. A
+		// dead PID, however, cannot be confused with another process and its
+		// stale state file is safe to remove. Older state records without a
+		// creation timestamp are explicitly unknown rather than silently treated
+		// as cleaned; this prevents an unrelated PID from being terminated while
+		// keeping the unresolved state visible for a deliberate repair.
+		if state.StartedAt.IsZero() {
+			return errSharedServerOwnershipUnknown
+		}
+		if !m.ownsProcess(ctx, state) {
+			return errSharedServerOwnershipUnknown
+		}
+		if err := terminateProcessTree(ctx, state.PID); err != nil {
+			return err
+		}
+	}
+	_ = os.Remove(filepath.Join(m.dataDir, "shared-server.json"))
+	return nil
+}
+
+func setOwnedSharedEnvironment(dataDir, desired string) (sharedEnvironmentResult, error) {
+	return setOwnedSharedEnvironmentNamed(dataDir, sharedAppServerEnvironmentName, desired)
+}
+
+func setOwnedSharedEnvironmentNamed(dataDir, name, desired string) (sharedEnvironmentResult, error) {
+	if strings.EqualFold(name, "CODEX_APP_SERVER_WS_URL") {
+		return sharedEnvironmentResult{}, errors.New("persistent shared routing is disabled; use the safe Codex launcher")
+	}
+	if !validSharedServerEndpoint(desired, endpointPort(desired)) {
+		return sharedEnvironmentResult{}, fmt.Errorf("%w: invalid endpoint", errSharedAppServerEnvironmentConflict)
+	}
+	backupPath := filepath.Join(dataDir, "environment-backup.json")
+	current, present, err := readUserEnvironment(name)
+	if err != nil {
+		return sharedEnvironmentResult{}, err
+	}
+	backupExisted := false
+	var backupBytes []byte
+	var backup sharedEnvironmentBackup
+	if data, readErr := os.ReadFile(backupPath); readErr == nil {
+		backupExisted = true
+		backupBytes = data
+		if err := json.Unmarshal(data, &backup); err != nil || backup.SchemaVersion != 1 || backup.Name != name {
+			return sharedEnvironmentResult{}, fmt.Errorf("%w: ownership record is invalid", errSharedAppServerEnvironmentConflict)
+		}
+		expected := backup.PreviousValue
+		if !backup.PreviousPresent {
+			expected = ""
+		}
+		if present && current != backup.InstalledValue && current != expected && current != desired {
+			return sharedEnvironmentResult{}, fmt.Errorf("%w: CODEX_APP_SERVER_WS_URL already has a different user value", errSharedAppServerEnvironmentConflict)
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return sharedEnvironmentResult{}, readErr
+	} else {
+		if present && current != desired {
+			return sharedEnvironmentResult{}, fmt.Errorf("%w: CODEX_APP_SERVER_WS_URL already has a different user value", errSharedAppServerEnvironmentConflict)
+		}
+		backup = sharedEnvironmentBackup{
+			SchemaVersion:   1,
+			Name:            name,
+			PreviousPresent: present,
+			PreviousValue:   current,
+		}
+	}
+	backup.InstalledValue = desired
+	backup.RecordedAt = time.Now().UTC()
+	// Persist ownership before changing the user environment. If the process is
+	// interrupted after the registry write, the next fail-open cleanup can still
+	// identify and restore the endpoint.
+	if err := writeJSONAtomic(backupPath, backup); err != nil {
+		return sharedEnvironmentResult{}, err
+	}
+	if err := writeUserEnvironment(name, desired); err != nil {
+		_ = restoreUserEnvironment(name, current, present)
+		if backupExisted {
+			_ = os.WriteFile(backupPath, backupBytes, 0o600)
+		} else {
+			_ = os.Remove(backupPath)
+		}
+		return sharedEnvironmentResult{}, err
+	}
+	broadcastEnvironmentChange()
+	return sharedEnvironmentResult{Changed: !present || current != desired}, nil
+}
+
+func restoreOwnedSharedEnvironment(dataDir string, legacyEndpoints ...string) (sharedEnvironmentResult, error) {
+	backupPath := filepath.Join(dataDir, "environment-backup.json")
+	data, err := os.ReadFile(backupPath)
+	if errors.Is(err, os.ErrNotExist) {
+		current, present, readErr := readUserEnvironment(sharedAppServerEnvironmentName)
+		if readErr != nil {
+			return sharedEnvironmentResult{}, readErr
+		}
+		if present {
+			for _, endpoint := range legacyEndpoints {
+				if validSharedServerEndpoint(endpoint, endpointPort(endpoint)) && current == endpoint {
+					if err := restoreUserEnvironment(sharedAppServerEnvironmentName, "", false); err != nil {
+						return sharedEnvironmentResult{}, err
+					}
+					broadcastEnvironmentChange()
+					return sharedEnvironmentResult{Restored: true}, nil
+				}
+			}
+		}
+		return sharedEnvironmentResult{}, nil
+	}
+	if err != nil {
+		return sharedEnvironmentResult{}, err
+	}
+	var backup sharedEnvironmentBackup
+	if err := json.Unmarshal(data, &backup); err != nil || backup.SchemaVersion != 1 || backup.Name != sharedAppServerEnvironmentName {
+		return sharedEnvironmentResult{}, errors.New("shared environment ownership record is invalid")
+	}
+	current, present, err := readUserEnvironment(sharedAppServerEnvironmentName)
+	if err != nil {
+		return sharedEnvironmentResult{}, err
+	}
+	previous := backup.PreviousValue
+	if !backup.PreviousPresent {
+		previous = ""
+	}
+	// Old installers could back up their own endpoint as the previous value.
+	// Restoring that value would recreate the same dead route after reboot.
+	if previous == backup.InstalledValue {
+		previous = ""
+		backup.PreviousPresent = false
+	}
+	for _, owned := range legacyEndpoints {
+		if previous == owned && validSharedServerEndpoint(owned, endpointPort(owned)) {
+			previous = ""
+			backup.PreviousPresent = false
+		}
+	}
+	changedByUser := present && current != backup.InstalledValue && current != previous
+	if !changedByUser && (!present || current != previous) {
+		if err := restoreUserEnvironment(sharedAppServerEnvironmentName, previous, backup.PreviousPresent); err != nil {
+			return sharedEnvironmentResult{}, err
+		}
+		broadcastEnvironmentChange()
+	}
+	_ = os.Remove(backupPath)
+	return sharedEnvironmentResult{Restored: !changedByUser, ChangedByUser: changedByUser}, nil
+}
+
+func readUserEnvironment(name string) (string, bool, error) {
+	key, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	defer key.Close()
+	value, _, err := key.GetStringValue(name)
+	if errors.Is(err, registry.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+func writeUserEnvironment(name, value string) error {
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, `Environment`, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	return key.SetStringValue(name, value)
+}
+
+func restoreUserEnvironment(name, value string, present bool) error {
+	key, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.SET_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		if !present {
+			return nil
+		}
+		key, _, err = registry.CreateKey(registry.CURRENT_USER, `Environment`, registry.SET_VALUE)
+	}
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	if present {
+		return key.SetStringValue(name, value)
+	}
+	if err := key.DeleteValue(name); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func broadcastEnvironmentChange() {
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	proc := user32.NewProc("SendMessageTimeoutW")
+	message, err := windows.UTF16PtrFromString("Environment")
+	if err != nil {
+		return
+	}
+	var result uintptr
+	_, _, _ = proc.Call(
+		uintptr(0xffff), 0x001a, 0,
+		uintptr(unsafe.Pointer(message)), 0x0002, 5000,
+		uintptr(unsafe.Pointer(&result)),
+	)
+}
+
+func endpointPort(endpoint string) int {
+	if parsed, err := url.Parse(endpoint); err == nil {
+		if port, err := strconv.Atoi(parsed.Port()); err == nil {
+			return port
+		}
+	}
+	return 0
+}

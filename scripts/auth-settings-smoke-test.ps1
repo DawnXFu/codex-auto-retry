@@ -30,7 +30,7 @@ try {
 
     # Load the actual form and event handlers, but keep its message loop owned
     # by this bounded test. Only save-settings is invoked, using the temp data dir.
-    $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'source\ui\settings.ps1'))
+    $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'source\internal\watchdog\ui\settings.ps1'))
     $loop = '[void]$form.ShowDialog()'
     if (-not $source.Contains($loop)) { throw 'Settings form entry point changed.' }
     . ([scriptblock]::Create($source.Replace($loop, ''))) -DataDir $testRoot -Executable $binaryFull -SmokeTest

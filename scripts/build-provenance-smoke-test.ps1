@@ -2,9 +2,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 $root = Join-Path $env:TEMP ('CodexBuildProof_' + [guid]::NewGuid().ToString('N'))
 try {
-    [void][IO.Directory]::CreateDirectory((Join-Path $root 'scripts\source'))
+    [void][IO.Directory]::CreateDirectory((Join-Path $root 'scripts\source\internal\watchdog'))
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'scripts\bin'))
-    $source = Join-Path $root 'scripts\source\main.go'
+    $source = Join-Path $root 'scripts\source\internal\watchdog\main.go'
     [IO.File]::WriteAllText($source,'package main')
     foreach ($name in @('codex-auto-resume.exe','codex-auto-retry-mcp.exe')) { [IO.File]::WriteAllText((Join-Path $root ('scripts\bin\'+$name)), 'fixture only') }
     $rejected = $false

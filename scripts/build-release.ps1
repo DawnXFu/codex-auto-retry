@@ -29,7 +29,7 @@ if ($packageVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
     throw "The plugin version is not suitable for a release package: $pluginVersion"
 }
 
-$versionSource = Get-Content -LiteralPath (Join-Path $pluginRoot 'scripts\source\model.go') -Raw -Encoding UTF8
+$versionSource = Get-Content -LiteralPath (Join-Path $pluginRoot 'scripts\source\internal\watchdog\model.go') -Raw -Encoding UTF8
 if ($versionSource -notmatch 'const\s+appVersion\s*=\s*"([^"]+)"' -or $matches[1] -ne $packageVersion) {
     throw 'The watchdog appVersion and plugin base version do not match.'
 }
@@ -76,7 +76,7 @@ try {
         Copy-Item -LiteralPath $source -Destination (Join-Path $payloadRoot $entry) -Recurse -Force
     }
 
-    $nodeModules = Join-Path $payloadRoot 'scripts\source\ui\node_modules'
+    $nodeModules = Join-Path $payloadRoot 'scripts\source\internal\watchdog\ui\node_modules'
     if (Test-Path -LiteralPath $nodeModules -PathType Container) {
         $nodeModulesItem = Get-Item -LiteralPath $nodeModules -Force
         if (($nodeModulesItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {

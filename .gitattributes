@@ -14,4 +14,4 @@
 *.png binary
 *.zip binary
 
-scripts/source/ui/dist/panel.html -whitespace linguist-generated=true
+scripts/source/internal/watchdog/ui/dist/panel.html -whitespace linguist-generated=true

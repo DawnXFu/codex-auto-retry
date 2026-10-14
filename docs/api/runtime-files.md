@@ -4,7 +4,7 @@ This document freezes the on-disk contract under the runtime data directory.
 The installed location is `%LOCALAPPDATA%\CodexAutoRetry`
 (`scripts/install.ps1:9`, `$installDir`); the Go binary resolves it as
 `--data-dir` → `CODEX_AUTO_RETRY_DATA_DIR` → directory of the executable
-(`scripts/source/main.go:98-117`). All paths below are relative to that root.
+(`scripts/source/internal/watchdog/main.go:98-117`). All paths below are relative to that root.
 
 Every claim cites the Go struct/const or PowerShell reader that defines it.
 Schemas use `required` = non-`omitempty` Go tags; Go `time.Time` fields are

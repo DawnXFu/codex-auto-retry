@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-          cache-dependency-path: scripts/source/ui/package-lock.json
+          cache-dependency-path: scripts/source/internal/watchdog/ui/package-lock.json
 
       - name: Pin npm version
         shell: pwsh

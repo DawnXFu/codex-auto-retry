@@ -417,7 +417,7 @@ try {
     Write-CodexAutoRetryJsonAtomic -Path $installJournalPath -Value $journal
     Copy-Item -LiteralPath $candidateWatchdog -Destination $watchdogTarget -Force
     Copy-Item -LiteralPath $candidateMcp -Destination $mcpTarget -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\ui\settings.ps1') -Destination $settingsTarget -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'source\internal\watchdog\ui\settings.ps1') -Destination $settingsTarget -Force
     Remove-Item -LiteralPath $legacyWatchdogTarget -Force -ErrorAction SilentlyContinue
     Set-SupervisedStartupEntry
     $journal.phase = 'startup_registered'

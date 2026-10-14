@@ -2,7 +2,7 @@
 .codex-auto-retry-release.json
 
 # Frontend dependencies are restored from package-lock.json
-scripts/source/ui/node_modules/
+scripts/source/internal/watchdog/ui/node_modules/
 
 # Keep only the two distributable runtime binaries in scripts/bin
 scripts/bin/*

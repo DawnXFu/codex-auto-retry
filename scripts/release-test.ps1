@@ -82,7 +82,7 @@ try {
         'SHA256SUMS.txt',
         'payload\codex-auto-retry\.codex-plugin\plugin.json',
         'payload\codex-auto-retry\.mcp.json',
-        'payload\codex-auto-retry\scripts\source\ui\settings.ps1',
+        'payload\codex-auto-retry\scripts\source\internal\watchdog\ui\settings.ps1',
         'payload\codex-auto-retry\scripts\environment.ps1',
         'payload\codex-auto-retry\scripts\launch-codex.ps1',
         'payload\codex-auto-retry\scripts\launch-codex-smoke-test.ps1',
@@ -199,7 +199,7 @@ try {
         -not $sharedStatusSource.Contains('Test-CodexAutoRetryTcpEndpoint')) {
         throw 'Shared-server status does not verify process identity, creation time, and endpoint liveness.'
     }
-    $settingsPath = Join-Path $root 'payload\codex-auto-retry\scripts\source\ui\settings.ps1'
+    $settingsPath = Join-Path $root 'payload\codex-auto-retry\scripts\source\internal\watchdog\ui\settings.ps1'
     $settingsSource = [System.IO.File]::ReadAllText($settingsPath, [System.Text.UTF8Encoding]::new($false))
     $settingsTokens = $null
     $settingsErrors = $null

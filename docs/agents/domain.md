@@ -20,7 +20,7 @@ Single-context repo:
 │   ├── 0001-fork-strategy.md
 │   ├── 0002-quota-recovery-semantics.md
 │   └── 0003-per-limit-evidence-spaces.md
-└── scripts/source/                   ← Go watchdog code
+└── scripts/source/                   ← Go module (watchdog code in internal/watchdog, entrypoint in cmd/auto-resume)
 ```
 
 ## Use the glossary's vocabulary

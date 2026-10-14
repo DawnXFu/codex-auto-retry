@@ -4,11 +4,11 @@ param()
 $ErrorActionPreference = 'Stop'
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 $sourceDir = Join-Path $PSScriptRoot 'source'
-$uiDir = Join-Path $sourceDir 'ui'
+$uiDir = Join-Path $sourceDir 'internal\watchdog\ui'
 $binDir = Join-Path $PSScriptRoot 'bin'
 $watchdogOutput = Join-Path $binDir 'codex-auto-resume.exe'
 $mcpOutput = Join-Path $binDir 'codex-auto-retry-mcp.exe'
-$settingsScript = Join-Path $sourceDir 'ui\settings.ps1'
+$settingsScript = Join-Path $sourceDir 'internal\watchdog\ui\settings.ps1'
 . (Join-Path $PSScriptRoot 'build-provenance.ps1')
 
 $settingsSource = [System.IO.File]::ReadAllText($settingsScript, [System.Text.UTF8Encoding]::new($false))
@@ -42,12 +42,12 @@ try {
     & go vet ./...
     if ($LASTEXITCODE -ne 0) { throw 'Go vet failed.' }
     $sourceHash = Get-CodexBuildSourceHash -Root $pluginRoot
-    $buildFlags = '-s -w -H=windowsgui -X main.buildSourceHash=' + $sourceHash
-    & go build -trimpath -ldflags $buildFlags -o $watchdogOutput .
+    $buildFlags = '-s -w -H=windowsgui -X codex-auto-retry/internal/watchdog.buildSourceHash=' + $sourceHash
+    & go build -trimpath -ldflags $buildFlags -o $watchdogOutput ./cmd/auto-resume
     if ($LASTEXITCODE -ne 0) { throw 'Watchdog build failed.' }
     # The MCP transport still uses inherited stdio handles, but the GUI
     # subsystem prevents Windows from allocating a visible console window.
-    & go build -trimpath -ldflags $buildFlags -o $mcpOutput .
+    & go build -trimpath -ldflags $buildFlags -o $mcpOutput ./cmd/auto-resume
     if ($LASTEXITCODE -ne 0) { throw 'MCP server build failed.' }
 }
 finally {

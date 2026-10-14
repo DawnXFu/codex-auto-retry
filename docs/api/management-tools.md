@@ -2,9 +2,9 @@
 
 This document freezes the externally visible management surface of
 codex-auto-retry. Every field, string, and bound cited here is defined in Go
-source under `scripts/source`; the inline references name the exact symbol.
-`scripts/source/mcp_contract_test.go` compares a live `tools/list` +
-`resources/list` listing against `scripts/source/testdata/mcp_tools.golden.json`
+source under `scripts/source/internal/watchdog`; the inline references name the exact symbol.
+`scripts/source/internal/watchdog/mcp_contract_test.go` compares a live `tools/list` +
+`resources/list` listing against `scripts/source/internal/watchdog/testdata/mcp_tools.golden.json`
 — this file and that golden are the contract. An intentional change requires
 regenerating the golden (`UPDATE_MCP_CONTRACT=1 go test -run
 TestManagementMCPContract`) and updating this document in the same commit.
@@ -654,7 +654,7 @@ most-used reported window across all evidence spaces):
   resource `_meta` (including the empty CSP lists), plus the
   `ManagementSnapshot`/`ManagedRetry`/`ManagedQuota` shapes.
 - Enforcement: `TestManagementMCPContract`
-  (`scripts/source/mcp_contract_test.go:122-144`) fails on any drift from
+  (`scripts/source/internal/watchdog/mcp_contract_test.go:122-144`) fails on any drift from
   `testdata/mcp_tools.golden.json`; its failure message names this file. The
   snapshot structs themselves are checked by
   `scripts/mcp-smoke-test.ps1`.
