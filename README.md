@@ -132,17 +132,18 @@ To prevent runaway retry loops and excessive resource consumption, two independe
 
 ## User Interfaces
 
-### Windows Tray Controller
+### Tray Controller
 
-The watchdog runs as a single lightweight background process with a notification-area icon in Windows.
+The watchdog runs as a single lightweight background process with a notification-area icon (cross-platform via `fyne.io/systray`).
 
 <!-- Screenshot placeholder: Tray controller -->
 <!-- ![Windows Tray Controller](assets/tray.png) -->
 
 - **Hover Tooltip**: Displays the current status (running, paused, waiting, active, stopped) and live countdown for the nearest pending retry.
-- **Explorer Restart Recovery**: If Windows Explorer restarts, the watchdog automatically re-registers the tray icon and restores current state.
-- **Double-Click**: Opens the graphical settings window.
-- **Right-Click Context Menu**: Allows quick pausing/resuming of dispatch, opening settings, or exiting the watchdog.
+- **Explorer Restart Recovery**: If Windows Explorer restarts, the systray library automatically re-registers the tray icon and restores current state.
+- **Left-Click**: Opens the desktop client (on Windows, the legacy settings window when no client is installed).
+- **Right-Click Context Menu**: Shows the status line, per-task Resume Now / Cancel rows for quota waits, and allows quick pausing/resuming of dispatch, opening settings, or exiting the watchdog.
+- **Linux runtime dependency**: the tray is a D-Bus StatusNotifierItem, so it needs a notifier host in the desktop (built into KDE Plasma; on GNOME install an AppIndicator/KStatusNotifierItem extension); headless systems run with `--no-tray`.
 
 The settings window allows configuring:
 - Recovery limits (`Recoveries This Outage` and `Consecutive No Progress`);

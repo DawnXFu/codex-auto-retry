@@ -171,15 +171,20 @@ Codex tasks have panels open.
 
 ## Tray Data Flow
 
-`tray_windows.go` owns the notification-area icon and hidden message window on
-the watchdog's UI thread. It reads the same management snapshot once per
-second, derives the nearest countdown, and updates only its tooltip and menu.
-The icon does not inspect Codex windows, activate Codex, or navigate tasks. It
-also registers the system `TaskbarCreated` message; when Explorer recreates the
-notification area, the watchdog removes and re-adds its icon, clears its local
-tooltip cache, and refreshes the current visual state.
+`tray_systray.go` owns the notification-area icon through `fyne.io/systray` on
+the watchdog's locked UI thread. It reads the same management snapshot once
+per second, derives the nearest countdown, and pushes only changed tooltips,
+icons, titles, and menu structures. The icon does not inspect Codex windows,
+activate Codex, or navigate tasks. Explorer restart recovery is handled inside
+the library, which registers the system `TaskbarCreated` message and re-adds
+the icon with its last icon and tooltip. macOS is supported only in cgo builds
+(the library's menu-bar code is Objective-C); `tray_headless.go` keeps `!cgo`
+darwin and other unsupported platforms running without a tray.
 
-Double-click launches the embedded `ui/settings.ps1` as one visible Windows
+Left-click or the menu's 打开设置 item launches the desktop client
+(`codex-auto-resume-desktop` next to the watchdog binary). Where no desktop
+client is installed on Windows, the embedded `ui/settings.ps1` opens as the
+legacy fallback until T8 removes it, as one visible Windows
 Forms settings process. The form reads the same privacy-bounded status,
 configuration, control, and retry-state files. It sends validated settings and
 one-use retry commands back through the watchdog executable; it never writes

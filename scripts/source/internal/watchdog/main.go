@@ -99,7 +99,7 @@ func Main() {
 	settingsFileFlag := flags.String("settings-file", "", "settings payload path")
 	actionFlag := flags.String("action", "", "retry control action")
 	threadIDFlag := flags.String("thread-id", "", "Codex task identifier")
-	noTrayFlag := flags.Bool("no-tray", false, "disable the Windows notification-area icon")
+	noTrayFlag := flags.Bool("no-tray", false, "disable the notification-area tray icon")
 	supervisedFlag := flags.Bool("supervised", false, "run as a worker owned by the supervisor")
 	_ = flags.Parse(arguments)
 

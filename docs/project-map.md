@@ -70,7 +70,7 @@ Domain code lives under `scripts/source/internal/watchdog` (package
 | `control.go` | Persistent pause state and atomic retry-now/cancel/restart command files shared with management surfaces. |
 | `management.go` | Privacy-bounded queue snapshots, process-backed heartbeat freshness, Windows StartupApproved status, settings updates, and management command submission. |
 | `mcp_server.go` | Official Go MCP SDK wiring, management tools, and the embedded MCP App resource. |
-| `tray_windows.go` | Native notification-area icon, live tooltip/countdown, menu controls, and graphical settings-process lifecycle. |
+| `tray_systray.go`, `tray_shared.go`, `tray_icons.go`, `tray_notify.go` | Cross-platform notification-area icon (fyne.io/systray), live tooltip/countdown, menu controls, beeep notifications, and desktop-client launch. `tray_settings_windows.go` keeps the settings.ps1 fallback until T8; `tray_headless.go` covers platforms without a systray backend. |
 | `process_windows.go` | Windows process-liveness verification, Codex Desktop detection, hidden inherited-console attributes, and owned process-tree cleanup. |
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, parent-to-child recovery-event routing, rollout paths, and mirrored-session detection. |
 | `events.go` | Privacy-bounded parsing of task start, completion, abort, explicit user input, goal lifecycle, visible-progress markers, token_count quota events, and the plugin's fixed subagent recovery event. |

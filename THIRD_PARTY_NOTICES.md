@@ -68,6 +68,19 @@ controller and is licensed under the BSD 3-Clause License. Copyright (c)
 2009 The Go Authors. Source and license text:
 https://pkg.go.dev/golang.org/x/sys
 
+## Fyne Systray
+
+`fyne.io/systray` provides the cross-platform notification-area icon and menu.
+Licensed under the Apache License, Version 2.0. Source and license text:
+https://github.com/fyne-io/systray
+
+## Beeep
+
+`github.com/gen2brain/beeep` delivers cross-platform desktop notifications.
+Copyright (c) 2017, Milan Nikolic <gen2brain>. Licensed under the BSD
+2-Clause License. Source and license text:
+https://github.com/gen2brain/beeep
+
 ## Panel Build Tooling
 
 Vite and vite-plugin-singlefile are used only to build the embedded offline
