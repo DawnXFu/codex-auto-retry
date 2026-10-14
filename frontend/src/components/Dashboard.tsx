@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ManagementSnapshot, RetryState } from "../types";
 import { postAction } from "../api";
-import { S } from "../strings";
+import { useI18n } from "../i18n";
 import { clockTime } from "../time";
 import QueueItem from "./QueueItem";
 import QuotaCard from "./QuotaCard";
@@ -23,12 +23,13 @@ export default function Dashboard(props: {
   onRefresh: () => void;
 }) {
   const snap = props.snapshot;
+  const { t } = useI18n();
   const [filter, setFilter] = useState<Filter>("all");
   const [flash, setFlash] = useState<string | null>(null);
 
   const act = async (action: string, threadID = "") => {
     const res = await postAction(action, threadID);
-    if (!res.ok) setFlash(S.queue.writesPending);
+    if (!res.ok) setFlash(t("queue_writes_pending"));
     window.setTimeout(() => setFlash(null), 3000);
   };
 
@@ -46,7 +47,7 @@ export default function Dashboard(props: {
   const paused = snap?.paused ?? false;
   const chipClass = !running ? "bad" : paused ? "warn" : "ok";
   const chipDot = !running ? "bad" : paused ? "warn" : "ok";
-  const chipLabel = !running ? S.strip.offline : paused ? S.strip.paused : S.strip.running;
+  const chipLabel = !running ? t("strip_offline") : paused ? t("strip_paused") : t("strip_running");
 
   const toggle = (f: Filter) => setFilter((cur) => (cur === f ? "all" : f));
 
@@ -58,14 +59,20 @@ export default function Dashboard(props: {
           {chipLabel}
         </span>
         <span className="meta">
-          {snap ? S.strip.meta(snap.watched_roots, snap.desktop_transport, clockTime(snap.last_scan_at)) : "—"}
+          {snap
+            ? t("strip_meta", {
+                roots: snap.watched_roots,
+                transport: snap.desktop_transport,
+                scan: clockTime(snap.last_scan_at),
+              })
+            : "—"}
         </span>
         <span className="spacer" />
-        <button className="mini-btn" title={S.strip.refresh} onClick={props.onRefresh}>
+        <button className="mini-btn" title={t("strip_refresh")} onClick={props.onRefresh}>
           ⟳
         </button>
         <button className="mini-btn" onClick={() => void act("pause")}>
-          {paused ? S.strip.resume : S.strip.pause}
+          {paused ? t("strip_resume") : t("strip_pause")}
         </button>
       </div>
 
@@ -73,16 +80,16 @@ export default function Dashboard(props: {
       {snap?.notice && <div className="banner" style={{ marginTop: 10, marginBottom: 0 }}>{snap.notice}</div>}
 
       <div className="stats">
-        <StatChip cls="c-purple" n={counts.quota} l={S.stats.quotaWait} sel={filter === "quota"} onClick={() => toggle("quota")} />
-        <StatChip cls="c-blue" n={counts.pending} l={S.stats.pending} sel={filter === "pending"} onClick={() => toggle("pending")} />
-        <StatChip cls="c-green" n={counts.running} l={S.stats.running} sel={filter === "running"} onClick={() => toggle("running")} />
-        <StatChip cls="c-amber" n={counts.attention} l={S.stats.attention} sel={filter === "attention"} onClick={() => toggle("attention")} />
-        <StatChip cls="c-red" n={counts.stopped} l={S.stats.stopped} sel={filter === "stopped"} onClick={() => toggle("stopped")} />
+        <StatChip cls="c-purple" n={counts.quota} l={t("stats_quota_wait")} sel={filter === "quota"} onClick={() => toggle("quota")} />
+        <StatChip cls="c-blue" n={counts.pending} l={t("stats_pending")} sel={filter === "pending"} onClick={() => toggle("pending")} />
+        <StatChip cls="c-green" n={counts.running} l={t("stats_running")} sel={filter === "running"} onClick={() => toggle("running")} />
+        <StatChip cls="c-amber" n={counts.attention} l={t("stats_attention")} sel={filter === "attention"} onClick={() => toggle("attention")} />
+        <StatChip cls="c-red" n={counts.stopped} l={t("stats_stopped")} sel={filter === "stopped"} onClick={() => toggle("stopped")} />
       </div>
 
       <div className="dash">
         <div className="card">
-          {visible.length === 0 && <div className="queue-empty">{S.queue.empty}</div>}
+          {visible.length === 0 && <div className="queue-empty">{t("queue_empty")}</div>}
           {visible.map((r) => (
             <QueueItem key={`${r.thread_id}-${r.state}`} retry={r} now={props.now} onAction={act} />
           ))}

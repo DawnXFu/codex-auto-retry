@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useConnection, useNow, useSnapshot } from "./hooks";
-import { S } from "./strings";
+import { useI18n } from "./i18n";
 import Sidebar, { type Page } from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
 import SettingsPage from "./components/SettingsPage";
@@ -11,6 +11,7 @@ export default function App() {
   const { snapshot, online, hasData, refresh } = useSnapshot(conn);
   const now = useNow(1000);
   const [page, setPage] = useState<Page>("dashboard");
+  const { t } = useI18n();
 
   const offline = conn.mode !== "preview" && hasData && !online;
   const noConn = conn.mode === "none";
@@ -21,7 +22,7 @@ export default function App() {
       <main className="main">
         {(offline || noConn) && (
           <div className="banner">
-            {noConn ? `${S.offline.connecting} — ${S.offline.hint}` : S.offline.banner}
+            {noConn ? `${t("offline_connecting")} — ${t("offline_hint")}` : t("offline_banner")}
           </div>
         )}
         {page === "dashboard" && <Dashboard snapshot={snapshot} now={now} onRefresh={refresh} />}
