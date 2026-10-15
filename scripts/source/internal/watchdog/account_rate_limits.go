@@ -16,6 +16,14 @@ const (
 	accountQuotaWindowWeeklyMinutes   = 10080
 )
 
+// rateLimitReachedTypeQuotaWindow is the only RateLimitReachedType enum value
+// that evidences a quota-window bind. The remaining schema variants —
+// workspace_owner_credits_depleted, workspace_member_credits_depleted,
+// workspace_owner_usage_limit_reached, workspace_member_usage_limit_reached —
+// report workspace credit or spend-limit exhaustion, not a rate-limit
+// window, and must never mark a window binding.
+const rateLimitReachedTypeQuotaWindow = "rate_limit_reached"
+
 // appAccountRateLimitsReadResult mirrors GetAccountRateLimitsResponse, the
 // result payload of the account/rateLimits/read JSON-RPC call. Every field
 // the schema marks nullable is a pointer so absent/null stays distinct from a
@@ -73,9 +81,11 @@ type appAccountRateLimitSnapshot struct {
 	LimitName       *string `json:"limitName"`
 	NormalModelSlug *string `json:"normalModelSlug"`
 	PlanType        *string `json:"planType"`
-	// RateLimitReachedType is the backend's exhaustion marker; non-nil means
-	// the limit reported reached even when usedPercent reads below the
-	// exhaustion threshold.
+	// RateLimitReachedType is the backend's exhaustion marker, a
+	// RateLimitReachedType enum string; non-nil means the limit reported
+	// some kind of reached even when usedPercent reads below the exhaustion
+	// threshold. Only the rate_limit_reached value evidences a quota-window
+	// bind — see rateLimitReachedTypeQuotaWindow.
 	RateLimitReachedType *string                      `json:"rateLimitReachedType"`
 	SpendControlReached  *bool                        `json:"spendControlReached"`
 	Primary              *appAccountRateLimitWindow   `json:"primary"`

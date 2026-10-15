@@ -68,8 +68,15 @@ const (
 // emitted items. The two records of one logical message are persisted within
 // a few lines of each other; two genuinely repeated identical messages — a
 // user sending "ok" twice — survive because they land further apart or arrive
-// from the same family.
+// from the same family. The same bound caps the fingerprint ring carried in
+// cursors: a seam-split pair can sit at most this many emitted items apart.
 const conversationMessageDedupSpan = 8
+
+// readerCursorVersion identifies the opaque cursor schema. Version 2 added
+// the dedup fingerprint ring (the d field); earlier cursors cannot describe
+// ring state and are rejected as invalid so clients re-anchor at the latest
+// page — permitted under the opaque-cursor contract.
+const readerCursorVersion = 2
 
 // Completeness states for a page of items.
 const (
@@ -145,17 +152,23 @@ func newConversationReader(catalog *conversationCatalog) *conversationReader {
 
 // readerCursor is the opaque position token for item pages. The fingerprint
 // (first-line hash, size, mtime at issue) detects truncation, replacement,
-// and rotation without trusting client-supplied positions.
+// and rotation without trusting client-supplied positions. D is a bounded
+// ring — at most conversationMessageDedupSpan entries — of short message
+// fingerprints for the most recently emitted user/assistant items nearest
+// the cursor's seam, so a dual-written pair split across a page boundary or
+// a forward poll still collapses. Fingerprints are hashes only; raw message
+// text never enters a cursor.
 type readerCursor struct {
-	V    int    `json:"v"`
-	Head string `json:"h"`
-	Off  int64  `json:"o"`
-	Size int64  `json:"s"`
-	Mod  int64  `json:"m"`
+	V    int      `json:"v"`
+	Head string   `json:"h"`
+	Off  int64    `json:"o"`
+	Size int64    `json:"s"`
+	Mod  int64    `json:"m"`
+	D    []string `json:"d,omitempty"`
 }
 
-func encodeReaderCursor(head string, off, size, mod int64) string {
-	data, err := json.Marshal(readerCursor{V: 1, Head: head, Off: off, Size: size, Mod: mod})
+func encodeReaderCursor(head string, off, size, mod int64, dedup []string) string {
+	data, err := json.Marshal(readerCursor{V: readerCursorVersion, Head: head, Off: off, Size: size, Mod: mod, D: dedup})
 	if err != nil {
 		return ""
 	}
@@ -176,9 +189,16 @@ func decodeReaderCursor(raw string) (*readerCursor, error) {
 		return nil, fmt.Errorf("%w", errConversationCursorInvalid)
 	}
 	head, err := hex.DecodeString(cursor.Head)
-	if cursor.V != 1 || err != nil || len(head) != sha256.Size ||
-		cursor.Off < 0 || cursor.Size < 0 || cursor.Mod < 0 {
+	if cursor.V != readerCursorVersion || err != nil || len(head) != sha256.Size ||
+		cursor.Off < 0 || cursor.Size < 0 || cursor.Mod < 0 ||
+		len(cursor.D) > conversationMessageDedupSpan {
 		return nil, fmt.Errorf("%w", errConversationCursorInvalid)
+	}
+	for _, fingerprint := range cursor.D {
+		decoded, err := hex.DecodeString(fingerprint)
+		if err != nil || len(decoded) != conversationMessageFingerprintBytes {
+			return nil, fmt.Errorf("%w", errConversationCursorInvalid)
+		}
 	}
 	return &cursor, nil
 }
@@ -278,8 +298,14 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 	}
 
 	tail := rolloutTailOffset(file, size)
-	page.TailCursor = encodeReaderCursor(headHex, tail, size, mod)
 	deadline := time.Now().Add(maxReaderScanDuration)
+	// The incoming cursor's fingerprint ring covers the seam between this
+	// page and what the client already rendered; leftovers the scan does not
+	// consume carry into freshly minted cursors.
+	var dedupRing []string
+	if position != nil {
+		dedupRing = position.D
+	}
 
 	if direction == conversationDirectionForward {
 		start := int64(0)
@@ -290,12 +316,19 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 		if err != nil {
 			return conversationItemPage{}, err
 		}
+		items, dedupRing = suppressCrossPageDuplicates(items, dedupRing, direction)
 		page.Items = dedupeConversationMessages(items)
 		if partial {
 			page.State = conversationStatePartial
 		}
+		// A forward anchor seams at the page's newest edge: keep the K
+		// latest fingerprints — unconsumed leftovers are the older emitted
+		// messages, this page's are newer.
+		pageFps := conversationPageFingerprints(page.Items)
+		tailRing := mintForwardRing(dedupRing, pageFps)
+		page.TailCursor = encodeReaderCursor(headHex, tail, size, mod, tailRing)
 		if hasMore {
-			page.NextCursor = encodeReaderCursor(headHex, resume, size, mod)
+			page.NextCursor = encodeReaderCursor(headHex, resume, size, mod, tailRing)
 		}
 		return page, nil
 	}
@@ -311,12 +344,22 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 	if err != nil {
 		return conversationItemPage{}, err
 	}
+	items, dedupRing = suppressCrossPageDuplicates(items, dedupRing, direction)
 	page.Items = dedupeConversationMessages(items)
 	if partial {
 		page.State = conversationStatePartial
 	}
+	pageFps := conversationPageFingerprints(page.Items)
+	// The tail anchor faces appended content; the chronologically newest
+	// emitted fingerprints are the unconsumed leftovers (they describe the
+	// newer page this page was paged from), then this page's own tail.
+	tailRing := mintBackwardTailRing(pageFps, dedupRing)
+	page.TailCursor = encodeReaderCursor(headHex, tail, size, mod, tailRing)
 	if hasMore {
-		page.NextCursor = encodeReaderCursor(headHex, resume, size, mod)
+		// The older seam sits at this page's oldest edge: keep the K
+		// fingerprints of the first emitted messages, padding with
+		// unconsumed leftovers when the page is thin.
+		page.NextCursor = encodeReaderCursor(headHex, resume, size, mod, mintBackwardRing(pageFps, dedupRing))
 	}
 	return page, nil
 }
@@ -914,6 +957,141 @@ func toolOutputText(raw json.RawMessage) string {
 	return rawToText(structured.Output)
 }
 
+// conversationMessageFingerprintBytes bounds the message fingerprint carried
+// in cursor dedup rings: the first 8 bytes of a SHA-256 over the message's
+// dedup identity. Sixteen hex chars per entry keeps the opaque cursor small
+// while a collision costs at most one wrongly collapsed display duplicate.
+const conversationMessageFingerprintBytes = 8
+
+// conversationMessageFingerprint hashes a message's dedup identity — kind,
+// record family, and normalized text — into the short cursor-safe
+// fingerprint carried in the ring. Raw text never enters the cursor. The
+// family is part of the hash so a fingerprint only ever matches the opposite
+// record family of one logical message: ring entries are minted with the
+// emitting item's own family and looked up with the sibling family.
+func conversationMessageFingerprint(kind, family, text string) string {
+	sum := sha256.Sum256([]byte(kind + "\x00" + family + "\x00" + text))
+	return hex.EncodeToString(sum[:conversationMessageFingerprintBytes])
+}
+
+// conversationSiblingFamily returns the other persisted record family that
+// dual-writes a chat message. Non-message items carry no family and have no
+// sibling.
+func conversationSiblingFamily(family string) string {
+	switch family {
+	case conversationFamilyEventMessage:
+		return conversationFamilyResponseItem
+	case conversationFamilyResponseItem:
+		return conversationFamilyEventMessage
+	default:
+		return ""
+	}
+}
+
+// suppressCrossPageDuplicates collapses dual-family twins the in-page pass
+// cannot see: a message whose sibling record was emitted on a previous page
+// (backward seam) or before a forward poll's cursor position. Each ring
+// fingerprint suppresses at most one item — consume-on-use, the same
+// paired-flag semantics as dedupeConversationMessages — so a genuinely
+// repeated identical message survives once its predecessor's fingerprint was
+// claimed by that sibling. Items are visited from the seam inward — backward
+// pages seam at their newest item, forward pages at their oldest — so the
+// item closest to the seam claims a contested fingerprint first. The
+// surviving items in chronological order and the unconsumed ring entries are
+// returned; the leftovers roll into freshly minted cursors.
+func suppressCrossPageDuplicates(items []conversationItem, ring []string, direction string) ([]conversationItem, []string) {
+	if len(ring) == 0 || len(items) == 0 {
+		return items, ring
+	}
+	used := make([]bool, len(ring))
+	suppressed := make([]bool, len(items))
+	for step := 0; step < len(items); step++ {
+		i := step
+		if direction == conversationDirectionBackward {
+			i = len(items) - 1 - step
+		}
+		sibling := conversationSiblingFamily(items[i].family)
+		if sibling == "" {
+			continue
+		}
+		fingerprint := conversationMessageFingerprint(items[i].Kind, sibling, items[i].Text)
+		for j := range ring {
+			if !used[j] && ring[j] == fingerprint {
+				used[j] = true
+				suppressed[i] = true
+				break
+			}
+		}
+	}
+	kept := make([]conversationItem, 0, len(items))
+	for i := range items {
+		if !suppressed[i] {
+			kept = append(kept, items[i])
+		}
+	}
+	leftover := make([]string, 0, len(ring))
+	for j := range ring {
+		if !used[j] {
+			leftover = append(leftover, ring[j])
+		}
+	}
+	return kept, leftover
+}
+
+// conversationPageFingerprints hashes the page's emitted chat messages in
+// chronological order. Only items that actually render carry fingerprints —
+// a record suppressed before emission never enters the ring.
+func conversationPageFingerprints(items []conversationItem) []string {
+	fingerprints := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.family == "" {
+			continue
+		}
+		fingerprints = append(fingerprints, conversationMessageFingerprint(item.Kind, item.family, item.Text))
+	}
+	return fingerprints
+}
+
+// mintForwardRing keeps the K newest fingerprints for a forward-facing
+// anchor (tail_cursor, or next_cursor on a forward page): unconsumed
+// leftover entries describe older emitted messages, this page's are newer.
+func mintForwardRing(leftover, page []string) []string {
+	ring := make([]string, 0, conversationMessageDedupSpan)
+	ring = append(ring, leftover...)
+	ring = append(ring, page...)
+	if len(ring) > conversationMessageDedupSpan {
+		ring = ring[len(ring)-conversationMessageDedupSpan:]
+	}
+	return ring
+}
+
+// mintBackwardTailRing keeps the K fingerprints nearest the file tail for a
+// backward page's tail anchor. Unconsumed leftovers describe messages on the
+// newer page this page was paged from — chronologically newer than anything
+// on this page — so they sit at the newest end of the ring.
+func mintBackwardTailRing(page, leftover []string) []string {
+	ring := make([]string, 0, conversationMessageDedupSpan)
+	ring = append(ring, page...)
+	ring = append(ring, leftover...)
+	if len(ring) > conversationMessageDedupSpan {
+		ring = ring[len(ring)-conversationMessageDedupSpan:]
+	}
+	return ring
+}
+
+// mintBackwardRing keeps the K fingerprints nearest the older seam for a
+// backward next_cursor: this page's first emitted messages, padded by
+// unconsumed leftover entries when the page carries fewer than K.
+func mintBackwardRing(page, leftover []string) []string {
+	ring := make([]string, 0, conversationMessageDedupSpan)
+	ring = append(ring, page...)
+	ring = append(ring, leftover...)
+	if len(ring) > conversationMessageDedupSpan {
+		ring = ring[:conversationMessageDedupSpan]
+	}
+	return ring
+}
+
 // dedupeConversationMessages collapses the double persistence of one logical
 // chat message. Codex rollouts write each user/assistant message twice — an
 // event_msg user_message/agent_message record and a response_item message
@@ -924,10 +1102,10 @@ func toolOutputText(raw json.RawMessage) string {
 // The first record's position (and ID) is kept for stable chronology; when
 // the later record is the canonical response_item its projected fields win.
 // Two genuinely repeated identical messages — same text sent twice — survive:
-// they arrive from the same family or land outside the nearby window.
-// Residual: a duplicate pair split across a page boundary or an incremental
-// forward poll can still emit twice; collapsing across pages would require
-// carrying dedup state in the cursor and is not worth it for a display path.
+// they arrive from the same family or land outside the nearby window. Pairs
+// split across page boundaries or forward-poll appends are handled earlier by
+// the cursor fingerprint ring (suppressCrossPageDuplicates); this pass is
+// the in-page first line of that collapse.
 func dedupeConversationMessages(items []conversationItem) []conversationItem {
 	if len(items) < 2 {
 		return items

@@ -530,16 +530,21 @@ func accountReadWindows(limits *accountQuotaPersistedLimits) []accountQuotaViewW
 		if space.shot.LimitName != nil {
 			limitName = *space.shot.LimitName
 		}
-		// rateLimitReachedType is a space-level signal: the wire schema has no
-		// per-window reached flag (RateLimitWindow carries only usedPercent,
-		// windowDurationMins, resetsAt), so it cannot identify which window of
-		// the space binds. It is therefore only honored where a window
-		// independently evidences exhaustion — a space where only the 5-hour
-		// window is reached must not render its weekly sibling exhausted or
-		// binding. When reached is set but no window reads past the
-		// exhaustion threshold, the payload cannot name the binding window
-		// and binding stays unset rather than over-marking both slots.
-		reached := space.shot.RateLimitReachedType != nil && strings.TrimSpace(*space.shot.RateLimitReachedType) != ""
+		// rateLimitReachedType is a space-level enum: only the
+		// rate_limit_reached value evidences a quota-window bind. The
+		// workspace_*_credits_depleted and *_usage_limit_reached variants are
+		// spend/workspace-limit signals and never mark a window binding —
+		// exhausted still derives purely from usedPercent. The enum is also
+		// space-level, not per-window (RateLimitWindow carries only
+		// usedPercent, windowDurationMins, resetsAt), so rate_limit_reached
+		// binds the exhausted window(s). When reached is reported but no
+		// window reads past the exhaustion threshold, the signal still
+		// asserts something binds: the fullest window — highest usedPercent,
+		// earliest slot on ties, first slot when no percentage is known — is
+		// marked binding rather than leaving every slot blank.
+		reached := space.shot.RateLimitReachedType != nil &&
+			strings.TrimSpace(*space.shot.RateLimitReachedType) == rateLimitReachedTypeQuotaWindow
+		spaceWindows := []accountQuotaViewWindow{}
 		for _, slot := range []struct {
 			name   string
 			window *appAccountRateLimitWindow
@@ -561,13 +566,42 @@ func accountReadWindows(limits *accountQuotaPersistedLimits) []accountQuotaViewW
 				window.ResetsAt = &resetsAt
 			}
 			window.Exhausted = window.UsedPercent != nil && *window.UsedPercent >= quotaExhaustedPercent
-			// A reached space plus an exhausted window is the strongest
-			// binding evidence the account read can offer.
-			window.Binding = reached && window.Exhausted
-			windows = append(windows, window)
+			spaceWindows = append(spaceWindows, window)
 		}
+		if reached && len(spaceWindows) > 0 {
+			exhaustedSeen := false
+			for i := range spaceWindows {
+				// A reached space plus an exhausted window is the strongest
+				// binding evidence the account read can offer.
+				if spaceWindows[i].Exhausted {
+					spaceWindows[i].Binding = true
+					exhaustedSeen = true
+				}
+			}
+			if !exhaustedSeen {
+				fullest := fullestWindowIndex(spaceWindows)
+				spaceWindows[fullest].Binding = true
+			}
+		}
+		windows = append(windows, spaceWindows...)
 	}
 	return windows
+}
+
+// fullestWindowIndex returns the index of the window with the highest
+// usedPercent. Windows without a reading lose to any known percentage; on
+// ties — including all-unknown — the earliest slot wins.
+func fullestWindowIndex(windows []accountQuotaViewWindow) int {
+	best := 0
+	for i := 1; i < len(windows); i++ {
+		if windows[i].UsedPercent == nil {
+			continue
+		}
+		if windows[best].UsedPercent == nil || *windows[i].UsedPercent > *windows[best].UsedPercent {
+			best = i
+		}
+	}
+	return best
 }
 
 // rolloutQuotaView projects persisted token_count evidence. The observation
