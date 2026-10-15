@@ -22,8 +22,6 @@ import (
 // therefore reports a "none" capability via the desktop_transport_not_supported
 // controller state. See docs/adr/0004-desktop-gui-and-cross-platform.md
 // (monitor-first rollout).
-var errSharedServerUnsupported = errors.New("shared Codex app-server is not supported on this platform")
-
 type sharedServerManager struct {
 	config    Config
 	dataDir   string
@@ -59,6 +57,12 @@ func (m *sharedServerManager) SupportsHome(value string) bool {
 // this platform.
 func (m *sharedServerManager) Ensure(context.Context) error {
 	return errSharedServerUnsupported
+}
+
+// VerifiedEndpoint never returns an endpoint: no plugin-owned shared
+// app-server can exist on this platform, so there is nothing to attach to.
+func (m *sharedServerManager) VerifiedEndpoint(context.Context) (verifiedSharedEndpoint, error) {
+	return verifiedSharedEndpoint{}, errSharedServerUnsupported
 }
 
 // checkSharedServerStartupState finds no owned artifacts on non-Windows

@@ -150,6 +150,15 @@ func (c *sharedAppServerController) RetryThreadStatus(ctx context.Context, threa
 	return thread.Thread.Status.Type, nil
 }
 
+// ReadAccountQuota attaches to the already-running shared app-server for one
+// account/rateLimits/read. It never Ensures, starts, or migrates a backend:
+// when the configured server cannot prove a recorded owned endpoint, the
+// read reports unavailable so callers can fall back to rollout evidence.
+func (c *sharedAppServerController) ReadAccountQuota(ctx context.Context) accountQuotaReadResult {
+	source, _ := c.server.(accountQuotaEndpointSource)
+	return newAccountQuotaReader(source).ReadAccountQuota(ctx)
+}
+
 func (c *sharedAppServerController) SharedBackendMemory(ctx context.Context) (memorySample, error) {
 	reader, ok := c.server.(interface {
 		PrivateMemoryBytes(context.Context) (uint64, error)
@@ -725,6 +734,8 @@ func classifyAppServerError(err error) string {
 		return "app_server_turn_start_failed"
 	case "thread/inject_items":
 		return "app_server_subagent_inject_failed"
+	case "account/rateLimits/read":
+		return "app_server_account_quota_read_failed"
 	}
 	return "app_server_request_failed"
 }

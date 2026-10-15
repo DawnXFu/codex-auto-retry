@@ -51,6 +51,9 @@ type sharedServerManager struct {
 	migrationOnce      sync.Once
 	desktopRunning     func() bool
 	allowAlternatePort bool
+	// ownsProcessProbe replaces the PowerShell command-line verification in
+	// tests. It is nil in production.
+	ownsProcessProbe func(context.Context, sharedServerState) bool
 }
 
 // A running server survives a watchdog upgrade. Its plugin ownership is
@@ -473,6 +476,9 @@ func (m *sharedServerManager) readState() (sharedServerState, error) {
 }
 
 func (m *sharedServerManager) ownsProcess(ctx context.Context, state sharedServerState) bool {
+	if m != nil && m.ownsProcessProbe != nil {
+		return m.ownsProcessProbe(ctx, state)
+	}
 	powerShell, err := resolvePowerShellExecutable(m.config.PowerShellExecutable)
 	if err != nil {
 		return false
@@ -550,6 +556,33 @@ func (m *sharedServerManager) PrivateMemoryBytes(ctx context.Context) (uint64, e
 		return 0, errSharedServerOwnershipUnknown
 	}
 	return processPrivateBytes(state.PID)
+}
+
+// VerifiedEndpoint is the attach-only discovery path used by the account
+// quota reader: it returns the recorded endpoint only when the durable
+// shared-server.json ownership record, the configured Codex home, and the
+// live process command line all verify. It never starts, adopts, migrates,
+// or reconfigures the server.
+func (m *sharedServerManager) VerifiedEndpoint(ctx context.Context) (verifiedSharedEndpoint, error) {
+	if m == nil {
+		return verifiedSharedEndpoint{}, errSharedServerUnavailable
+	}
+	state, err := m.readState()
+	if err != nil {
+		return verifiedSharedEndpoint{}, err
+	}
+	if !m.sharedServerStateOwnedForCleanup(state) || !m.SupportsHome(state.CodexHome) || !m.ownsProcess(ctx, state) {
+		if ctx.Err() != nil {
+			return verifiedSharedEndpoint{}, ctx.Err()
+		}
+		return verifiedSharedEndpoint{}, errSharedServerOwnershipUnknown
+	}
+	return verifiedSharedEndpoint{
+		Endpoint:  state.Endpoint,
+		PID:       state.PID,
+		StartedAt: state.StartedAt,
+		CodexHome: state.CodexHome,
+	}, nil
 }
 
 func (m *sharedServerManager) start(executable string) error {
