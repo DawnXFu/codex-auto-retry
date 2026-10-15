@@ -1,0 +1,19 @@
+{
+  "rateLimits": {
+    "primary": {
+      "usedPercent": 0,
+      "windowDurationMins": 300,
+      "resetsAt": null
+    },
+    "secondary": {
+      "usedPercent": 0
+    },
+    "spendControlReached": false
+  },
+  "rateLimitsByLimitId": {},
+  "rateLimitResetCredits": {
+    "availableCount": 0,
+    "credits": []
+  },
+  "ordinaryUsageAllowed": false
+}

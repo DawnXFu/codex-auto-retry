@@ -1,0 +1,76 @@
+{
+  "accountId": "acc_8f3b2d91",
+  "ordinaryUsageAllowed": true,
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": "Codex usage",
+    "normalModelSlug": "gpt-5.1-codex-max",
+    "planType": "pro",
+    "primary": {
+      "usedPercent": 12,
+      "windowDurationMins": 300,
+      "resetsAt": 1760745600
+    },
+    "secondary": {
+      "usedPercent": 47,
+      "windowDurationMins": 10080,
+      "resetsAt": 1761350400
+    },
+    "credits": {
+      "hasCredits": true,
+      "unlimited": false,
+      "balance": "23.50"
+    },
+    "rateLimitReachedType": null,
+    "spendControlReached": false,
+    "individualLimit": null
+  },
+  "rateLimitsByLimitId": {
+    "codex": {
+      "limitId": "codex",
+      "planType": "pro",
+      "primary": {
+        "usedPercent": 12,
+        "windowDurationMins": 300,
+        "resetsAt": 1760745600
+      },
+      "secondary": {
+        "usedPercent": 47,
+        "windowDurationMins": 10080,
+        "resetsAt": 1761350400
+      }
+    },
+    "premium": {
+      "limitId": "premium",
+      "limitName": "Purchased credits",
+      "primary": null,
+      "secondary": null,
+      "credits": {
+        "hasCredits": true,
+        "unlimited": false,
+        "balance": "10.00"
+      },
+      "spendControlReached": null
+    }
+  },
+  "rateLimitResetCredits": {
+    "availableCount": 3,
+    "credits": [
+      {
+        "id": "cr_01HZY4",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "grantedAt": 1760000000,
+        "expiresAt": 1762000000,
+        "title": "Rate-limit reset credit",
+        "description": null
+      }
+    ]
+  },
+  "rateLimitUpsell": {
+    "banner": {
+      "title": "Need more usage?",
+      "cta": "See plans"
+    }
+  }
+}

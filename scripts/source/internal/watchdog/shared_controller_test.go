@@ -83,6 +83,8 @@ type fakeAppServer struct {
 	injectedThreadIDs []string
 	turnInputs        [][]any
 	providerRequests  int
+	rateLimitsResult  json.RawMessage
+	rateLimitsParams  []string
 }
 
 func newFakeAppServer(t *testing.T, threadID string) *fakeAppServer {
@@ -212,6 +214,12 @@ func (f *fakeAppServer) handle(method string, raw json.RawMessage) (any, string)
 		}
 		f.injectedThreadIDs = append(f.injectedThreadIDs, params.ThreadID)
 		return map[string]any{}, ""
+	case "account/rateLimits/read":
+		f.rateLimitsParams = append(f.rateLimitsParams, string(raw))
+		if len(f.rateLimitsResult) == 0 {
+			return nil, "rate limits unavailable"
+		}
+		return f.rateLimitsResult, ""
 	default:
 		return nil, "unsupported method"
 	}
