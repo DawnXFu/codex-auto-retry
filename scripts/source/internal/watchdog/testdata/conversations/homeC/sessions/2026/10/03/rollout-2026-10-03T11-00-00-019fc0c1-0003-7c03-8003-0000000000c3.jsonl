@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-03T11:00:00.000Z","type":"session_meta","payload":{"id":"019fc0c1-0003-7c03-8003-0000000000c3","timestamp":"2026-10-03T11:00:00.000Z","cwd":"C:\repo","originator":"codex_cli_rs","cli_version":"0.56.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019fc0c1-0001-7c01-8001-0000000000c1"}}},"title":"Child review"}}
+{"timestamp":"2026-10-03T11:00:30.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"child reply"}]}}

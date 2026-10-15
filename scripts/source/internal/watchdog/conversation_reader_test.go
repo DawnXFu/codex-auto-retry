@@ -1,0 +1,523 @@
+package watchdog
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+const (
+	readerThreadC1 = "019fc0c1-0001-7c01-8001-0000000000c1"
+	readerThreadC2 = "019fc0c1-0002-7c02-8002-0000000000c2"
+	readerThreadC3 = "019fc0c1-0003-7c03-8003-0000000000c3"
+)
+
+// readerFixtureRoot points at the synthetic homeC conversation fixtures under
+// testdata/conversations. Reader tests must never touch a real Codex home.
+func readerFixtureRoot(t *testing.T) sessionRoot {
+	t.Helper()
+	base, err := filepath.Abs(filepath.Join("testdata", "conversations", "homeC"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sessionRoot{
+		CodexHome:        base,
+		Sessions:         filepath.Join(base, "sessions"),
+		ArchivedSessions: filepath.Join(base, "archived_sessions"),
+	}
+}
+
+func readerFixtureReader(t *testing.T) (*conversationReader, sessionRoot) {
+	t.Helper()
+	root := readerFixtureRoot(t)
+	return newConversationReader(newConversationCatalog([]sessionRoot{root})), root
+}
+
+func itemKinds(items []conversationItem) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		label := item.Kind
+		if item.Marker != "" {
+			label += ":" + item.Marker
+		}
+		out = append(out, label)
+	}
+	return out
+}
+
+func TestConversationReaderProjectsLatestPageBackward(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	page, err := reader.readItems(context.Background(), conversationRootID(root), readerThreadC1, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.State != "complete_persisted" {
+		t.Fatalf("state = %q, want complete_persisted", page.State)
+	}
+	if page.Archived || page.Kind != "ordinary" {
+		t.Fatalf("page flags wrong: %+v", page)
+	}
+	got := itemKinds(page.Items)
+	want := []string{
+		"boundary:session",
+		"boundary:turn_started",
+		"user_message",
+		"user_message",
+		"tool_call",
+		"tool_result",
+		"tool_call",
+		"tool_result",
+		"assistant_message",
+		"assistant_message",
+		"boundary:turn_complete",
+		"boundary:turn_aborted",
+		"boundary:compaction",
+		"tool_call",
+		"tool_call",
+		"boundary:thread_renamed",
+		"unknown:future_thing",
+		"unknown:mystery_envelope",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("items = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("item %d = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+	// The newest persisted record ends the page; a next cursor would mean
+	// older content is still unread, which is true here only via paging below.
+	if page.TailCursor == "" {
+		t.Fatal("tail cursor missing: forward polling would have no anchor")
+	}
+}
+
+func TestConversationReaderItemContentIsBoundedAndSafe(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	page, err := reader.readItems(context.Background(), conversationRootID(root), readerThreadC1, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byText := map[string]conversationItem{}
+	var toolCalls, toolResults int
+	for _, item := range page.Items {
+		byText[item.Text] = item
+		if item.Timestamp != "" && !strings.HasPrefix(item.Timestamp, "2026-10-03T10:") {
+			t.Fatalf("unexpected timestamp %q", item.Timestamp)
+		}
+		switch item.Kind {
+		case "tool_call":
+			toolCalls++
+			if !item.Collapsed {
+				t.Fatalf("tool call not marked collapsible: %+v", item)
+			}
+		case "tool_result":
+			toolResults++
+			if !item.Collapsed {
+				t.Fatalf("tool result not marked collapsible: %+v", item)
+			}
+		}
+	}
+	user := byText["here is more context"]
+	if user.Kind != "user_message" || !user.Omitted {
+		t.Fatalf("user message with attachment wrong: %+v", user)
+	}
+	assistant := byText["Fixed the race in the poller."]
+	if assistant.Kind != "assistant_message" || assistant.Timestamp != "2026-10-03T10:02:10Z" {
+		t.Fatalf("assistant message wrong: %+v", assistant)
+	}
+	if toolCalls != 4 || toolResults != 2 {
+		t.Fatalf("tool items = %d calls / %d results, want 4/2", toolCalls, toolResults)
+	}
+	// The watchdog's own recovery notice is a developer-role record and must
+	// never surface as conversation content.
+	for _, item := range page.Items {
+		if strings.Contains(item.Text, "codex-auto-retry:subagent-empty-response-recovery") {
+			t.Fatalf("recovery notice leaked into items: %+v", item)
+		}
+	}
+}
+
+func TestConversationReaderPaginatesBackwardToHistoryStart(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	rootID := conversationRootID(root)
+
+	full, err := reader.readItems(context.Background(), rootID, readerThreadC1, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pagesSeen [][]conversationItem
+	cursor := ""
+	for pages := 0; ; pages++ {
+		page, err := reader.readItems(context.Background(), rootID, readerThreadC1, cursor, "backward", 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) > 5 {
+			t.Fatalf("page exceeded limit: %d items", len(page.Items))
+		}
+		pagesSeen = append(pagesSeen, page.Items)
+		cursor = page.NextCursor
+		if cursor == "" {
+			break
+		}
+		if pages > 10 {
+			t.Fatal("backward pagination did not terminate")
+		}
+	}
+	if len(pagesSeen) != 4 {
+		t.Fatalf("expected 4 pages of 5 for 18 items, got %d", len(pagesSeen))
+	}
+	// Pages arrive latest-first; prepending older pages reconstructs the
+	// chronological projection the single large page returned.
+	var seen []conversationItem
+	for i := len(pagesSeen) - 1; i >= 0; i-- {
+		seen = append(seen, pagesSeen[i]...)
+	}
+	if len(seen) != len(full.Items) {
+		t.Fatalf("paginated union has %d items, full page has %d", len(seen), len(full.Items))
+	}
+	for i := range full.Items {
+		if seen[i].ID != full.Items[i].ID || seen[i].Kind != full.Items[i].Kind {
+			t.Fatalf("page order diverged at %d: %+v vs %+v", i, seen[i], full.Items[i])
+		}
+	}
+}
+
+func TestConversationReaderCursorRejectsForeignThreadAndGarbage(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	rootID := conversationRootID(root)
+	page, err := reader.readItems(context.Background(), rootID, readerThreadC1, "", "backward", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("expected a continuation cursor")
+	}
+	if _, err := reader.readItems(context.Background(), rootID, readerThreadC1, "not-a-cursor", "backward", 5); err == nil {
+		t.Fatal("garbage cursor accepted")
+	}
+	// A cursor minted for one thread must not page a different thread.
+	other, err := reader.readItems(context.Background(), rootID, readerThreadC3, "", "backward", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.NextCursor != "" {
+		if _, err := reader.readItems(context.Background(), rootID, readerThreadC1, other.NextCursor, "backward", 5); err == nil {
+			t.Fatal("foreign-thread cursor accepted")
+		}
+	}
+	if _, err := reader.readItems(context.Background(), rootID, readerThreadC1, page.NextCursor, "sideways", 5); err == nil {
+		t.Fatal("unknown direction accepted")
+	}
+}
+
+// writeReaderRollout creates a synthetic rollout file inside a temp home and
+// returns the root, thread id, and file path for incremental tests.
+func writeReaderRollout(t *testing.T, threadID string, lines []string) (sessionRoot, string) {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "2026", "10", "03")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "rollout-2026-10-03T10-00-00-"+threadID+".jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return sessionRoot{CodexHome: home, Sessions: filepath.Join(home, "sessions")}, path
+}
+
+func appendRollout(t *testing.T, path, content string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(content); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readerMetaLine(threadID, ts string) string {
+	return `{"timestamp":"` + ts + `","type":"session_meta","payload":{"id":"` + threadID + `","source":"cli"}}`
+}
+
+func TestConversationReaderPartialLineWaitsForCompletion(t *testing.T) {
+	threadID := "019fc0c1-00aa-7c0a-800a-0000000000aa"
+	root, path := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"first"}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	// Simulate an append in progress: a record without its newline is not
+	// persisted yet and must not project.
+	appendRollout(t, path, `{"timestamp":"2026-10-03T10:02:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"second`)
+
+	page, err := reader.readItems(context.Background(), rootID, threadID, "", "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("partial line projected early: %+v", page.Items)
+	}
+	if page.NextCursor != "" || page.TailCursor == "" {
+		t.Fatalf("cursor state wrong: next=%q tail=%q", page.NextCursor, page.TailCursor)
+	}
+
+	// Finish the line; a forward poll from the tail anchor picks it up alone.
+	appendRollout(t, path, ` part"}}`+"\n")
+	page, err = reader.readItems(context.Background(), rootID, threadID, page.TailCursor, "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Kind != "user_message" || page.Items[0].Text != "second part" {
+		t.Fatalf("completed append not projected incrementally: %+v", page.Items)
+	}
+	if page.State != "complete_persisted" {
+		t.Fatalf("state = %q", page.State)
+	}
+}
+
+func TestConversationReaderBackwardThenForwardFollowsAppends(t *testing.T) {
+	threadID := "019fc0c1-00bb-7c0b-800b-0000000000bb"
+	root, path := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer one"}]}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	page, err := reader.readItems(context.Background(), rootID, threadID, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.TailCursor == "" {
+		t.Fatalf("initial page wrong: %+v", page)
+	}
+	appendRollout(t, path, `{"timestamp":"2026-10-03T10:02:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer two"}]}}`+"\n")
+
+	follow, err := reader.readItems(context.Background(), rootID, threadID, page.TailCursor, "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(follow.Items) != 1 || follow.Items[0].Text != "answer two" {
+		t.Fatalf("forward poll from tail cursor = %+v", follow.Items)
+	}
+	// A repeated poll with no new appends returns an empty page, not a replay.
+	again, err := reader.readItems(context.Background(), rootID, threadID, follow.TailCursor, "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Items) != 0 {
+		t.Fatalf("re-poll replayed items: %+v", again.Items)
+	}
+}
+
+func TestConversationReaderCursorInvalidatesOnTruncateReplaceAndRewind(t *testing.T) {
+	threadID := "019fc0c1-00cc-7c0c-800c-0000000000cc"
+	root, path := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"one"}}`,
+		`{"timestamp":"2026-10-03T10:02:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"two"}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	page, err := reader.readItems(context.Background(), rootID, threadID, "", "backward", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextCursor == "" || page.TailCursor == "" {
+		t.Fatal("expected cursors to invalidate")
+	}
+
+	// Truncation shrinks the file below the issued position.
+	if err := os.WriteFile(path, []byte(readerMetaLine(threadID, "2026-10-03T10:00:00.000Z")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.readItems(context.Background(), rootID, threadID, page.NextCursor, "backward", 2); !errors.Is(err, errConversationFileChanged) {
+		t.Fatalf("truncated file did not invalidate cursor: %v", err)
+	}
+
+	// Replacement keeps the thread id but rewrites the head record.
+	if err := os.WriteFile(path, []byte(strings.Join([]string{
+		`{"timestamp":"2026-10-03T12:00:00.000Z","type":"session_meta","payload":{"id":"` + threadID + `","source":"cli","title":"rotated"}}`,
+		`{"timestamp":"2026-10-03T12:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"new file"}}`,
+		`{"timestamp":"2026-10-03T12:02:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"more lines here"}}`,
+		`{"timestamp":"2026-10-03T12:03:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"extra tail record"}}`,
+	}, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.readItems(context.Background(), rootID, threadID, page.TailCursor, "forward", 2); !errors.Is(err, errConversationFileChanged) {
+		t.Fatalf("replaced file did not invalidate cursor: %v", err)
+	}
+	if _, err := reader.readItems(context.Background(), rootID, threadID, page.NextCursor, "backward", 2); !errors.Is(err, errConversationFileChanged) {
+		t.Fatalf("replaced file did not invalidate backward cursor: %v", err)
+	}
+
+	// An mtime rewind on otherwise identical content is treated as rotation.
+	page, err = reader.readItems(context.Background(), rootID, threadID, "", "backward", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.readItems(context.Background(), rootID, threadID, page.NextCursor, "backward", 2); !errors.Is(err, errConversationFileChanged) {
+		t.Fatalf("mtime regression did not invalidate cursor: %v", err)
+	}
+}
+
+func TestConversationReaderOversizedAndUnreadableLinesBecomePlaceholders(t *testing.T) {
+	threadID := "019fc0c1-00dd-7c0d-800d-0000000000dd"
+	defer func(cap int64) { maxReaderLineBytes = cap }(maxReaderLineBytes)
+	maxReaderLineBytes = 256
+	big := strings.Repeat("x", 600)
+	root, _ := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"` + big + `"}}`,
+		`{corrupt line`,
+		`{"timestamp":"2026-10-03T10:03:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"after"}]}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+
+	page, err := reader.readItems(context.Background(), conversationRootID(root), threadID, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.State != conversationStatePartial {
+		t.Fatalf("oversized/unreadable records should mark page partial: %q", page.State)
+	}
+	got := itemKinds(page.Items)
+	want := []string{
+		"boundary:session",
+		"unknown:oversized",
+		"unknown:unreadable",
+		"assistant_message",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("items = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("item %d = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestConversationReaderScanBudgetMarksPartial(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	defer func(budget int64) { maxReaderScanBytes = budget }(maxReaderScanBytes)
+	maxReaderScanBytes = 200
+
+	page, err := reader.readItems(context.Background(), conversationRootID(root), readerThreadC1, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.State != conversationStatePartial {
+		t.Fatalf("scan budget exhaustion should mark page partial: %q", page.State)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("bounded scan must still hand back a continuation cursor")
+	}
+
+	// The time bound reports partial the same way; a deadline in the past
+	// stops the scan deterministically before the first block.
+	defer func(d time.Duration) { maxReaderScanDuration = d }(maxReaderScanDuration)
+	maxReaderScanDuration = -time.Second
+	page, err = reader.readItems(context.Background(), conversationRootID(root), readerThreadC1, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.State != conversationStatePartial {
+		t.Fatalf("expired deadline should mark page partial: %q", page.State)
+	}
+}
+
+func TestConversationReaderHonorsContextCancel(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := reader.readItems(ctx, conversationRootID(root), readerThreadC1, "", "backward", 0); err == nil {
+		t.Fatal("canceled context did not abort the read")
+	}
+}
+
+func TestConversationReaderUnsupportedAndNotFound(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	rootID := conversationRootID(root)
+
+	if _, err := reader.readItems(context.Background(), "rdeadbeefdeadbeef", readerThreadC1, "", "backward", 0); !errors.Is(err, errConversationNotFound) {
+		t.Fatalf("unknown root: %v", err)
+	}
+	if _, err := reader.readItems(context.Background(), rootID, "../../etc/passwd", "", "backward", 0); !errors.Is(err, errConversationNotFound) {
+		t.Fatalf("traversal thread id: %v", err)
+	}
+	if _, err := reader.readItems(context.Background(), rootID, catalogThreadB1, "", "backward", 0); !errors.Is(err, errConversationNotFound) {
+		t.Fatalf("absent thread: %v", err)
+	}
+
+	// A resolved path whose persisted identity no longer matches is an
+	// unsupported projection, not an empty page (post-resolve TOCTOU).
+	threadID := "019fc0c1-00ee-7c0e-800e-0000000000ee"
+	tmpRoot, path := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+	})
+	resolved := resolvedConversation{
+		RootID:   conversationRootID(tmpRoot),
+		ThreadID: threadID,
+		Root:     tmpRoot,
+		Path:     path,
+	}
+	if err := os.WriteFile(path, []byte(
+		`{"timestamp":"2026-10-03T10:00:00.000Z","type":"session_meta","payload":{"id":"019fc0c1-00ff-7c0f-800f-0000000000ff","source":"cli"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	page, err := reader.readResolvedItems(context.Background(), resolved, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.State != conversationStateUnsupported || len(page.Items) != 0 {
+		t.Fatalf("meta mismatch should report unsupported: %+v", page)
+	}
+}
+
+func TestConversationReaderArchivedAndSubagentPages(t *testing.T) {
+	reader, root := readerFixtureReader(t)
+	rootID := conversationRootID(root)
+
+	archived, err := reader.readItems(context.Background(), rootID, readerThreadC2, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Archived {
+		t.Fatal("archived conversation page missing archived flag")
+	}
+	if len(archived.Items) == 0 || archived.Items[0].Marker != conversationBoundarySession {
+		t.Fatalf("archived page items wrong: %+v", archived.Items)
+	}
+
+	sub, err := reader.readItems(context.Background(), rootID, readerThreadC3, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub.Kind != "subagent" || sub.Archived {
+		t.Fatalf("subagent page flags wrong: %+v", sub)
+	}
+	if len(sub.Items) == 0 || sub.Items[0].Kind != "boundary" || sub.Items[0].Marker != conversationBoundarySubagent {
+		t.Fatalf("subagent boundary marker missing: %+v", sub.Items)
+	}
+}

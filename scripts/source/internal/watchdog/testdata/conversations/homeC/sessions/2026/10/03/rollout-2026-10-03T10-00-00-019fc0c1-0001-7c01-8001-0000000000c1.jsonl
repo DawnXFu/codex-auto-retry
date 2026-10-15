@@ -1,0 +1,23 @@
+{"timestamp":"2026-10-03T10:00:00.000Z","type":"session_meta","payload":{"id":"019fc0c1-0001-7c01-8001-0000000000c1","timestamp":"2026-10-03T10:00:00.000Z","cwd":"C:\repo","originator":"codex_cli_rs","cli_version":"0.56.0","source":"cli","title":"Fix the flaky poller"}}
+{"timestamp":"2026-10-03T10:00:10.000Z","type":"turn_context","payload":{"cwd":"C:\repo","model":"gpt-5","effort":"high","summary":"auto","sandbox_policy":{"type":"workspace-write"},"permission_profile":{"type":"managed"}}}
+{"timestamp":"2026-10-03T10:00:20.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"timestamp":"2026-10-03T10:00:30.000Z","type":"event_msg","payload":{"type":"user_message","message":"Fix the flaky test"}}
+{"timestamp":"2026-10-03T10:00:40.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"here is more context"},{"type":"input_image","image_url":"file:///C:/shots/a.png"}]}}
+{"timestamp":"2026-10-03T10:01:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"go\",\"test\",\"./...\"]}","call_id":"call-1"}}
+{"timestamp":"2026-10-03T10:01:10.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"PASS ok 12s"}}
+{"timestamp":"2026-10-03T10:01:20.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch","call_id":"call-2"}}
+{"timestamp":"2026-10-03T10:01:30.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-2","output":{"content_items":[{"type":"input_text","text":"patch applied"}]}}}
+{"timestamp":"2026-10-03T10:01:40.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"checking the poller"}]}}
+{"timestamp":"2026-10-03T10:01:50.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"codex-auto-retry:subagent-empty-response-recovery:v1:{\"parent_thread_id\":\"019fc0c1-0001-7c01-8001-0000000000c1\",\"child_thread_id\":\"019fc0c1-0003-7c03-8003-0000000000c3\",\"recovery_event_id\":\"car-aaaaaaaaaaaaaaaaaaaaaaaa\",\"action\":\"resume_existing_child\",\"spawn_replacement\":false}"}]}}
+{"timestamp":"2026-10-03T10:02:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{}}}
+{"timestamp":"2026-10-03T10:02:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Fixed the race in the poller."}]}}
+{"timestamp":"2026-10-03T10:02:20.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Also updated docs."}}
+{"timestamp":"2026-10-03T10:02:30.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}
+{"timestamp":"2026-10-03T10:02:40.000Z","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}
+{"timestamp":"2026-10-03T10:02:50.000Z","type":"compacted","payload":{"message":"Earlier context was compacted."}}
+{"timestamp":"2026-10-03T10:03:00.000Z","type":"response_item","payload":{"type":"web_search_call","query":{"q":"codex quota docs"}}}
+{"timestamp":"2026-10-03T10:03:10.000Z","type":"response_item","payload":{"type":"local_shell_call","action":{"type":"exec","command":["git","status"]},"call_id":"call-3","status":"completed"}}
+{"timestamp":"2026-10-03T10:03:20.000Z","type":"event_msg","payload":{"type":"thread_name_updated","name":"Quota deep dive"}}
+{"timestamp":"2026-10-03T10:03:30.000Z","type":"response_item","payload":{"type":"future_thing","data":{}}}
+{"timestamp":"2026-10-03T10:03:40.000Z","type":"event_msg","payload":{"type":"brand_new_event","weird":true}}
+{"timestamp":"2026-10-03T10:03:50.000Z","type":"mystery_envelope","payload":{"whatever":1}}
