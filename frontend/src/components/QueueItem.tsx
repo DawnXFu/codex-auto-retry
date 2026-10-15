@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { ConversationSummary, ManagedRetry, RetryState } from "../types";
+import type { ManagedRetry, RetryState } from "../types";
 import type { ConversationDeepLink } from "./ConversationsPage";
 import { useI18n, type TFunc, type TRFunc } from "../i18n";
 import { dayLabel, fmtHMS, secondsUntil } from "../time";
@@ -54,17 +54,16 @@ export default function QueueItem(props: {
   retry: ManagedRetry;
   now: Date;
   onAction: (action: string, threadID: string) => void;
-  /** resolved catalog match for r.thread_id — the title links to the
-   * Conversations page only when this (root_id, thread_id) pair was
-   * discoverable; otherwise the title renders as plain text (C-06). */
-  conversation?: ConversationSummary;
   onOpenConversation?: (target: ConversationDeepLink) => void;
 }) {
   const { t, tr } = useI18n();
   const r = props.retry;
   const style = STATE_STYLE[r.state] ?? STATE_STYLE.stopped;
   const title = r.title || r.label;
-  const conv = props.conversation;
+  // C-06: the backend stamps root_id when the task's rollout file resolves
+  // under a monitored root; the title links to the Conversations page only
+  // then, otherwise it renders as plain text.
+  const rootId = r.root_id;
 
   // right-aligned countdown / state cell
   let count: string;
@@ -94,15 +93,15 @@ export default function QueueItem(props: {
       <div className={`qicon ${style.iconCls}`}>{style.icon}</div>
       <div className="qbody">
         <div className="qtitle" title={title}>
-          {conv && props.onOpenConversation ? (
+          {rootId && props.onOpenConversation ? (
             <button
               type="button"
               className="t tlink"
               title={t("queue_btn_open_conversation")}
               onClick={() =>
                 props.onOpenConversation?.({
-                  rootId: conv.root_id,
-                  threadId: conv.thread_id,
+                  rootId,
+                  threadId: r.thread_id,
                   title,
                 })
               }

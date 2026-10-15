@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Connection } from "./api";
-import { fetchConversations, fetchSnapshot, resolveConnection, resolveConnectionAsync } from "./api";
-import { buildPreviewConversations } from "./fixture";
-import type { ConversationSummary, ManagedRetry, ManagementSnapshot } from "./types";
+import { fetchSnapshot, resolveConnection, resolveConnectionAsync } from "./api";
+import type { ManagementSnapshot } from "./types";
 
 const POLL_MS = 3000;
 
@@ -84,87 +83,6 @@ export function useSnapshot(conn: Connection): SnapshotState {
   }, [poll]);
 
   return { snapshot, online, hasData, refresh };
-}
-
-// ---- conversation index (spec #19 C-06 deep link) ---------------------------
-// ManagedRetry carries thread_id but no root_id, and the catalog API has no
-// thread lookup — identity resolution means scanning the conversation list.
-// One bounded "all"-filter scan covers every queue thread at once and stays
-// well inside the list endpoint's 200-per-page bound; the result is a
-// thread_id → ConversationSummary map so a queue title can render as a link
-// only when its (root_id, thread_id) pair is actually discoverable, and a
-// plain span otherwise.
-
-const CONV_INDEX_LIMIT = 200; // server clamps to maxConversationPageLimit
-const CONV_INDEX_MAX_PAGES = 5; // hard bound: at most 1000 catalog entries scanned
-const CONV_INDEX_RESCAN_MS = 60_000; // low-rate revalidation, not the 3s snapshot cadence
-
-const EMPTY_INDEX: ReadonlyMap<string, ConversationSummary> = new Map();
-
-/** Walk the fixture catalog (bounded) into a thread_id → summary map. The
- * fixture resolves synchronously, so preview mode and SSR seed a populated
- * index instead of flashing plain titles. */
-function previewConversationIndex(): ReadonlyMap<string, ConversationSummary> {
-  const index = new Map<string, ConversationSummary>();
-  let cursor: string | undefined;
-  for (let i = 0; i < CONV_INDEX_MAX_PAGES; i++) {
-    const page = buildPreviewConversations("all", cursor, CONV_INDEX_LIMIT);
-    for (const c of page.items) index.set(c.thread_id, c);
-    cursor = page.next_cursor;
-    if (!cursor) break;
-  }
-  return index;
-}
-
-async function scanConversationIndex(
-  conn: Extract<Connection, { mode: "live" }>,
-): Promise<Map<string, ConversationSummary>> {
-  const index = new Map<string, ConversationSummary>();
-  let cursor: string | undefined;
-  for (let i = 0; i < CONV_INDEX_MAX_PAGES; i++) {
-    const page = await fetchConversations(conn, "all", cursor, CONV_INDEX_LIMIT);
-    for (const c of page.items) index.set(c.thread_id, c);
-    cursor = page.next_cursor;
-    if (!cursor) break;
-  }
-  return index;
-}
-
-/** Map queue thread_ids to their persisted (root_id, thread_id) conversation
- * identity. Preview mode seeds synchronously (fixture catalog is static);
- * live mode scans once per connection/thread-set change plus a slow
- * rescan so a conversation persisted just after the queue item appeared is
- * still picked up. Catalog errors are swallowed — the deep link is a
- * convenience and a failed scan simply leaves titles unlinked. */
-export function useConversationIndex(
-  conn: Connection,
-  retries: ManagedRetry[] | undefined,
-): ReadonlyMap<string, ConversationSummary> {
-  const [index, setIndex] = useState<ReadonlyMap<string, ConversationSummary>>(() =>
-    conn.mode === "preview" ? previewConversationIndex() : EMPTY_INDEX,
-  );
-  const threadKey = (retries ?? []).map((r) => r.thread_id).join("\n");
-
-  useEffect(() => {
-    if (conn.mode !== "live" || !threadKey) return;
-    let alive = true;
-    const scan = async () => {
-      try {
-        const next = await scanConversationIndex(conn);
-        if (alive) setIndex(next);
-      } catch {
-        // keep the previous index — titles stay (or become) plain spans
-      }
-    };
-    void scan();
-    const t = window.setInterval(() => void scan(), CONV_INDEX_RESCAN_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(t);
-    };
-  }, [conn, threadKey]);
-
-  return index;
 }
 
 /** Re-render every `ms` so countdowns/relative labels stay live. */

@@ -32,6 +32,10 @@ export type RetryState =
 
 export interface ManagedRetry {
   thread_id: string;
+  /** opaque monitored-root identity; present only when the task's rollout
+   * file resolves under a monitored root — pairs with thread_id for the
+   * conversation deep link */
+  root_id?: string;
   label: string;
   title?: string;
   state: RetryState;
