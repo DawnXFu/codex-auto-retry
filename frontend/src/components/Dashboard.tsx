@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { ManagementSnapshot, RetryState } from "../types";
+import type { ConversationSummary, ManagementSnapshot, RetryState } from "../types";
+import type { ConversationDeepLink } from "./ConversationsPage";
 import { postAction } from "../api";
 import { useI18n } from "../i18n";
 import { clockTime } from "../time";
@@ -21,6 +22,10 @@ export default function Dashboard(props: {
   snapshot: ManagementSnapshot | null;
   now: Date;
   onRefresh: () => void;
+  /** thread_id → catalog match, built by useConversationIndex in App (C-06).
+   * Absent/empty simply means no titles link out. */
+  convIndex?: ReadonlyMap<string, ConversationSummary>;
+  onOpenConversation?: (target: ConversationDeepLink) => void;
 }) {
   const snap = props.snapshot;
   const { t } = useI18n();
@@ -98,7 +103,14 @@ export default function Dashboard(props: {
         <div className="card">
           {visible.length === 0 && <div className="queue-empty">{t("queue_empty")}</div>}
           {visible.map((r) => (
-            <QueueItem key={`${r.thread_id}-${r.state}`} retry={r} now={props.now} onAction={act} />
+            <QueueItem
+              key={`${r.thread_id}-${r.state}`}
+              retry={r}
+              now={props.now}
+              onAction={act}
+              conversation={props.convIndex?.get(r.thread_id)}
+              onOpenConversation={props.onOpenConversation}
+            />
           ))}
         </div>
         <div>

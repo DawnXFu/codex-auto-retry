@@ -84,10 +84,19 @@ export default function ConversationsPage(props: {
   }, []);
 
   // C-06 deep link: a new openThread prop switches the page into detail view.
+  // When the page mounts with a link already set, the initial view above is
+  // the detail — skip the first effect call so the detail isn't remounted
+  // (and its items re-fetched) right after the seed.
   const link = props.openThread;
   const linkNonce = link?.nonce ?? 0;
+  const skipFirstLink = useRef(!!props.openThread);
   useEffect(() => {
-    if (link) openDetail(link.rootId, link.threadId, link.title);
+    if (!link) return;
+    if (skipFirstLink.current) {
+      skipFirstLink.current = false;
+      return;
+    }
+    openDetail(link.rootId, link.threadId, link.title);
   }, [link?.rootId, link?.threadId, linkNonce, openDetail]);
 
   // ---- list state ----------------------------------------------------------
