@@ -39,6 +39,8 @@ if (Get-Command npm -ErrorAction SilentlyContinue) {
     if ($LASTEXITCODE -ne 0) { throw 'Desktop frontend build failed.' }
     Push-Location (Join-Path $pluginRoot 'desktop')
     try {
+        # Embed icon + DPI manifest (plain go build links no resources alone).
+        & (Join-Path $pluginRoot 'desktop\gen-resources.ps1')
         # wails needs the OS build tag or the binary is a no-op "Error" dialog stub.
         & go build -trimpath -tags 'windows,production' -ldflags '-s -w -H=windowsgui' -o $desktopOutput .
         if ($LASTEXITCODE -ne 0) { throw 'Desktop client build failed.' }

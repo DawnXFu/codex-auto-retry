@@ -4,6 +4,7 @@ import { saveSettings, setPaused, setSharedAppServer } from "../api";
 import { useI18n } from "../i18n";
 import type { Lang } from "../strings";
 import { setTzMode, tzMode, type TzMode } from "../time";
+import type { Theme } from "../theme";
 
 // Settings draft: the retry-policy block the daemon's save-settings mode
 // persists. Toggles with their own bound setters (pause, shared backend)
@@ -41,6 +42,8 @@ function draftFrom(snap: ManagementSnapshot): Draft {
 export default function SettingsPage(props: {
   snapshot: ManagementSnapshot | null;
   onRefresh?: () => void;
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
 }) {
   const snap = props.snapshot;
   const { t, tr, lang, setLang } = useI18n();
@@ -162,6 +165,13 @@ export default function SettingsPage(props: {
           <select value={lang} onChange={(e) => setLang(e.target.value as Lang)}>
             <option value="zh">{t("settings_lang_zh")}</option>
             <option value="en">{t("settings_lang_en")}</option>
+          </select>
+        </Field>
+        <Field name={t("settings_theme")} desc={t("settings_theme_desc")}>
+          <select value={props.theme} onChange={(e) => props.setTheme(e.target.value as Theme)}>
+            <option value="system">{t("theme_system")}</option>
+            <option value="light">{t("theme_light")}</option>
+            <option value="dark">{t("theme_dark")}</option>
           </select>
         </Field>
         <Field name={t("settings_tz")} desc={t("settings_tz_desc")}>

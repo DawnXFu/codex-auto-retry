@@ -27,9 +27,15 @@ var assets embed.FS
 func main() {
 	app := NewApp()
 	err := wails.Run(&options.App{
-		Title:  "Codex Auto Resume",
-		Width:  860,
-		Height: 560,
+		Title: "Codex Auto Resume",
+		// Frameless: the frontend draws its own titlebar (drag region +
+		// window controls). Resize handles still work — wails keeps the
+		// thick frame, just drops the caption.
+		Frameless: true,
+		Width:     920,
+		Height:    620,
+		MinWidth:  520,
+		MinHeight: 380,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 			// Requests that hit no embedded asset (the /daemon/ API proxy

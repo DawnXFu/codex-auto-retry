@@ -3,6 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Set data-theme before first paint so a stored dark theme doesn't flash.
+      (function () {
+        var t = "system";
+        try {
+          var v = localStorage.getItem("car.theme");
+          if (v === "light" || v === "dark" || v === "system") t = v;
+        } catch (e) {}
+        if (t === "system") {
+          t =
+            window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+        }
+        document.documentElement.dataset.theme = t;
+      })();
+    </script>
     <title>Codex Auto Resume</title>
   </head>
   <body>

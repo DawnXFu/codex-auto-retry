@@ -1,15 +1,23 @@
+import type { ReactNode } from "react";
 import type { ManagedRetry, RetryState } from "../types";
 import { useI18n, type TFunc, type TRFunc } from "../i18n";
 import { dayLabel, fmtHMS, secondsUntil } from "../time";
+import {
+  IconAttention,
+  IconPending,
+  IconQuotaWait,
+  IconRunning,
+  IconStopped,
+} from "../icons";
 
-const STATE_STYLE: Record<RetryState, { icon: string; iconCls: string; tagCls: string }> = {
-  pending: { icon: "🕐", iconCls: "pend", tagCls: "blue" },
-  starting: { icon: "🔄", iconCls: "run", tagCls: "blue" },
-  running: { icon: "🔄", iconCls: "run", tagCls: "blue" },
-  waiting_for_reset: { icon: "⏳", iconCls: "wait", tagCls: "purple" },
-  reset_due: { icon: "⏳", iconCls: "wait", tagCls: "purple" },
-  needs_attention: { icon: "⚠️", iconCls: "attn", tagCls: "amber" },
-  stopped: { icon: "✕", iconCls: "stop", tagCls: "red" },
+const STATE_STYLE: Record<RetryState, { icon: ReactNode; iconCls: string; tagCls: string }> = {
+  pending: { icon: <IconPending size={15} />, iconCls: "pend", tagCls: "blue" },
+  starting: { icon: <IconRunning size={15} />, iconCls: "run", tagCls: "blue" },
+  running: { icon: <IconRunning size={15} />, iconCls: "run", tagCls: "blue" },
+  waiting_for_reset: { icon: <IconQuotaWait size={15} />, iconCls: "wait", tagCls: "purple" },
+  reset_due: { icon: <IconQuotaWait size={15} />, iconCls: "wait", tagCls: "purple" },
+  needs_attention: { icon: <IconAttention size={15} />, iconCls: "attn", tagCls: "amber" },
+  stopped: { icon: <IconStopped size={15} />, iconCls: "stop", tagCls: "red" },
 };
 
 function stopReasonLabel(reason: string | undefined, tr: TRFunc): string {

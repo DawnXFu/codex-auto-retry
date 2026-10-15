@@ -2,17 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import type { ManagementSnapshot } from "../types";
 import { postAction } from "../api";
 import { useI18n } from "../i18n";
+import { useNow } from "../hooks";
 import { fmtDuration, relAgo } from "../time";
+import { IconRefresh } from "../icons";
 
 const SAMPLES = 60;
 
-// Daemon card: live dot, canvas sparkline of memory_usage_mb sampled per poll,
-// blue tick marks at scan events (last_scan_at changes), restart button with
-// inline confirm. PID/uptime come from the snapshot's daemon_pid /
-// daemon_started_at (present only while the worker process is alive).
-export default function DaemonCard(props: { snapshot: ManagementSnapshot | null; now: Date }) {
+// Compact daemon vitals pinned to the sidebar bottom, Clash-Verge style:
+// live-dot + sparkline + key stats + a restart affordance. The verbose fields
+// (PID/limit, transport, autostart) live on the About page instead.
+export default function DaemonVitals(props: { snapshot: ManagementSnapshot | null }) {
   const { t } = useI18n();
   const snap = props.snapshot;
+  const now = useNow(1000);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const data = useRef<number[]>([]);
   const scans = useRef<boolean[]>([]);
@@ -63,7 +65,7 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
       max += 2;
     }
     const x = (i: number) => (i / (SAMPLES - 1)) * W;
-    const y = (v: number) => H - ((v - min) / (max - min)) * (H - 8) - 4;
+    const y = (v: number) => H - ((v - min) / (max - min)) * (H - 6) - 3;
 
     ctx.clearRect(0, 0, W, H);
     ctx.beginPath();
@@ -119,7 +121,7 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
     }
   }, [snap, restarting, t]);
 
-  // Never leave the card stuck in "restarting" if the daemon stays down.
+  // Never leave the widget stuck in "restarting" if the daemon stays down.
   useEffect(() => {
     if (!restarting) return;
     const timer = window.setTimeout(() => {
@@ -132,64 +134,44 @@ export default function DaemonCard(props: { snapshot: ManagementSnapshot | null;
 
   const uptime =
     snap?.daemon_started_at !== undefined
-      ? fmtDuration((props.now.getTime() - new Date(snap.daemon_started_at).getTime()) / 1000, t)
+      ? fmtDuration((now.getTime() - new Date(snap.daemon_started_at).getTime()) / 1000, t)
       : "—";
 
   return (
-    <div className="card side-card" style={{ marginTop: 10 }}>
-      <h3>
-        {t("daemon_title")}
-        <span className={`live-dot${running ? "" : " dead"}`} title={t("daemon_live")} />
-      </h3>
-      <div className={`pulse-wrap${running ? "" : " dead"}`}>
-        <canvas ref={canvasRef} width={260} height={46} />
-        <div className="pulse-meta">
-          <span>{snap ? t("daemon_memory", { mb: snap.memory_usage_mb.toFixed(1) }) : "—"}</span>
-          <span>{t("daemon_last_scan", { ago: relAgo(snap?.last_scan_at, props.now, t) })}</span>
-        </div>
-      </div>
-      <div className="kv">
-        <span className="k">{t("daemon_pid_limit")}</span>
-        <span className="v">{snap ? `${snap.daemon_pid ?? "—"} · ${snap.memory_limit_mb} MB` : "—"}</span>
-      </div>
-      <div className="kv">
-        <span className="k">{t("daemon_uptime")}</span>
-        <span className="v">{uptime}</span>
-      </div>
-      <div className="kv">
-        <span className="k">{t("daemon_transport")}</span>
-        <span className="v">{snap?.desktop_transport ?? "—"}</span>
-      </div>
-      <div className="kv" style={{ paddingBottom: 9 }}>
-        <span className="k">{t("daemon_auto_start")}</span>
-        <span className={`v ${snap?.startup_approved === "approved" ? "ok" : ""}`}>
-          {snap ? (snap.startup_approved === "approved" ? t("daemon_auto_start_on") : t("daemon_auto_start_off")) : "—"}
-        </span>
-      </div>
-      <div className="daemon-actions">
+    <div className={`vitals${running ? "" : " dead"}`}>
+      <div className="vitals-head">
+        <span className={`live-dot${running ? "" : " dead"}`} style={{ marginLeft: 0 }} />
+        <span className="vitals-title">{t("daemon_title")}</span>
         <button
-          className="mini-btn danger"
-          onClick={() => setConfirming(true)}
+          className="vitals-restart"
+          title={t("daemon_restart")}
+          aria-label={t("daemon_restart")}
           disabled={!snap || restarting}
+          onClick={() => setConfirming(true)}
         >
-          {restarting ? t("daemon_restarting") : t("daemon_restart")}
+          <IconRefresh size={12} />
         </button>
-        {confirming && (
-          <div className="restart-confirm">
-            <span>{t("daemon_restart_confirm")}</span>
-            <button className="mini-btn primary" onClick={() => void confirmRestart()}>
-              {t("daemon_yes")}
-            </button>
-            <button className="mini-btn" onClick={() => setConfirming(false)}>
-              {t("daemon_no")}
-            </button>
-          </div>
-        )}
-        {restartMsg && <div className="restart-confirm">{restartMsg}</div>}
-        <div className="qmeta" style={{ marginTop: 8 }}>
-          {t("daemon_bg_note")}
-        </div>
       </div>
+      <canvas ref={canvasRef} width={140} height={40} />
+      <div className="vitals-stats">
+        <span>{snap ? t("daemon_memory", { mb: snap.memory_usage_mb.toFixed(1) }) : "—"}</span>
+        <span>{t("daemon_last_scan", { ago: relAgo(snap?.last_scan_at, now, t) })}</span>
+        <span>{t("daemon_uptime")} {uptime}</span>
+      </div>
+      {confirming && (
+        <div className="restart-confirm">
+          <span>{t("daemon_restart_confirm")}</span>
+          <button className="mini-btn primary" onClick={() => void confirmRestart()}>
+            {t("daemon_yes")}
+          </button>
+          <button className="mini-btn" onClick={() => setConfirming(false)}>
+            {t("daemon_no")}
+          </button>
+        </div>
+      )}
+      {restarting && <div className="restart-confirm">{t("daemon_restarting")}</div>}
+      {restartMsg && <div className="restart-confirm">{restartMsg}</div>}
+      <div className="vitals-note">{t("daemon_bg_note")}</div>
     </div>
   );
 }

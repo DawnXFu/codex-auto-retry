@@ -35,6 +35,16 @@ export default function AboutPage(props: { snapshot: ManagementSnapshot | null }
           </span>
         </div>
         <div className="kv" style={{ padding: "8px 14px" }}>
+          <span className="k">{t("daemon_transport")}</span>
+          <span>{snap?.desktop_transport ?? t("about_unknown")}</span>
+        </div>
+        <div className="kv" style={{ padding: "8px 14px" }}>
+          <span className="k">{t("daemon_auto_start")}</span>
+          <span className={snap?.startup_approved === "approved" ? "v ok" : "v"}>
+            {snap ? (snap.startup_approved === "approved" ? t("daemon_auto_start_on") : t("daemon_auto_start_off")) : t("about_unknown")}
+          </span>
+        </div>
+        <div className="kv" style={{ padding: "8px 14px" }}>
           <span className="k">{t("about_data_dir")}</span>
           <span>{snap?.data_dir ?? t("about_unknown")}</span>
         </div>

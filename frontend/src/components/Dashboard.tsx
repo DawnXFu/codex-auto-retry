@@ -3,9 +3,9 @@ import type { ManagementSnapshot, RetryState } from "../types";
 import { postAction } from "../api";
 import { useI18n } from "../i18n";
 import { clockTime } from "../time";
+import { IconRefresh } from "../icons";
 import QueueItem from "./QueueItem";
 import QuotaCard from "./QuotaCard";
-import DaemonCard from "./DaemonCard";
 
 type Filter = "all" | "quota" | "pending" | "running" | "attention" | "stopped";
 
@@ -76,7 +76,7 @@ export default function Dashboard(props: {
         </span>
         <span className="spacer" />
         <button className="mini-btn" title={t("strip_refresh")} onClick={props.onRefresh}>
-          ⟳
+          <IconRefresh size={13} />
         </button>
         <button className="mini-btn" onClick={() => void act(paused ? "resume" : "pause")}>
           {paused ? t("strip_resume") : t("strip_pause")}
@@ -103,7 +103,6 @@ export default function Dashboard(props: {
         </div>
         <div>
           <QuotaCard quota={snap?.quota} now={props.now} />
-          <DaemonCard snapshot={snap} now={props.now} />
         </div>
       </div>
     </section>

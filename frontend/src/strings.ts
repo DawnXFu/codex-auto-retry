@@ -7,12 +7,18 @@ export type Lang = "zh" | "en";
 
 const zh = {
   app_name: "Auto Resume",
+  app_title: "Codex Auto Resume",
 
   nav_dashboard: "仪表盘",
   nav_settings: "设置",
   nav_about: "关于",
   sidebar_running: "守护进程运行中",
   sidebar_stopped: "守护进程未运行",
+
+  window_minimize: "最小化",
+  window_maximize: "最大化",
+  window_restore: "还原",
+  window_close: "关闭",
 
   strip_running: "运行中",
   strip_paused: "已暂停",
@@ -121,6 +127,11 @@ const zh = {
   // Language names stay native in both dicts, per convention.
   settings_lang_zh: "简体中文",
   settings_lang_en: "English",
+  settings_theme: "主题",
+  settings_theme_desc: "界面颜色主题",
+  theme_system: "跟随系统",
+  theme_light: "浅色",
+  theme_dark: "深色",
   settings_tz: "时区显示",
   settings_tz_desc: "时间显示使用的时区",
   settings_tz_system: "跟随系统",
@@ -180,12 +191,18 @@ export type Params = Record<string, string | number>;
 
 const en: Record<StringKey, string> = {
   app_name: "Auto Resume",
+  app_title: "Codex Auto Resume",
 
   nav_dashboard: "Dashboard",
   nav_settings: "Settings",
   nav_about: "About",
   sidebar_running: "Daemon running",
   sidebar_stopped: "Daemon not running",
+
+  window_minimize: "Minimize",
+  window_maximize: "Maximize",
+  window_restore: "Restore",
+  window_close: "Close",
 
   strip_running: "Running",
   strip_paused: "Paused",
@@ -293,6 +310,11 @@ const en: Record<StringKey, string> = {
   settings_lang_desc: "Interface display language",
   settings_lang_zh: "简体中文",
   settings_lang_en: "English",
+  settings_theme: "Theme",
+  settings_theme_desc: "Interface color theme",
+  theme_system: "System",
+  theme_light: "Light",
+  theme_dark: "Dark",
   settings_tz: "Timezone display",
   settings_tz_desc: "Timezone used for displayed times",
   settings_tz_system: "Follow system",

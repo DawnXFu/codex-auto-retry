@@ -48,6 +48,9 @@ try {
         wails build -clean
         if ($LASTEXITCODE -ne 0) { throw "wails build failed" }
     } else {
+        # go build doesn't embed resources on its own — icon + DPI manifest
+        # ride in via a .syso generated from build/windows/ assets.
+        & (Join-Path $desktop "gen-resources.ps1")
         # wails apps need the OS build tag: without it, app_default_windows.go's
         # stub CreateApp shows a MessageBox titled "Error" and Run() is a no-op.
         Write-Host ">> go build -tags windows,production -ldflags `"-H windowsgui`" -o $Output ."

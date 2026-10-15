@@ -1,25 +1,28 @@
+import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import type { StringKey } from "../strings";
+import type { ManagementSnapshot } from "../types";
+import { BrandMark, IconAbout, IconDashboard, IconSettings } from "../icons";
+import DaemonVitals from "./DaemonVitals";
 
 export type Page = "dashboard" | "settings" | "about";
 
-const ITEMS: { page: Page; icon: string; key: StringKey }[] = [
-  { page: "dashboard", icon: "📊", key: "nav_dashboard" },
-  { page: "settings", icon: "⚙️", key: "nav_settings" },
-  { page: "about", icon: "ℹ️", key: "nav_about" },
+const ITEMS: { page: Page; icon: ReactNode; key: StringKey }[] = [
+  { page: "dashboard", icon: <IconDashboard size={15} />, key: "nav_dashboard" },
+  { page: "settings", icon: <IconSettings size={15} />, key: "nav_settings" },
+  { page: "about", icon: <IconAbout size={15} />, key: "nav_about" },
 ];
 
 export default function Sidebar(props: {
   page: Page;
   onNav: (p: Page) => void;
-  running: boolean;
-  version?: string;
+  snapshot: ManagementSnapshot | null;
 }) {
   const { t } = useI18n();
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="dot" style={props.running ? undefined : { background: "var(--red)" }} />
+        <BrandMark size={16} />
         {t("app_name")}
       </div>
       {ITEMS.map((it) => (
@@ -32,9 +35,10 @@ export default function Sidebar(props: {
         </div>
       ))}
       <div className="sidebar-foot">
-        {props.running ? t("sidebar_running") : t("sidebar_stopped")}
-        <br />
-        {props.version ? `v${props.version}` : ""}
+        <DaemonVitals snapshot={props.snapshot} />
+        <div className="sidebar-ver">
+          {props.snapshot?.version ? `v${props.snapshot.version}` : ""}
+        </div>
       </div>
     </aside>
   );

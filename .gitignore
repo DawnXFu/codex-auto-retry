@@ -29,5 +29,8 @@ desktop/frontend/dist/*
 
 # Desktop client build outputs and generated Wails JS bindings
 desktop/codex-auto-resume-desktop*
-desktop/build/
+desktop/build/bin/
 desktop/wailsjs/
+
+# Generated Windows resource object (desktop/gen-resources.ps1)
+desktop/*.syso
