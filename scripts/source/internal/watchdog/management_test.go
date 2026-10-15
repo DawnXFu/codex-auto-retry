@@ -1,8 +1,10 @@
 package watchdog
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -206,6 +208,105 @@ func TestManagementExposesGoalBlockFailureReason(t *testing.T) {
 	if snapshot.StoppedRetries != 1 || len(snapshot.Retries) != 1 ||
 		snapshot.Retries[0].StopReason != goalEmptyResponseBlockFailReason || !snapshot.Retries[0].CanRestart {
 		t.Fatalf("goal-block failure reason was not exposed: %+v", snapshot)
+	}
+}
+
+// Ticket #23 (Q-04): /snapshot projects the persisted account quota record
+// plus state.json rollout evidence into the optional account_quota contract,
+// next to — never replacing — the legacy quota summary.
+
+func TestManagementSnapshotProjectsAccountQuotaEvidence(t *testing.T) {
+	dataDir := t.TempDir()
+	service := newManagementService(dataDir)
+	now := time.Now().UTC()
+	observed := now.Add(-10 * time.Second)
+	limits := accountLimitsFixtureForTest(t, "account_rate_limits_read_full.json")
+	if err := writeJSONAtomic(filepath.Join(dataDir, accountQuotaFileName), &accountQuotaFileRecord{
+		Version: accountQuotaFileVersion, Available: true,
+		ObservedAt: observed, FreshUntil: observed.Add(time.Minute), Limits: &limits,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state := newRuntimeState()
+	state.Quota = &QuotaState{Snapshot: quotaSnapshotFixture(now.Add(-time.Hour), map[string]QuotaWindow{
+		"primary": {Key: "primary", UsedPercent: 99, WindowMinutes: 300, LimitID: "codex"},
+	})}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
+		Version: appVersion, Running: true, PID: os.Getpid(), LastScanAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.AccountQuota == nil {
+		t.Fatal("snapshot did not carry account_quota")
+	}
+	// A fresh account read wins over older rollout evidence.
+	if snapshot.AccountQuota.Status != "fresh" || snapshot.AccountQuota.Source != "account_read" ||
+		len(snapshot.AccountQuota.Windows) != 2 {
+		t.Fatalf("account quota view was not projected: %+v", snapshot.AccountQuota)
+	}
+	if snapshot.AccountQuota.ResetCredits.Status != "known" ||
+		snapshot.AccountQuota.ResetCredits.AvailableCount == nil ||
+		*snapshot.AccountQuota.ResetCredits.AvailableCount != 3 {
+		t.Fatalf("reset credits lost the account-read count: %+v", snapshot.AccountQuota.ResetCredits)
+	}
+	// The legacy summary stays populated alongside it for compatibility.
+	if snapshot.Quota == nil {
+		t.Fatal("legacy quota summary disappeared")
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"account_quota"`) {
+		t.Fatalf("account_quota missing from the wire shape: %s", raw)
+	}
+	if strings.Contains(string(raw), "acc_8f3b2d91") || strings.Contains(string(raw), "accountId") {
+		t.Fatalf("account identifier leaked into the management snapshot: %s", raw)
+	}
+}
+
+func TestManagementSnapshotCorruptAccountQuotaFileFallsBack(t *testing.T) {
+	dataDir := t.TempDir()
+	service := newManagementService(dataDir)
+	now := time.Now().UTC()
+	if err := os.WriteFile(filepath.Join(dataDir, accountQuotaFileName), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := newRuntimeState()
+	state.Quota = &QuotaState{Snapshot: quotaSnapshotFixture(now.Add(-time.Minute), map[string]QuotaWindow{
+		"primary": {Key: "primary", UsedPercent: 55, WindowMinutes: 300, LimitID: "codex"},
+	})}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatalf("corrupt account quota record must not fail the snapshot: %v", err)
+	}
+	// A corrupt record reads as "no record": the newest rollout evidence
+	// still surfaces.
+	if snapshot.AccountQuota == nil || snapshot.AccountQuota.Source != "rollout" ||
+		snapshot.AccountQuota.Status != "stale" {
+		t.Fatalf("corrupt record did not fall back to rollout evidence: %+v", snapshot.AccountQuota)
+	}
+}
+
+func TestManagementSnapshotAccountQuotaUnavailableWithoutEvidence(t *testing.T) {
+	service := newManagementService(t.TempDir())
+	snapshot, err := service.snapshot(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.AccountQuota == nil || snapshot.AccountQuota.Status != "unavailable" ||
+		snapshot.AccountQuota.Source != "none" {
+		t.Fatalf("empty evidence did not resolve to an explicit unavailable view: %+v", snapshot.AccountQuota)
 	}
 }
 

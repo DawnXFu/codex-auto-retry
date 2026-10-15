@@ -321,6 +321,15 @@ const (
 	accountQuotaCreditsUnknown     = "unknown"
 	accountQuotaCreditsStale       = "stale"
 	accountQuotaCreditsUnavailable = "unavailable"
+
+	// accountQuotaSlotPrimary/accountQuotaSlotSecondary are the only values
+	// the contract's slot field may carry (spec #19). Account reads only ever
+	// occupy these slots; rollout window keys outside the enum — e.g. a
+	// future sibling bucket — are dropped at the projection boundary rather
+	// than leaking a non-contract slot value (they remain reachable through
+	// the legacy quota summary).
+	accountQuotaSlotPrimary   = "primary"
+	accountQuotaSlotSecondary = "secondary"
 )
 
 // accountQuotaView mirrors the spec's AccountQuota contract. Nullable fields
@@ -334,9 +343,9 @@ type accountQuotaView struct {
 	ResetCredits accountQuotaResetCreditSum `json:"reset_credits"`
 }
 
-// accountQuotaViewWindow mirrors AccountQuotaWindow. Slot is the evidence
-// slot name ("primary"/"secondary"; other rollout keys pass through
-// verbatim).
+// accountQuotaViewWindow mirrors AccountQuotaWindow. Slot is a closed
+// primary|secondary enum per the spec contract; see the accountQuotaSlot*
+// constants for how out-of-enum rollout keys are handled.
 type accountQuotaViewWindow struct {
 	LimitID         string     `json:"limit_id,omitempty"`
 	LimitName       string     `json:"limit_name,omitempty"`
@@ -463,8 +472,8 @@ func accountReadWindows(limits *appAccountRateLimitsReadResult) []accountQuotaVi
 			name   string
 			window *appAccountRateLimitWindow
 		}{
-			{name: "primary", window: space.shot.Primary},
-			{name: "secondary", window: space.shot.Secondary},
+			{name: accountQuotaSlotPrimary, window: space.shot.Primary},
+			{name: accountQuotaSlotSecondary, window: space.shot.Secondary},
 		} {
 			if slot.window == nil {
 				continue
@@ -512,6 +521,12 @@ func rolloutQuotaView(quota *QuotaState, snapshot *QuotaSnapshot) accountQuotaVi
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
+			if key != accountQuotaSlotPrimary && key != accountQuotaSlotSecondary {
+				// slot is a closed primary|secondary enum in the API
+				// contract; a rollout bucket keyed outside it cannot be
+				// represented faithfully and is dropped here.
+				continue
+			}
 			persisted := space.Windows[key]
 			limitID := persisted.LimitID
 			if limitID == "" {

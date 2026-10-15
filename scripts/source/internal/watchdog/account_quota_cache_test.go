@@ -118,8 +118,13 @@ func newTestQuotaCache(reader accountQuotaReader, verifier accountQuotaEndpointS
 
 func accountLimitsForTest(t *testing.T) appAccountRateLimitsReadResult {
 	t.Helper()
+	return accountLimitsFixtureForTest(t, "account_rate_limits_read_full.json")
+}
+
+func accountLimitsFixtureForTest(t *testing.T, name string) appAccountRateLimitsReadResult {
+	t.Helper()
 	var limits appAccountRateLimitsReadResult
-	if err := json.Unmarshal(readAccountRateLimitsFixture(t, "account_rate_limits_read_full.json"), &limits); err != nil {
+	if err := json.Unmarshal(readAccountRateLimitsFixture(t, name), &limits); err != nil {
 		t.Fatal(err)
 	}
 	return limits
@@ -547,6 +552,122 @@ func TestAccountQuotaViewUnavailableWithoutEvidence(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"windows":[]`) {
 		t.Fatalf("windows must serialize as []: %s", data)
+	}
+}
+
+// Ticket #23 (Q-04): the projected view is the Management Snapshot
+// account_quota contract verbatim — slot stays a closed primary|secondary
+// enum, duration_minutes carries window identity, and known zeros are never
+// dropped.
+
+func TestAccountQuotaViewWeeklyPrimaryKeepsDurationIdentity(t *testing.T) {
+	observed := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	record := &accountQuotaFileRecord{
+		Version: 1, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute),
+		Limits:     ptrTo(accountLimitsFixtureForTest(t, "account_rate_limits_read_weekly_primary.json")),
+	}
+	view := resolveAccountQuotaView(record, nil, observed.Add(10*time.Second))
+	if len(view.Windows) != 1 {
+		t.Fatalf("weekly-as-primary must surface exactly one window: %+v", view.Windows)
+	}
+	window := view.Windows[0]
+	if window.Slot != "primary" || window.DurationMinutes == nil || *window.DurationMinutes != 10080 {
+		t.Fatalf("weekly window in the primary slot lost its identity: %+v", window)
+	}
+}
+
+func TestAccountQuotaViewUnknownDurationKeepsSlot(t *testing.T) {
+	limits := appAccountRateLimitsReadResult{
+		RateLimitsByLimitID: map[string]appAccountRateLimitSnapshot{
+			quotaCodexLimitID: {
+				LimitID:   ptrTo("codex"),
+				Primary:   &appAccountRateLimitWindow{UsedPercent: ptrTo(33.5)},
+				Secondary: nil,
+			},
+		},
+	}
+	observed := time.Now().UTC()
+	record := &accountQuotaFileRecord{
+		Version: 1, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute), Limits: &limits,
+	}
+	view := resolveAccountQuotaView(record, nil, observed)
+	if len(view.Windows) != 1 {
+		t.Fatalf("window without a duration was dropped: %+v", view.Windows)
+	}
+	window := view.Windows[0]
+	if window.Slot != "primary" || window.DurationMinutes != nil {
+		t.Fatalf("unknown-duration window must keep its slot and no duration: %+v", window)
+	}
+	data, err := json.Marshal(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "duration_minutes") {
+		t.Fatalf("absent duration_minutes was coerced: %s", data)
+	}
+}
+
+func TestAccountQuotaViewZeroValuesAreKnownNotAbsent(t *testing.T) {
+	observed := time.Now().UTC()
+	record := &accountQuotaFileRecord{
+		Version: 1, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute),
+		Limits:     ptrTo(accountLimitsFixtureForTest(t, "account_rate_limits_read_zero_values.json")),
+	}
+	view := resolveAccountQuotaView(record, nil, observed)
+	if len(view.Windows) != 2 {
+		t.Fatalf("zero-percent windows were dropped: %+v", view.Windows)
+	}
+	for _, window := range view.Windows {
+		if window.UsedPercent == nil || *window.UsedPercent != 0 {
+			t.Fatalf("used_percent=0 lost its known reading: %+v", window)
+		}
+	}
+	if view.ResetCredits.Status != "known" || view.ResetCredits.AvailableCount == nil ||
+		*view.ResetCredits.AvailableCount != 0 {
+		t.Fatalf("available_count=0 coerced to unknown: %+v", view.ResetCredits)
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"used_percent":0`) ||
+		!strings.Contains(string(data), `"available_count":0`) {
+		t.Fatalf("known zero readings were omitted from the contract: %s", data)
+	}
+}
+
+func TestAccountQuotaViewAbsentWindowsSerializeEmpty(t *testing.T) {
+	observed := time.Now().UTC()
+	record := &accountQuotaFileRecord{
+		Version: 1, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute),
+		Limits:     ptrTo(accountLimitsFixtureForTest(t, "account_rate_limits_read_minimal.json")),
+	}
+	view := resolveAccountQuotaView(record, nil, observed)
+	if view.Status != "fresh" || len(view.Windows) != 0 {
+		t.Fatalf("minimal account read resolved wrongly: %+v", view)
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"windows":[]`) {
+		t.Fatalf("absent windows must serialize as an empty array: %s", data)
+	}
+}
+
+func TestAccountQuotaViewRolloutNarrowsSlotEnum(t *testing.T) {
+	now := time.Now().UTC()
+	quota := &QuotaState{Snapshot: quotaSnapshotFixture(now.Add(-time.Minute), map[string]QuotaWindow{
+		"primary":  {Key: "primary", UsedPercent: 40, WindowMinutes: 300, LimitID: "codex"},
+		"tertiary": {Key: "tertiary", UsedPercent: 10, LimitID: "codex"},
+	})}
+	view := resolveAccountQuotaView(nil, quota, now)
+	if len(view.Windows) != 1 || view.Windows[0].Slot != "primary" {
+		t.Fatalf("rollout window outside the slot enum must not be projected: %+v", view.Windows)
 	}
 }
 

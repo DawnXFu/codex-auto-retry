@@ -42,49 +42,50 @@ type ManagedRetry struct {
 const stoppedRetryDisplayWindow = time.Hour
 
 type ManagementSnapshot struct {
-	Version                             string         `json:"version" jsonschema:"watchdog version"`
-	Running                             bool           `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
-	HeartbeatStale                      bool           `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
-	Paused                              bool           `json:"paused" jsonschema:"whether new retry dispatches are paused"`
-	RetryPrompt                         string         `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
-	MaxConsecutiveRetries               int            `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
-	MaxRecoveryAttempts                 int            `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
-	AuthMaxAttempts                     int            `json:"auth_max_attempts" jsonschema:"maximum retries for limited authentication failures"`
-	InitialDelaySeconds                 int            `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
-	MaxDelaySeconds                     int            `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
-	DelayIncrementSeconds               int            `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
-	DelayStrategy                       string         `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
-	ShowNotifications                   bool           `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
-	MemoryLimitMB                       int            `json:"memory_limit_mb" jsonschema:"private memory limit for the watchdog process, from 128 to 65536 MB"`
-	MemoryUsageMB                       int64          `json:"memory_usage_mb" jsonschema:"current watchdog private memory in MB"`
-	MemoryGuardTriggered                bool           `json:"memory_guard_triggered" jsonschema:"whether the memory guard stopped the service"`
-	SharedAppServerMemoryUsageMB        int64          `json:"shared_app_server_memory_usage_mb" jsonschema:"current shared Codex app-server private memory in MB"`
-	SharedAppServerMemoryLimitMB        int            `json:"shared_app_server_memory_limit_mb" jsonschema:"monitor-only private memory limit for the shared Codex app-server"`
-	SharedAppServerMemoryGuardTriggered bool           `json:"shared_app_server_memory_guard_triggered" jsonschema:"whether shared mode was disabled after its app-server exceeded the monitor limit"`
-	RetrySafetyWarning                  string         `json:"retry_safety_warning,omitempty" jsonschema:"warning when retry limits are unusually aggressive"`
-	SharedAppServerPort                 int            `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
-	SharedAppServerEnabled              bool           `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
-	SharedAppServerRequested            bool           `json:"shared_app_server_requested" jsonschema:"whether the user wants shared recovery mode, including when temporarily unavailable"`
-	DesktopTransport                    string         `json:"desktop_transport" jsonschema:"official_stdio, shared_websocket, stopped, or unknown"`
-	RecoveryMode                        string         `json:"recovery_mode" jsonschema:"shared_websocket, safe_launcher_required, or none"`
-	AutomaticRecoverySupported          bool           `json:"automatic_recovery_supported" jsonschema:"whether the current Desktop transport accepts automatic recovery"`
-	RecoveryCapabilityReason            string         `json:"recovery_capability_reason" jsonschema:"privacy-safe capability reason"`
-	StartupApproved                     string         `json:"startup_approved" jsonschema:"Windows sign-in approval state for the CodexAutoRetry startup entry"`
-	Now                                 string         `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
-	LastScanAt                          string         `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
-	PendingRetries                      int            `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
-	ActiveRetries                       int            `json:"active_retries" jsonschema:"number of retries starting or running"`
-	StoppedRetries                      int            `json:"stopped_retries" jsonschema:"number of currently visible retry chains that have stopped"`
-	WaitingForReset                     int            `json:"waiting_for_reset" jsonschema:"number of tasks parked waiting for a quota reset"`
-	WatchedRoots                        int            `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
-	DaemonPID                           int            `json:"daemon_pid,omitempty" jsonschema:"watchdog worker process id, present only while the worker is alive"`
-	DaemonStartedAt                     string         `json:"daemon_started_at,omitempty" jsonschema:"watchdog worker start time in RFC 3339 format"`
-	DataDir                             string         `json:"data_dir,omitempty" jsonschema:"watchdog runtime data directory"`
-	LastError                           string         `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
-	ControllerState                     string         `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
-	Notice                              string         `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
-	Retries                             []ManagedRetry `json:"retries" jsonschema:"current retry queue"`
-	Quota                               *ManagedQuota  `json:"quota,omitempty" jsonschema:"latest account quota usage summary"`
+	Version                             string            `json:"version" jsonschema:"watchdog version"`
+	Running                             bool              `json:"running" jsonschema:"whether a fresh watchdog heartbeat exists"`
+	HeartbeatStale                      bool              `json:"heartbeat_stale" jsonschema:"whether the last heartbeat is too old"`
+	Paused                              bool              `json:"paused" jsonschema:"whether new retry dispatches are paused"`
+	RetryPrompt                         string            `json:"retry_prompt" jsonschema:"fallback message used only when silent continuation is unsupported"`
+	MaxConsecutiveRetries               int               `json:"max_consecutive_retries" jsonschema:"maximum retries without visible assistant progress"`
+	MaxRecoveryAttempts                 int               `json:"max_recovery_attempts" jsonschema:"maximum attempts in one fault recovery cycle"`
+	AuthMaxAttempts                     int               `json:"auth_max_attempts" jsonschema:"maximum retries for limited authentication failures"`
+	InitialDelaySeconds                 int               `json:"initial_delay_seconds" jsonschema:"delay before the first automatic retry"`
+	MaxDelaySeconds                     int               `json:"max_delay_seconds" jsonschema:"maximum cap for increasing retry delays"`
+	DelayIncrementSeconds               int               `json:"delay_increment_seconds" jsonschema:"seconds added after each linear retry"`
+	DelayStrategy                       string            `json:"delay_strategy" jsonschema:"fixed, exponential, or linear retry delay"`
+	ShowNotifications                   bool              `json:"show_notifications" jsonschema:"whether Windows notifications are enabled"`
+	MemoryLimitMB                       int               `json:"memory_limit_mb" jsonschema:"private memory limit for the watchdog process, from 128 to 65536 MB"`
+	MemoryUsageMB                       int64             `json:"memory_usage_mb" jsonschema:"current watchdog private memory in MB"`
+	MemoryGuardTriggered                bool              `json:"memory_guard_triggered" jsonschema:"whether the memory guard stopped the service"`
+	SharedAppServerMemoryUsageMB        int64             `json:"shared_app_server_memory_usage_mb" jsonschema:"current shared Codex app-server private memory in MB"`
+	SharedAppServerMemoryLimitMB        int               `json:"shared_app_server_memory_limit_mb" jsonschema:"monitor-only private memory limit for the shared Codex app-server"`
+	SharedAppServerMemoryGuardTriggered bool              `json:"shared_app_server_memory_guard_triggered" jsonschema:"whether shared mode was disabled after its app-server exceeded the monitor limit"`
+	RetrySafetyWarning                  string            `json:"retry_safety_warning,omitempty" jsonschema:"warning when retry limits are unusually aggressive"`
+	SharedAppServerPort                 int               `json:"shared_app_server_port" jsonschema:"loopback port used by the optional shared Codex app-server"`
+	SharedAppServerEnabled              bool              `json:"shared_app_server_enabled" jsonschema:"whether the optional shared Codex app-server recovery mode is enabled"`
+	SharedAppServerRequested            bool              `json:"shared_app_server_requested" jsonschema:"whether the user wants shared recovery mode, including when temporarily unavailable"`
+	DesktopTransport                    string            `json:"desktop_transport" jsonschema:"official_stdio, shared_websocket, stopped, or unknown"`
+	RecoveryMode                        string            `json:"recovery_mode" jsonschema:"shared_websocket, safe_launcher_required, or none"`
+	AutomaticRecoverySupported          bool              `json:"automatic_recovery_supported" jsonschema:"whether the current Desktop transport accepts automatic recovery"`
+	RecoveryCapabilityReason            string            `json:"recovery_capability_reason" jsonschema:"privacy-safe capability reason"`
+	StartupApproved                     string            `json:"startup_approved" jsonschema:"Windows sign-in approval state for the CodexAutoRetry startup entry"`
+	Now                                 string            `json:"now" jsonschema:"snapshot time in RFC 3339 format"`
+	LastScanAt                          string            `json:"last_scan_at,omitempty" jsonschema:"last session scan time in RFC 3339 format"`
+	PendingRetries                      int               `json:"pending_retries" jsonschema:"number of retries waiting to dispatch"`
+	ActiveRetries                       int               `json:"active_retries" jsonschema:"number of retries starting or running"`
+	StoppedRetries                      int               `json:"stopped_retries" jsonschema:"number of currently visible retry chains that have stopped"`
+	WaitingForReset                     int               `json:"waiting_for_reset" jsonschema:"number of tasks parked waiting for a quota reset"`
+	WatchedRoots                        int               `json:"watched_roots" jsonschema:"number of watched Codex session roots"`
+	DaemonPID                           int               `json:"daemon_pid,omitempty" jsonschema:"watchdog worker process id, present only while the worker is alive"`
+	DaemonStartedAt                     string            `json:"daemon_started_at,omitempty" jsonschema:"watchdog worker start time in RFC 3339 format"`
+	DataDir                             string            `json:"data_dir,omitempty" jsonschema:"watchdog runtime data directory"`
+	LastError                           string            `json:"last_error,omitempty" jsonschema:"privacy-safe watchdog error summary"`
+	ControllerState                     string            `json:"controller_state,omitempty" jsonschema:"background Codex controller state"`
+	Notice                              string            `json:"notice,omitempty" jsonschema:"result of the most recent management action"`
+	Retries                             []ManagedRetry    `json:"retries" jsonschema:"current retry queue"`
+	Quota                               *ManagedQuota     `json:"quota,omitempty" jsonschema:"latest account quota usage summary"`
+	AccountQuota                        *accountQuotaView `json:"account_quota,omitempty" jsonschema:"account quota view resolved from the account read cache and persisted rollout evidence"`
 }
 
 // ManagedQuota is the privacy-safe account quota summary for the tray: the
@@ -211,6 +212,12 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 		Retries:                      retries,
 	}
 	snapshot.Quota = quotaSummary(state.Quota, waiting)
+	// account-quota.json is the worker's persisted quota-cache record; this
+	// surface only reads it. A missing or unreadable record resolves as "no
+	// account evidence" so a corrupt file can never fail the whole snapshot.
+	accountRecord, _ := loadAccountQuotaFile(filepath.Join(m.dataDir, accountQuotaFileName))
+	accountQuota := resolveAccountQuotaView(accountRecord, state.Quota, now)
+	snapshot.AccountQuota = &accountQuota
 	if statusFound {
 		if processRunning {
 			snapshot.DaemonPID = status.PID

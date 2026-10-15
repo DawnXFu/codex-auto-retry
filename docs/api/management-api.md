@@ -49,7 +49,8 @@ RFC 3339 UTC; clients render local-timezone times themselves.
 ## Snapshot schema
 
 Normative reference is the `ManagementSnapshot` / `ManagedRetry` /
-`ManagedQuota` structs (`management.go`) frozen by the golden contract test
+`ManagedQuota` structs (`management.go`) plus `accountQuotaView`
+(`account_quota_cache.go`), frozen by the golden contract test
 `TestManagementSnapshotContract` against
 `internal/watchdog/testdata/snapshot.golden.json`. Intentional contract
 changes regenerate the golden file
@@ -68,6 +69,43 @@ Fields a client needs beyond the obvious counters:
   waiting}` — the binding window when one is active, else the most-used
   window. Clients display **remaining** percent (100 − `used_percent`) and a
   countdown to `resets_at`.
+- `account_quota` (omitempty) is the richer per-window account quota view
+  (spec #19), resolved from the worker's persisted `account-quota.json`
+  cache record and, falling back, the newest rollout quota evidence in
+  `state.json`. Shape:
+
+  ```ts
+  account_quota: {
+    status: "fresh" | "stale" | "unavailable";
+    source: "account_read" | "rollout" | "none";
+    observed_at?: string;   // RFC 3339; when the source produced the evidence
+    fresh_until?: string;   // RFC 3339; display-cache freshness, not expiry
+    windows: [{
+      limit_id?: string;
+      limit_name?: string;
+      slot: "primary" | "secondary";   // closed enum — rollout windows keyed
+                                       // outside it are not projected
+      duration_minutes?: number;       // 300 = 5-hour, 10080 = weekly;
+                                       // absent = unknown duration
+      used_percent?: number;           // 0 is a valid known reading
+      resets_at?: string;              // RFC 3339
+      exhausted?: boolean;
+      binding?: boolean;
+    }];
+    reset_credits: {
+      status: "known" | "unknown" | "stale" | "unavailable";
+      available_count?: number;        // 0 is a valid known reading
+      observed_at?: string;
+    };
+  }
+  ```
+
+  Semantics: a `fresh`/`stale` view with `source=account_read` came from
+  `account/rateLimits/read`; `source=rollout` is stale `token_count`
+  evidence and can never supply reset credits (`status=unavailable`).
+  `status=unavailable` + `source=none` means no evidence exists. Absent
+  fields stay absent — they are never coerced to zero — and the account
+  identifier is never serialized.
 - `running`/`heartbeat_stale` describe the worker heartbeat; a daemon that
   is down still answers if some process is listening, but `running` is the
   source of truth for protection status.

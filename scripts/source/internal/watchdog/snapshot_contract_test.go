@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // snapshot_contract_test.go freezes the Management API wire shape — the
@@ -105,6 +106,35 @@ func contractSnapshot() ManagementSnapshot {
 			ResetsAt:    "2026-10-15T09:00:00Z",
 			Binding:     true,
 			Waiting:     1,
+		},
+		AccountQuota: &accountQuotaView{
+			Status:     accountQuotaStatusFresh,
+			Source:     accountQuotaSourceAccountRead,
+			ObservedAt: ptrTo(time.Date(2026, 10, 15, 3, 59, 50, 0, time.UTC)),
+			FreshUntil: ptrTo(time.Date(2026, 10, 15, 4, 0, 50, 0, time.UTC)),
+			Windows: []accountQuotaViewWindow{
+				{
+					LimitID:         "codex",
+					Slot:            accountQuotaSlotPrimary,
+					DurationMinutes: ptrTo(300),
+					UsedPercent:     ptrTo(99.6),
+					ResetsAt:        ptrTo(time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)),
+					Exhausted:       true,
+					Binding:         true,
+				},
+				{
+					LimitID:         "codex",
+					Slot:            accountQuotaSlotSecondary,
+					DurationMinutes: ptrTo(10080),
+					UsedPercent:     ptrTo(47.0),
+					ResetsAt:        ptrTo(time.Date(2026, 10, 16, 4, 0, 0, 0, time.UTC)),
+				},
+			},
+			ResetCredits: accountQuotaResetCreditSum{
+				Status:         accountQuotaCreditsKnown,
+				AvailableCount: ptrTo(int64(3)),
+				ObservedAt:     ptrTo(time.Date(2026, 10, 15, 3, 59, 50, 0, time.UTC)),
+			},
 		},
 	}
 }
