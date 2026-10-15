@@ -48,8 +48,10 @@ try {
         wails build -clean
         if ($LASTEXITCODE -ne 0) { throw "wails build failed" }
     } else {
-        Write-Host ">> go build -ldflags `"-H windowsgui`" -o $Output ."
-        go build -ldflags "-H windowsgui" -o $Output .
+        # wails apps need the OS build tag: without it, app_default_windows.go's
+        # stub CreateApp shows a MessageBox titled "Error" and Run() is a no-op.
+        Write-Host ">> go build -tags windows,production -ldflags `"-H windowsgui`" -o $Output ."
+        go build -tags "windows,production" -ldflags "-H windowsgui" -o $Output .
         if ($LASTEXITCODE -ne 0) { throw "go build failed" }
         Write-Host ">> wrote $desktop\$Output"
     }

@@ -39,7 +39,8 @@ if (Get-Command npm -ErrorAction SilentlyContinue) {
     if ($LASTEXITCODE -ne 0) { throw 'Desktop frontend build failed.' }
     Push-Location (Join-Path $pluginRoot 'desktop')
     try {
-        & go build -trimpath -ldflags '-s -w -H=windowsgui' -o $desktopOutput .
+        # wails needs the OS build tag or the binary is a no-op "Error" dialog stub.
+        & go build -trimpath -tags 'windows,production' -ldflags '-s -w -H=windowsgui' -o $desktopOutput .
         if ($LASTEXITCODE -ne 0) { throw 'Desktop client build failed.' }
     }
     finally {
