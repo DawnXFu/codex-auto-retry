@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-29T10:00:00.000Z","type":"session_meta","payload":{"id":"019fb0b1-00ff-7bff-80ff-00000000ff02","timestamp":"2026-09-29T10:00:00.000Z","cwd":"C:\\repo2","originator":"codex_cli_rs","cli_version":"0.56.0","source":"cli"}}
+{"timestamp":"2026-09-29T10:04:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"mismatched identity"}]}}
