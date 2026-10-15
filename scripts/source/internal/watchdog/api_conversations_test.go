@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -72,11 +73,16 @@ type conversationsListBody struct {
 		Title        string `json:"title"`
 		StartedAt    string `json:"started_at"`
 		LastActivity string `json:"last_activity"`
+		Cwd          string `json:"cwd"`
 	} `json:"items"`
 	Roots []struct {
 		RootID string `json:"root_id"`
 		Label  string `json:"label"`
 	} `json:"roots"`
+	Dirs []struct {
+		Dir   string `json:"dir"`
+		Label string `json:"label"`
+	} `json:"dirs"`
 	NextCursor string `json:"next_cursor"`
 	Partial    bool   `json:"partial"`
 	State      string `json:"state"`
@@ -363,6 +369,91 @@ func TestConversationsAPIRootFilterAndRoots(t *testing.T) {
 	}
 }
 
+// The dir query parameter scopes the list to conversations recorded in one
+// working directory (the session_meta payload cwd). Items report their cwd,
+// and every page carries the scope's distinct dirs (dir + compact label) so
+// a client's project-directory filter stays stable while paging — including
+// while a dir is selected.
+func TestConversationsAPIDirFilterAndDirs(t *testing.T) {
+	descriptor, dataDir := startTestAPI(t)
+	homeA, homeB := conversationsFixtureHomes(t)
+	configureConversationsRoots(t, dataDir, homeA, homeB)
+
+	page := conversationsAPIList(t, descriptor, "?filter=all")
+	if len(page.Dirs) != 2 {
+		t.Fatalf("dirs = %+v, want the two recorded cwds", page.Dirs)
+	}
+	labels := map[string]string{}
+	for _, ref := range page.Dirs {
+		if ref.Dir == "" || ref.Label == "" {
+			t.Fatalf("dir ref incomplete: %+v", ref)
+		}
+		labels[ref.Dir] = ref.Label
+	}
+	if labels[`C:\repo`] != "repo" || labels[`C:\repo2`] != "repo2" {
+		t.Fatalf("dir labels = %+v, want dir basenames", page.Dirs)
+	}
+	for _, item := range page.Items {
+		if item.Cwd == "" {
+			t.Fatalf("item %+v missing its recorded cwd", item)
+		}
+	}
+
+	// dir= narrows to exact matches; the dirs list still reports the whole
+	// scope so the dropdown does not collapse under a selection.
+	scoped := conversationsAPIList(t, descriptor, "?filter=all&dir="+url.QueryEscape(`C:\repo`))
+	if len(scoped.Items) != 5 {
+		t.Fatalf("dir-scoped items = %+v, want the 5 C:\\repo conversations", scoped.Items)
+	}
+	for _, item := range scoped.Items {
+		if item.Cwd != `C:\repo` {
+			t.Fatalf("dir filter leaked item with cwd %q", item.Cwd)
+		}
+	}
+	if len(scoped.Dirs) != 2 {
+		t.Fatalf("dir-scoped dirs = %+v, want the full scope set", scoped.Dirs)
+	}
+
+	// An unmatched dir is a filter miss — an empty page, never an error.
+	empty := conversationsAPIList(t, descriptor, "?filter=all&dir="+url.QueryEscape(`D:\missing`))
+	if len(empty.Items) != 0 {
+		t.Fatalf("unknown dir matched %+v", empty.Items)
+	}
+	if len(empty.Dirs) != 2 {
+		t.Fatalf("unknown-dir page dirs = %+v, want the scope set", empty.Dirs)
+	}
+
+	// A cursor minted under one dir cannot be replayed under another — the
+	// same scope binding as root.
+	first := conversationsAPIList(t, descriptor, "?filter=all&dir="+url.QueryEscape(`C:\repo`)+"&limit=1")
+	if first.NextCursor == "" {
+		t.Fatal("expected a dir-scoped next cursor")
+	}
+	status, _, body := conversationsAPIRequest(t, descriptor,
+		"/conversations?filter=all&dir="+url.QueryEscape(`C:\repo2`)+"&cursor="+first.NextCursor,
+		descriptor.Token)
+	if status != http.StatusBadRequest {
+		t.Fatalf("cross-dir cursor status = %d body=%s", status, body)
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Error != "invalid_cursor" {
+		t.Fatalf("cross-dir cursor body = %s, want invalid_cursor", body)
+	}
+	status, _, _ = conversationsAPIRequest(t, descriptor,
+		"/conversations?filter=all&cursor="+first.NextCursor, descriptor.Token)
+	if status != http.StatusBadRequest {
+		t.Fatalf("descoped-dir cursor status = %d", status)
+	}
+	// Same-dir replay continues and still reports the dirs set.
+	next := conversationsAPIList(t, descriptor,
+		"?filter=all&dir="+url.QueryEscape(`C:\repo`)+"&limit=1&cursor="+first.NextCursor)
+	if len(next.Items) != 1 || len(next.Dirs) != 2 {
+		t.Fatalf("same-dir continuation = %+v", next)
+	}
+}
+
 func TestConversationsAPIEmptyWhenNoRoots(t *testing.T) {
 	descriptor, dataDir := startTestAPI(t)
 	configureConversationsRoots(t, dataDir)
@@ -370,6 +461,9 @@ func TestConversationsAPIEmptyWhenNoRoots(t *testing.T) {
 	page := conversationsAPIList(t, descriptor, "")
 	if page.Items == nil {
 		t.Fatal("items must serialize as [], not null")
+	}
+	if page.Dirs == nil {
+		t.Fatal("dirs must serialize as [], not null")
 	}
 	if len(page.Items) != 0 || page.NextCursor != "" || page.State != "complete_persisted" {
 		t.Fatalf("empty listing = %+v", page)

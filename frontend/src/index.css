@@ -860,10 +860,14 @@ select option {
   gap: 6px;
   margin-left: 8px;
 }
-.conv-root-select {
+.conv-root-select,
+.conv-dir-select {
   width: auto;
   max-width: 180px;
   margin-left: 8px;
+}
+.conv-cwd {
+  white-space: nowrap;
 }
 .mini-btn.sel {
   border-color: var(--blue);

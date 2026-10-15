@@ -104,10 +104,12 @@ export default function ConversationsPage(props: {
 
   // ---- list state ----------------------------------------------------------
   const [filter, setFilter] = useState<ConversationListFilter>("ordinary");
-  // Root scope: "" = all directories; a root_id from the page's roots[].
-  // Cursors bind to (filter, root) server-side, so changing either resets
-  // pagination — the list is always re-anchored at its first page.
+  // Root scope: "" = all monitored roots; a root_id from the page's roots[].
+  // Dir scope: "" = all working directories; a cwd value from the page's
+  // dirs[]. Cursors bind to (filter, root, dir) server-side, so changing any
+  // resets pagination — the list is always re-anchored at its first page.
   const [root, setRoot] = useState("");
+  const [dir, setDir] = useState("");
   const [list, setList] = useState<ConversationListPage | null>(
     () => source.seedConversations?.("ordinary") ?? null,
   );
@@ -117,8 +119,8 @@ export default function ConversationsPage(props: {
   const [listLoading, setListLoading] = useState(() => source.kind === "live");
   const [loadingMore, setLoadingMore] = useState(false);
 
-  const reseed = (f: ConversationListFilter, r: string) => {
-    const seeded = source.seedConversations?.(f, r || undefined);
+  const reseed = (f: ConversationListFilter, r: string, d: string) => {
+    const seeded = source.seedConversations?.(f, r || undefined, d || undefined);
     if (seeded) {
       // Fixture resolves synchronously — swap without a loading flash.
       setList(seeded);
@@ -130,20 +132,26 @@ export default function ConversationsPage(props: {
   const selectFilter = (f: ConversationListFilter) => {
     setFilter(f);
     setListErr(null);
-    reseed(f, root);
+    reseed(f, root, dir);
   };
 
   const selectRoot = (r: string) => {
     setRoot(r);
     setListErr(null);
-    reseed(filter, r);
+    reseed(filter, r, dir);
+  };
+
+  const selectDir = (d: string) => {
+    setDir(d);
+    setListErr(null);
+    reseed(filter, root, d);
   };
 
   const onList = view.name === "list";
   useEffect(() => {
     if (!onList) return;
     let alive = true;
-    source.fetchConversations(filter, { rootId: root || undefined })
+    source.fetchConversations(filter, { rootId: root || undefined, dir: dir || undefined })
       .then((page) => {
         if (!alive) return;
         setList(page);
@@ -159,7 +167,7 @@ export default function ConversationsPage(props: {
     return () => {
       alive = false;
     };
-  }, [source, filter, root, onList]);
+  }, [source, filter, root, dir, onList]);
 
   // Low-rate auto-refresh of the first page while the list view is mounted.
   // The refresh replaces the list wholesale (pagination resets to head — this
@@ -176,7 +184,7 @@ export default function ConversationsPage(props: {
       if (typeof document !== "undefined" && document.hidden) return;
       listPollInFlight.current = true;
       source
-        .fetchConversations(filter, { rootId: root || undefined })
+        .fetchConversations(filter, { rootId: root || undefined, dir: dir || undefined })
         .then((page) => {
           if (!alive) return;
           setList(page);
@@ -194,18 +202,19 @@ export default function ConversationsPage(props: {
       alive = false;
       window.clearInterval(id);
     };
-  }, [source, filter, root, onList]);
+  }, [source, filter, root, dir, onList]);
 
   const loadMore = async () => {
     const cursor = list?.next_cursor;
     if (!cursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      // Cursors bind to the (filter, root) scope that minted them — replay
-      // under the current scope verbatim.
+      // Cursors bind to the (filter, root, dir) scope that minted them —
+      // replay under the current scope verbatim.
       const page = await source.fetchConversations(filter, {
         cursor,
         rootId: root || undefined,
+        dir: dir || undefined,
       });
       setList((prev) => ({
         ...page,
@@ -217,6 +226,18 @@ export default function ConversationsPage(props: {
       setLoadingMore(false);
     }
   };
+
+  // Directory filter options come from the page's dirs[] — the whole
+  // filtered scope, so the list never collapses to the selection. If the
+  // current selection is absent (e.g. it matched nothing under a new
+  // filter/root scope) keep it listed so the select can still show it.
+  const dirOptions = useMemo(() => {
+    const refs = list?.dirs ?? [];
+    if (dir && !refs.some((d) => d.dir === dir)) {
+      return [...refs, { dir, label: dirBaseName(dir) }];
+    }
+    return refs;
+  }, [list?.dirs, dir]);
 
   if (view.name === "detail") {
     return (
@@ -260,13 +281,26 @@ export default function ConversationsPage(props: {
             </option>
           ))}
         </select>
+        <select
+          className="conv-dir-select"
+          aria-label={t("conv_dir_filter")}
+          value={dir}
+          onChange={(e) => selectDir(e.target.value)}
+        >
+          <option value="">{t("conv_dir_all")}</option>
+          {dirOptions.map((d) => (
+            <option key={d.dir} value={d.dir}>
+              {d.label}
+            </option>
+          ))}
+        </select>
         <span className="spacer" />
         <button
           className="mini-btn"
           title={t("strip_refresh")}
           onClick={() => {
             setListLoading(true);
-            source.fetchConversations(filter, { rootId: root || undefined })
+            source.fetchConversations(filter, { rootId: root || undefined, dir: dir || undefined })
               .then((page) => {
                 setList(page);
                 setListErr(null);
@@ -311,6 +345,14 @@ export default function ConversationsPage(props: {
   );
 }
 
+// Last path segment of a recorded working directory — splits on both
+// separator styles since a cwd may come from another platform's paths.
+function dirBaseName(p: string): string {
+  const t = p.trim().replace(/[/\\]+$/, "");
+  const i = Math.max(t.lastIndexOf("/"), t.lastIndexOf("\\"));
+  return i >= 0 ? t.slice(i + 1) : t;
+}
+
 function ConversationRow(props: { conv: ConversationSummary; now: Date; onOpen: () => void }) {
   const { t } = useI18n();
   const c = props.conv;
@@ -326,7 +368,15 @@ function ConversationRow(props: { conv: ConversationSummary; now: Date; onOpen: 
           {c.kind === "subagent" && <span className="qtag blue">{t("conv_tag_subagent")}</span>}
           {c.archived && <span className="qtag amber">{t("conv_tag_archived")}</span>}
         </div>
-        <div className="qmeta">{t("conv_last_active", { ago: relAgo(c.last_activity, props.now, t) })}</div>
+        <div className="qmeta">
+          {t("conv_last_active", { ago: relAgo(c.last_activity, props.now, t) })}
+          {c.cwd && (
+            <span className="conv-cwd" title={c.cwd}>
+              {" · "}
+              {dirBaseName(c.cwd)}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

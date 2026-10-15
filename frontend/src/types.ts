@@ -156,6 +156,9 @@ export interface ConversationSummary {
   title?: string;
   started_at?: string;
   last_activity?: string;
+  /** working directory the session ran in (session_meta payload cwd);
+   * absent when the record carries none */
+  cwd?: string;
 }
 
 /** One monitored session root as the API reports it: opaque id plus a
@@ -165,11 +168,23 @@ export interface ConversationRootRef {
   label: string;
 }
 
+/** One recorded working directory as the API reports it: the cwd value
+ * itself (pass it back as the `dir` query param) plus a compact display
+ * label — basename, parent-disambiguated on collision. */
+export interface ConversationDirRef {
+  dir: string;
+  label: string;
+}
+
 export interface ConversationListPage {
   items: ConversationSummary[];
   /** every monitored root — stable regardless of filter/root scoping, so the
-   * directory filter's option list never flickers between views */
+   * root filter's option list never flickers between views */
   roots?: ConversationRootRef[];
+  /** distinct working directories across the filtered scan scope — computed
+   * before pagination and regardless of the dir selection, so the directory
+   * filter's option list stays complete while a dir is selected */
+  dirs?: ConversationDirRef[];
   next_cursor?: string;
   /** true when the server-side scan budget truncated enumeration */
   partial: boolean;
