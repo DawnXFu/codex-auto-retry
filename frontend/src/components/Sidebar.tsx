@@ -2,13 +2,14 @@ import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import type { StringKey } from "../strings";
 import type { ManagementSnapshot } from "../types";
-import { BrandMark, IconAbout, IconDashboard, IconSettings } from "../icons";
+import { BrandMark, IconAbout, IconConversations, IconDashboard, IconSettings } from "../icons";
 import DaemonVitals from "./DaemonVitals";
 
-export type Page = "dashboard" | "settings" | "about";
+export type Page = "dashboard" | "conversations" | "settings" | "about";
 
 const ITEMS: { page: Page; icon: ReactNode; key: StringKey }[] = [
   { page: "dashboard", icon: <IconDashboard size={15} />, key: "nav_dashboard" },
+  { page: "conversations", icon: <IconConversations size={15} />, key: "nav_conversations" },
   { page: "settings", icon: <IconSettings size={15} />, key: "nav_settings" },
   { page: "about", icon: <IconAbout size={15} />, key: "nav_about" },
 ];

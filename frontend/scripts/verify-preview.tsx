@@ -9,8 +9,14 @@ import Dashboard from "../src/components/Dashboard";
 import SettingsPage from "../src/components/SettingsPage";
 import AboutPage from "../src/components/AboutPage";
 import Sidebar from "../src/components/Sidebar";
+import ConversationsPage from "../src/components/ConversationsPage";
 import { LangProvider } from "../src/i18n";
-import { buildPreviewSnapshot, buildPreviewAccountQuota, type PreviewQuotaVariant } from "../src/fixture";
+import {
+  buildPreviewSnapshot,
+  buildPreviewAccountQuota,
+  buildPreviewConversations,
+  type PreviewQuotaVariant,
+} from "../src/fixture";
 import { interpolate, strings, type Lang } from "../src/strings";
 import type { ManagementSnapshot } from "../src/types";
 
@@ -34,6 +40,20 @@ if (zhKeys.concat(enKeys).some((k) => k.startsWith("quota_relimit"))) {
 
 const snap = buildPreviewSnapshot();
 const now = new Date();
+
+// The conversations page seeds itself synchronously from the fixture in
+// preview mode, so SSR renders real list/detail output without effects.
+const previewConvs = buildPreviewConversations("ordinary");
+if (previewConvs.items.length === 0) fail("preview fixture has no ordinary conversations");
+const previewThread = previewConvs.items[0];
+const archivedOnly = buildPreviewConversations("archived");
+if (archivedOnly.items.some((c) => !c.archived)) {
+  fail("preview fixture leaked non-archived items into the archived filter");
+}
+const subagentsOnly = buildPreviewConversations("subagent");
+if (subagentsOnly.items.some((c) => c.kind !== "subagent" || c.archived)) {
+  fail("preview fixture leaked non-subagent items into the subagent filter");
+}
 
 // The fixture cycles account_quota variants on a wall-clock timer; pin the
 // base render to the fresh variant so the assertions below stay
@@ -190,6 +210,77 @@ for (const lang of ["zh", "en"] as Lang[]) {
   ]) {
     if (!about.includes(needle)) fail(`${lang}: about output missing: ${needle}`);
   }
+
+  // Conversations list: seeded from the preview fixture synchronously, so
+  // SSR output carries the filter row and real rows.
+  const convList = renderToString(
+    createElement(
+      LangProvider,
+      { initial: lang },
+      createElement(ConversationsPage, { conn: { mode: "preview" }, now }),
+    ),
+  );
+  for (const needle of [
+    dict.nav_conversations,
+    dict.conv_filter_ordinary,
+    dict.conv_filter_subagent,
+    dict.conv_filter_archived,
+    dict.conv_filter_all,
+    "conv-item",
+    "conv-list",
+    dict.conv_last_active.split("{ago}")[0].trim(),
+  ]) {
+    if (!convList.includes(needle)) fail(`${lang}: conversations list output missing: ${needle}`);
+  }
+  if (!convList.includes(previewThread.title ?? "")) {
+    fail(`${lang}: conversations list did not render fixture title`);
+  }
+
+  // Conversations detail: the deep-link prop seeds the newest persisted
+  // page — messages, collapsed tool rows, and boundary markers render.
+  const convDetail = renderToString(
+    createElement(
+      LangProvider,
+      { initial: lang },
+      createElement(ConversationsPage, {
+        conn: { mode: "preview" },
+        now,
+        openThread: { rootId: previewThread.root_id, threadId: previewThread.thread_id },
+      }),
+    ),
+  );
+  for (const needle of [
+    dict.conv_back,
+    dict.conv_load_older,
+    dict.conv_you,
+    dict.conv_assistant,
+    dict.conv_marker_compaction,
+    dict.conv_tool_call,
+    dict.conv_tool_result,
+    "conv-msg",
+    "conv-tool",
+    "conv-boundary",
+    "conv-unknown",
+    "conv-omitted",
+  ]) {
+    if (!convDetail.includes(needle)) fail(`${lang}: conversations detail output missing: ${needle}`);
+  }
+
+  // Detail error path: an unknown identity renders the not-found state.
+  const convMissing = renderToString(
+    createElement(
+      LangProvider,
+      { initial: lang },
+      createElement(ConversationsPage, {
+        conn: { mode: "preview" },
+        now,
+        openThread: { rootId: "r0000000000000000", threadId: "019f9d5d-dead-7000-8000-000000000000" },
+      }),
+    ),
+  );
+  if (!convMissing.includes(dict.conv_not_found)) {
+    fail(`${lang}: conversations detail did not render the not-found state`);
+  }
 }
 
 // The prototype's bug class: after switching to en, no zh string may leak —
@@ -233,10 +324,30 @@ const enVariantDashes = (["stale", "rollout", "unavailable"] as PreviewQuotaVari
       ),
     ] as const,
 );
+const enConvList = renderToString(
+  createElement(
+    LangProvider,
+    { initial: "en" },
+    createElement(ConversationsPage, { conn: { mode: "preview" }, now }),
+  ),
+);
+const enConvDetail = renderToString(
+  createElement(
+    LangProvider,
+    { initial: "en" },
+    createElement(ConversationsPage, {
+      conn: { mode: "preview" },
+      now,
+      openThread: { rootId: previewThread.root_id, threadId: previewThread.thread_id },
+    }),
+  ),
+);
 for (const [name, html] of [
   ["dashboard", enDash],
   ["settings", enSettings],
   ["sidebar", enSidebar],
+  ["conversations", enConvList],
+  ["conversations-detail", enConvDetail],
   ...enVariantDashes,
 ] as const) {
   const scrubbed = html

@@ -6,6 +6,7 @@ import Sidebar, { type Page } from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
 import SettingsPage from "./components/SettingsPage";
 import AboutPage from "./components/AboutPage";
+import ConversationsPage from "./components/ConversationsPage";
 import { useTheme } from "./theme";
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
             </div>
           )}
           {page === "dashboard" && <Dashboard snapshot={snapshot} now={now} onRefresh={refresh} />}
+          {page === "conversations" && <ConversationsPage conn={conn} now={now} />}
           {page === "settings" && (
             <SettingsPage snapshot={snapshot} onRefresh={refresh} theme={theme} setTheme={setTheme} />
           )}

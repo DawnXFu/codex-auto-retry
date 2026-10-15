@@ -833,6 +833,236 @@ select option {
   background: var(--hover);
 }
 
+/* ---- conversations page ---- */
+.conv-filters {
+  display: flex;
+  gap: 6px;
+  margin-left: 8px;
+}
+.mini-btn.sel {
+  border-color: var(--blue);
+  color: var(--blue);
+  box-shadow: 0 0 0 1px var(--blue) inset;
+}
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.conv-item:last-child {
+  border-bottom: none;
+}
+.conv-item:hover {
+  background: var(--hover);
+}
+.conv-item:first-child {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.conv-item:last-child {
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.conv-item:only-child {
+  border-radius: var(--radius);
+}
+.conv-more {
+  align-self: center;
+}
+.conv-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.conv-title .t {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-thread {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.conv-older {
+  align-self: center;
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 7px;
+  padding: 4px 14px;
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.conv-older:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.conv-older:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.conv-older-hint {
+  align-self: center;
+  font-size: 10.5px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+.conv-msg {
+  display: flex;
+}
+.conv-msg.user {
+  justify-content: flex-end;
+}
+.conv-bubble {
+  max-width: 78%;
+  border-radius: 10px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+.conv-msg.user .conv-bubble {
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+  border-color: color-mix(in srgb, var(--blue) 28%, transparent);
+}
+.conv-msg.assistant .conv-bubble {
+  background: var(--panel);
+}
+.conv-meta {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.conv-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.conv-omitted {
+  font-size: 10.5px;
+  color: var(--amber);
+  margin-top: 3px;
+  font-weight: 500;
+}
+.conv-tool {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.conv-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 5px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.conv-tool-head:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.conv-tool-head svg {
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.conv-tool.open .conv-tool-head svg {
+  transform: rotate(180deg);
+}
+.conv-tool-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-tool-time {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.conv-tool-body {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.conv-boundary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.conv-boundary::before,
+.conv-boundary::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+.conv-boundary-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  flex-shrink: 0;
+}
+.conv-boundary-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.conv-boundary-time {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.conv-unknown {
+  align-self: center;
+  font-size: 10.5px;
+  color: var(--muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  padding: 2px 12px;
+}
+.conv-new {
+  position: sticky;
+  bottom: 6px;
+  align-self: center;
+  border: none;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 6px 16px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+.conv-new:hover {
+  filter: brightness(1.08);
+}
+
 /* ---- responsive: content adapts to the window ---- */
 @media (max-width: 840px) {
   .dash {
