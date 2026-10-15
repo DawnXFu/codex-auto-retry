@@ -1,4 +1,12 @@
-import type { AccountQuota, ManagementSnapshot } from "./types";
+import type {
+  AccountQuota,
+  ConversationItem,
+  ConversationItemsPage,
+  ConversationListFilter,
+  ConversationListPage,
+  ConversationSummary,
+  ManagementSnapshot,
+} from "./types";
 
 // Preview fixture: every retry state represented, timestamps relative to the
 // moment each snapshot is built so countdowns/relative-day labels stay live.
@@ -303,4 +311,189 @@ export function buildPreviewSnapshot(): ManagementSnapshot {
       },
     ],
   };
+}
+
+// ---- conversations fixture (spec #19 milestone 2) --------------------------
+// A small deterministic catalog: opaque root/thread identities, opaque cursors
+// ("b:<off>" backward scan end / "t:<off>" forward tail anchor — the real
+// tokens are base64, opacity is what matters), and enough items per thread to
+// exercise backward pagination, collapsed tool rows, boundary markers, the
+// unknown placeholder, and the omitted flag. The first conversation reuses a
+// queue thread_id so the queue-to-conversation deep link (C-06) is demoable.
+// Message content is English; titles carry zh like the retry fixture (data,
+// not UI copy). One assistant line is appended every ~45s so forward polling
+// shows incremental appends at ?preview=1.
+
+let previewConvsCache: ConversationSummary[] | null = null;
+let previewAppendAfter = 0;
+
+function previewConversations(): ConversationSummary[] {
+  if (previewConvsCache) return previewConvsCache;
+  const t = (idx: number, minsAgo: number) => {
+    const last = iso(-minsAgo * 60_000);
+    const started = iso(-(minsAgo + 60 + idx * 17) * 60_000);
+    return { started_at: started, last_activity: last };
+  };
+  const defs: [string, string, "ordinary" | "subagent", boolean, string][] = [
+    // [thread_id, title, kind, archived, root suffix]
+    ["019f9d5d-0000-7000-8000-000000000006", "编写订单服务单元测试", "ordinary", false, "a1"],
+    ["019f9d5d-0000-7000-8000-000000000101", "Design a rate-limit backoff policy", "ordinary", false, "a1"],
+    ["019f9d5d-0000-7000-8000-000000000102", "Subagent: scan log rotation edge cases", "subagent", false, "a1"],
+    ["019f9d5d-0000-7000-8000-000000000103", "Refactor the quota evidence cache", "ordinary", false, "b2"],
+    ["019f9d5d-0000-7000-8000-000000000104", "Draft release notes for 0.7.12", "ordinary", true, "b2"],
+    ["019f9d5d-0000-7000-8000-000000000105", "Subagent: fixture audit", "subagent", true, "c3"],
+    ["019f9d5d-0000-7000-8000-000000000106", "", "ordinary", false, "c3"],
+  ];
+  previewConvsCache = defs.map(([thread, title, kind, archived, root], i) => ({
+    root_id: `r${root}${"0".repeat(13)}`,
+    thread_id: thread,
+    kind,
+    archived,
+    title: title || undefined,
+    ...t(i, 8 + i * 137),
+  }));
+  return previewConvsCache;
+}
+
+const previewThreadItems = new Map<string, ConversationItem[]>();
+
+function previewItemsFor(conv: ConversationSummary): ConversationItem[] {
+  const cached = previewThreadItems.get(conv.thread_id);
+  if (cached) return cached;
+  const items: ConversationItem[] = [];
+  const base = Date.now() - 150 * 90_000;
+  const ts = (i: number) => new Date(base + i * 90_000).toISOString();
+  let n = 0;
+  const push = (item: Omit<ConversationItem, "id" | "timestamp">) => {
+    items.push({ ...item, id: `p${n}`, timestamp: ts(n) });
+    n++;
+  };
+  push({ kind: "boundary", marker: conv.kind === "subagent" ? "subagent" : "session", text: conv.title });
+  for (let turn = 0; turn < 22; turn++) {
+    push({ kind: "boundary", marker: "turn_started" });
+    push({
+      kind: "user_message",
+      text: `Turn ${turn + 1}: please continue the refactor and keep the public API unchanged.`,
+    });
+    push({
+      kind: "tool_call",
+      tool: turn % 3 === 0 ? "web_search" : "shell",
+      text: turn % 3 === 0 ? `{"query":"vite ssr build ${turn}"}` : `npm test -- --run suite-${turn}`,
+      collapsed: true,
+    });
+    push({
+      kind: "tool_result",
+      text: `ok — suite-${turn} passed (${12 + turn} assertions)`,
+      collapsed: true,
+    });
+    push({
+      kind: "assistant_message",
+      text: `Done with step ${turn + 1}. The changes are in place and tests still pass.`,
+    });
+    push({ kind: "boundary", marker: "turn_complete" });
+    if (turn === 20) {
+      // Late enough to land inside the newest backward page (last 50 items),
+      // so SSR and ?preview=1 render a compaction marker out of the box.
+      push({ kind: "boundary", marker: "compaction", text: "context_compacted" });
+    }
+  }
+  // Tail region — lands inside the newest backward page: an unrecognized
+  // record, an omitted-content flag, and the latest assistant reply.
+  push({ kind: "unknown", marker: "mystery_record_type" });
+  push({ kind: "tool_result", text: "streaming output truncated by the reader…", collapsed: true, omitted: true });
+  push({ kind: "boundary", marker: "warning", text: "token budget nearly exhausted" });
+  push({ kind: "assistant_message", text: "That completes the persisted history — newer turns will appear here." });
+  previewThreadItems.set(conv.thread_id, items);
+  return items;
+}
+
+function previewFind(rootId: string, threadId: string): ConversationSummary | undefined {
+  return previewConversations().find((c) => c.root_id === rootId && c.thread_id === threadId);
+}
+
+function decodePreviewCursor(raw: string | undefined, prefix: string): number | undefined {
+  if (!raw) return undefined;
+  if (!raw.startsWith(prefix)) return Number.NaN;
+  const n = Number(raw.slice(prefix.length));
+  return Number.isInteger(n) && n >= 0 ? n : Number.NaN;
+}
+
+export function buildPreviewConversations(
+  filter: ConversationListFilter = "ordinary",
+  cursor?: string,
+  limit = 50,
+): ConversationListPage {
+  const all = previewConversations();
+  const filtered = all.filter((c) => {
+    switch (filter) {
+      case "archived":
+        return c.archived;
+      case "subagent":
+        return c.kind === "subagent" && !c.archived;
+      case "all":
+        return true;
+      default:
+        return !c.archived;
+    }
+  });
+  const start = decodePreviewCursor(cursor, "c:");
+  const from = start === undefined ? 0 : Number.isNaN(start) ? filtered.length : start;
+  const page = filtered.slice(from, from + Math.max(1, limit));
+  const next = from + page.length;
+  return {
+    items: page.map(({ root_id, thread_id, kind, archived, title, started_at, last_activity }) => ({
+      root_id,
+      thread_id,
+      kind,
+      archived,
+      title,
+      started_at,
+      last_activity,
+    })),
+    next_cursor: next < filtered.length ? `c:${next}` : undefined,
+    partial: false,
+    state: "complete_persisted",
+  };
+}
+
+export function buildPreviewConversationItems(
+  rootId: string,
+  threadId: string,
+  opts: { cursor?: string; direction?: "backward" | "forward"; limit?: number } = {},
+): ConversationItemsPage | null {
+  const conv = previewFind(rootId, threadId);
+  if (!conv) return null;
+  const items = previewItemsFor(conv);
+  // Slow drip of appended records so forward polling has something to find.
+  if (conv === previewConversations()[0] && Date.now() >= previewAppendAfter) {
+    previewAppendAfter = Date.now() + 45_000;
+    items.push({
+      id: `p${items.length}`,
+      kind: "assistant_message",
+      timestamp: new Date().toISOString(),
+      text: `Live append ${items.length}: a new persisted record arrived since the last poll.`,
+    });
+  }
+  const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+  const direction = opts.direction === "forward" ? "forward" : "backward";
+  const page: ConversationItemsPage = {
+    items: [],
+    state: "complete_persisted",
+    archived: conv.archived || undefined,
+    kind: conv.kind,
+    tail_cursor: `t:${items.length}`,
+  };
+  if (direction === "forward") {
+    const start = decodePreviewCursor(opts.cursor, "t:") ?? decodePreviewCursor(opts.cursor, "f:") ?? 0;
+    const from = Number.isNaN(start) ? items.length : Math.min(start, items.length);
+    page.items = items.slice(from, from + limit);
+    if (from + limit < items.length) page.next_cursor = `f:${from + limit}`;
+    return page;
+  }
+  const end = decodePreviewCursor(opts.cursor, "b:");
+  const to = end === undefined ? items.length : Number.isNaN(end) ? 0 : Math.min(end, items.length);
+  const from = Math.max(0, to - limit);
+  page.items = items.slice(from, to);
+  if (from > 0) page.next_cursor = `b:${from}`;
+  return page;
 }

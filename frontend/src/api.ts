@@ -1,5 +1,10 @@
-import type { ManagementSnapshot } from "./types";
-import { buildPreviewSnapshot } from "./fixture";
+import type {
+  ConversationItemsPage,
+  ConversationListFilter,
+  ConversationListPage,
+  ManagementSnapshot,
+} from "./types";
+import { buildPreviewConversationItems, buildPreviewConversations, buildPreviewSnapshot } from "./fixture";
 
 // ---- connection params ----------------------------------------------------
 // Discovery seams, in priority order:
@@ -124,6 +129,87 @@ export async function fetchSnapshot(conn: Connection): Promise<ManagementSnapsho
     throw new Error(`snapshot ${res.status}`);
   }
   return (await res.json()) as ManagementSnapshot;
+}
+
+// ---- conversations (spec #19 milestone 2) ---------------------------------
+// Read-only GETs against the same Management API. Error bodies carry a
+// machine-readable {"error": reason} — surfaced via ApiError.reason so the
+// page can react to specific reasons (e.g. 409 conversation_changed →
+// re-anchor at the latest persisted page).
+
+export class ApiError extends Error {
+  readonly status: number;
+  /** wire reason such as "conversation_not_found"; falls back to the status */
+  readonly reason: string;
+  constructor(status: number, reason: string) {
+    super(reason);
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
+async function fetchAPI<T>(conn: Extract<Connection, { mode: "live" }>, path: string): Promise<T> {
+  const res = await fetch(`${conn.api}${path}`, {
+    headers: { Authorization: `Bearer ${conn.token}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!res.ok) {
+    let reason = `http_${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body?.error === "string" && body.error) reason = body.error;
+    } catch {
+      // non-JSON error body — keep the status-derived reason
+    }
+    throw new ApiError(res.status, reason);
+  }
+  return (await res.json()) as T;
+}
+
+export async function fetchConversations(
+  conn: Connection,
+  filter: ConversationListFilter = "ordinary",
+  cursor?: string,
+  limit = 50,
+): Promise<ConversationListPage> {
+  if (conn.mode === "preview") {
+    return buildPreviewConversations(filter, cursor, limit);
+  }
+  if (conn.mode === "none") {
+    throw new Error("no connection params");
+  }
+  const q = new URLSearchParams();
+  if (filter !== "ordinary") q.set("filter", filter);
+  if (cursor) q.set("cursor", cursor);
+  q.set("limit", String(limit));
+  return fetchAPI<ConversationListPage>(conn, `/conversations?${q.toString()}`);
+}
+
+export type ConversationItemsDirection = "backward" | "forward";
+
+export async function fetchConversationItems(
+  conn: Connection,
+  rootId: string,
+  threadId: string,
+  opts: { cursor?: string; direction?: ConversationItemsDirection; limit?: number } = {},
+): Promise<ConversationItemsPage> {
+  if (conn.mode === "preview") {
+    const page = buildPreviewConversationItems(rootId, threadId, opts);
+    if (!page) throw new ApiError(404, "conversation_not_found");
+    return page;
+  }
+  if (conn.mode === "none") {
+    throw new Error("no connection params");
+  }
+  const q = new URLSearchParams();
+  if (opts.cursor) q.set("cursor", opts.cursor);
+  if (opts.direction) q.set("direction", opts.direction);
+  if (opts.limit) q.set("limit", String(opts.limit));
+  const qs = q.toString();
+  return fetchAPI<ConversationItemsPage>(
+    conn,
+    `/conversations/${encodeURIComponent(rootId)}/${encodeURIComponent(threadId)}/items${qs ? `?${qs}` : ""}`,
+  );
 }
 
 // ---- writes ---------------------------------------------------------------

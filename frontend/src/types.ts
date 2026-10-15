@@ -134,3 +134,61 @@ export interface ManagementSnapshot {
   quota?: ManagedQuota;
   account_quota?: AccountQuota;
 }
+
+// Conversations (spec #19 milestone 2) — mirrors the wire shapes served by
+// api_conversations.go and api_conversation_items.go. Identity is always the
+// opaque (root_id, thread_id) pair minted by the catalog; the client never
+// submits filesystem paths, and all cursors are opaque tokens replayed
+// verbatim.
+export type ConversationKind = "ordinary" | "subagent";
+
+export type ConversationListFilter = "ordinary" | "subagent" | "archived" | "all";
+
+export interface ConversationSummary {
+  root_id: string;
+  thread_id: string;
+  kind: ConversationKind;
+  archived: boolean;
+  title?: string;
+  started_at?: string;
+  last_activity?: string;
+}
+
+export interface ConversationListPage {
+  items: ConversationSummary[];
+  next_cursor?: string;
+  /** true when the server-side scan budget truncated enumeration */
+  partial: boolean;
+  state: "complete_persisted" | "partial";
+}
+
+export type ConversationItemKind =
+  | "user_message"
+  | "assistant_message"
+  | "tool_call"
+  | "tool_result"
+  | "boundary"
+  | "unknown";
+
+export interface ConversationItem {
+  id: string;
+  kind: ConversationItemKind;
+  timestamp?: string;
+  text?: string;
+  tool?: string;
+  marker?: string;
+  collapsed?: boolean;
+  omitted?: boolean;
+}
+
+export interface ConversationItemsPage {
+  /** one page in chronological order, whichever direction was requested */
+  items: ConversationItem[];
+  /** continue in the requested direction (older history / newer appends) */
+  next_cursor?: string;
+  /** anchor at the end of persisted content for forward polling */
+  tail_cursor?: string;
+  state: "complete_persisted" | "partial" | "unsupported";
+  archived?: boolean;
+  kind?: ConversationKind;
+}

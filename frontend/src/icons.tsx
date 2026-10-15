@@ -47,6 +47,25 @@ export const IconAbout = (p: { size?: number }) => (
   </S>
 );
 
+export const IconConversations = (p: { size?: number }) => (
+  <S {...p}>
+    <path d="M13.8 9.9a1.5 1.5 0 0 1-1.5 1.5H5.2L2.2 14V4.7a1.5 1.5 0 0 1 1.5-1.5h8.6a1.5 1.5 0 0 1 1.5 1.5Z" />
+    <path d="M5 6.3h6M5 8.7h4" />
+  </S>
+);
+
+export const IconBack = (p: { size?: number }) => (
+  <S {...p}>
+    <path d="M9.5 3.5 4.7 8l4.8 4.5M5 8h8.8" />
+  </S>
+);
+
+export const IconChevronDown = (p: { size?: number }) => (
+  <S {...p}>
+    <path d="M4 6l4 4 4-4" />
+  </S>
+);
+
 // ---- queue state glyphs (rendered inside the tinted .qicon tile) ----
 
 export const IconPending = (p: { size?: number }) => (
