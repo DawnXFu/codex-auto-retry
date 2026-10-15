@@ -41,10 +41,62 @@ auth remains a documented optional hardening (ADR-0004).
 | --- | --- | --- |
 | `GET /healthz` | none | `{"ok": true}` — liveness probe |
 | `GET /snapshot` | bearer token | `ManagementSnapshot` JSON — full queue, config, quota, and capability view |
+| `GET /conversations` | bearer token | paginated list of persisted Codex conversations under monitored session roots |
 
 `GET /snapshot` is served by `managementService.snapshot(now)`
 (`management.go`) — the same assembler the tray uses. All timestamps are
 RFC 3339 UTC; clients render local-timezone times themselves.
+
+## Conversations list
+
+`GET /conversations` (`api_conversations.go`, served by
+`managementService.conversationsList`) is a read-only view over persisted
+Codex rollout manifests discovered under the session roots `config.json`
+currently monitors (`discoverSessionRoots`). It never appears inside
+`/snapshot`, accepts no filesystem paths, and carries
+`Cache-Control: no-store` on every response, including errors.
+
+Query parameters:
+
+- `filter` — `ordinary` (default; `normal` is an accepted alias),
+  `subagent`, `archived`, or `all`. Archived is a separate axis: `subagent`
+  excludes archived entries, `archived` returns any kind. Unknown values →
+  `400 {"error": "invalid_filter"}`.
+- `cursor` — opaque keyset token from a previous page's `next_cursor`. It is
+  bound to the filter that issued it; replaying it under a different filter
+  is an error. Malformed or mismatched → `400 {"error": "invalid_cursor"}`.
+- `limit` — positive integer page size. Values above the maximum (200) are
+  clamped, never an error; zero, negative, or non-integer →
+  `400 {"error": "invalid_limit"}`. Default page size is 50.
+
+Response `200` body:
+
+```ts
+{
+  items: [{
+    root_id: string;        // opaque root identity, e.g. "r1a2b..." — never a path
+    thread_id: string;      // persisted thread id; identity is the pair
+    kind: "ordinary" | "subagent";
+    archived: boolean;
+    title?: string;         // session metadata, only when cheaply derivable
+    started_at?: string;    // RFC 3339, earliest persisted record time
+    last_activity?: string; // RFC 3339, latest persisted record time
+  }];
+  next_cursor?: string;     // present only while more items follow
+  partial: boolean;         // scan bounds stopped enumeration early
+  state: "complete_persisted" | "partial"; // same fact, mirrors detail pages
+}
+```
+
+Ordering is latest persisted record activity, with a stable
+`(root_id, thread_id)` tie-break; file mtime and rename time never feed the
+order. Bounds: page size above, per-request scan budget (~4 s,
+`maxCatalogScanDuration`) which sets `partial`/`state="partial"` when it
+truncates, and at most 4 concurrent catalog scans
+(`conversationsScanSlots`) — further requests wait for a slot. User input
+never produces a 5xx; internal failures return generic
+`500 {"error": "conversations_unavailable"}` with no paths or content in the
+body.
 
 ## Snapshot schema
 
@@ -118,6 +170,10 @@ Fields a client needs beyond the obvious counters:
 
 | Status | Body | Meaning |
 | --- | --- | --- |
+| 400 | `{"error": "invalid_filter"}` | `/conversations`: unknown `filter` value |
+| 400 | `{"error": "invalid_cursor"}` | `/conversations`: malformed cursor or one issued under a different filter |
+| 400 | `{"error": "invalid_limit"}` | `/conversations`: `limit` is zero, negative, or not an integer |
 | 401 | `{"error": "unauthorized"}` | missing/wrong bearer token |
 | 405 | Go `net/http` default | wrong method (routes are `GET`-only) |
 | 500 | `{"error": "snapshot_unavailable"}` | state/config unreadable this tick |
+| 500 | `{"error": "conversations_unavailable"}` | `/conversations` catalog scan failed internally |
