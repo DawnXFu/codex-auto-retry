@@ -102,7 +102,7 @@ export default function Dashboard(props: {
           ))}
         </div>
         <div>
-          <QuotaCard quota={snap?.quota} now={props.now} />
+          <QuotaCard quota={snap?.quota} accountQuota={snap?.account_quota} now={props.now} />
         </div>
       </div>
     </section>
