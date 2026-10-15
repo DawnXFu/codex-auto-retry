@@ -15,6 +15,7 @@ import (
 
 type ManagedRetry struct {
 	ThreadID              string       `json:"thread_id" jsonschema:"Codex task identifier"`
+	RootID                string       `json:"root_id,omitempty" jsonschema:"opaque monitored-root identity pairing with thread_id for conversation deep links; present only when the task's rollout file resolves under a monitored root"`
 	Label                 string       `json:"label" jsonschema:"privacy-safe short task label"`
 	Title                 string       `json:"title,omitempty" jsonschema:"task title from session metadata, empty when undiscoverable"`
 	State                 string       `json:"state" jsonschema:"pending, starting, or running"`
@@ -158,7 +159,13 @@ func (m *managementService) snapshotLocked(now time.Time) (ManagementSnapshot, e
 	processRunning := statusFound && processOwnsRuntime(status.PID, m.dataDir)
 	heartbeatStale := !statusFound || !processRunning || status.LastScanAt.IsZero() || now.Sub(status.LastScanAt) > staleAfter
 	running := statusFound && status.Running && !heartbeatStale
-	retries := managedRetries(state, now, m.threadTitle)
+	// Roots are discovered only when threads exist so a queue-less snapshot
+	// pays no filesystem cost for the deep-link mapping.
+	var roots []sessionRoot
+	if len(state.Threads) > 0 {
+		roots = discoverSessionRoots(config)
+	}
+	retries := managedRetries(state, now, m.threadTitle, roots)
 	visibleRetries := retries[:0]
 	pending, active, stopped, waiting := 0, 0, 0, 0
 	for _, retry := range retries {
@@ -561,14 +568,16 @@ func (m *managementService) threadTitle(threadID string, candidates []string) st
 	return title
 }
 
-func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleResolver) []ManagedRetry {
+func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleResolver, roots []sessionRoot) []ManagedRetry {
 	retries := make([]ManagedRetry, 0)
 	filePaths := rolloutPathsByThread(state)
 	for threadID, thread := range state.Threads {
+		candidates := threadTitleCandidates(thread, filePaths[threadID])
 		title := ""
 		if resolveTitle != nil {
-			title = resolveTitle(threadID, threadTitleCandidates(thread, filePaths[threadID]))
+			title = resolveTitle(threadID, candidates)
 		}
+		rootID := rolloutRootID(candidates, roots)
 		if thread.Pending != nil {
 			remaining := int64(0)
 			if duration := thread.Pending.DueAt.Sub(now); duration > 0 {
@@ -576,6 +585,7 @@ func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleR
 			}
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
+				RootID:                rootID,
 				Label:                 "任务 " + shortThreadID(threadID),
 				Title:                 title,
 				State:                 "pending",
@@ -602,6 +612,7 @@ func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleR
 			}
 			retries = append(retries, ManagedRetry{
 				ThreadID:         threadID,
+				RootID:           rootID,
 				Label:            "任务 " + shortThreadID(threadID),
 				Title:            title,
 				State:            stateName,
@@ -620,6 +631,7 @@ func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleR
 			}
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
+				RootID:                rootID,
 				Label:                 "任务 " + shortThreadID(threadID),
 				Title:                 title,
 				State:                 stateName,
@@ -638,6 +650,7 @@ func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleR
 			}
 			retries = append(retries, ManagedRetry{
 				ThreadID:              threadID,
+				RootID:                rootID,
 				Label:                 "任务 " + shortThreadID(threadID),
 				Title:                 title,
 				State:                 stateName,
@@ -667,6 +680,28 @@ func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleR
 		return retries[i].ThreadID < retries[j].ThreadID
 	})
 	return retries
+}
+
+// rolloutRootID maps a thread's rollout candidates to the opaque identity of
+// the monitored session root containing one of them. It reuses the catalog's
+// own derivation (conversationRootID over each root's scan directories) so the
+// stamped identity is exactly the one GET /conversations resolves. A path that
+// matches no monitored root contributes nothing — the field stays absent and
+// the client simply renders no deep link.
+func rolloutRootID(candidates []string, roots []sessionRoot) string {
+	for _, path := range candidates {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		for _, root := range roots {
+			for _, directory := range root.scanDirectories() {
+				if catalogPathWithin(directory, path) {
+					return conversationRootID(root)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // rolloutPathsByThread indexes the scan cursors by thread so a retry whose

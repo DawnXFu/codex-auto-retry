@@ -62,6 +62,7 @@ func contractSnapshot() ManagementSnapshot {
 		Retries: []ManagedRetry{
 			{
 				ThreadID:              "019f9d5d-9c82-75b1-b7c0-20a658af0423",
+				RootID:                "r0123456789abcdef",
 				Label:                 "任务 019f9d5d...",
 				Title:                 "Fix flaky auth redirect test",
 				State:                 "pending",

@@ -310,6 +310,104 @@ func TestManagementSnapshotAccountQuotaUnavailableWithoutEvidence(t *testing.T) 
 	}
 }
 
+// The queue↔conversation deep link needs the catalog's (root_id, thread_id)
+// identity, so the snapshot stamps root_id from the monitored root that
+// contains the retry's rollout file — the same identity the catalog mints
+// (conversationRootID). Threads whose rollout paths resolve under no
+// monitored root leave the field absent rather than guessing.
+func TestManagementSnapshotStampsConversationRootID(t *testing.T) {
+	dataDir := t.TempDir()
+	service := newManagementService(dataDir)
+	home := t.TempDir()
+
+	now := time.Date(2026, 10, 15, 4, 0, 0, 0, time.UTC)
+	// Three queue rows: one whose rollout path sits under the monitored root,
+	// one known only through the scanner's file cursors, and one outside
+	// every monitored root. The sessions tree must exist before discovery:
+	// a home without sessions/archived_sessions is not a root at all.
+	matched := "019f9d5d-9c82-75b1-b7c0-20a658af0423"
+	cursorOnly := "019f9d5d-9c82-75b1-b7c0-20a658af0424"
+	unmatched := "019f9d5d-9c82-75b1-b7c0-20a658af0425"
+	sessionsDir := filepath.Join(home, "sessions", "2026", "10", "01")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	matchedPath := writeRollout(t, sessionsDir,
+		"rollout-2026-10-01T08-00-00-"+matched+".jsonl", []string{
+			`{"timestamp":"2026-10-01T08:00:00.000Z","type":"session_meta","payload":{"id":"` + matched + `"}}`,
+		})
+	cursorPath := writeRollout(t, sessionsDir,
+		"rollout-2026-10-01T08-05-00-"+cursorOnly+".jsonl", []string{
+			`{"timestamp":"2026-10-01T08:05:00.000Z","type":"session_meta","payload":{"id":"` + cursorOnly + `"}}`,
+		})
+	outsidePath := writeRollout(t, t.TempDir(),
+		"rollout-2026-10-01T08-10-00-"+unmatched+".jsonl", []string{
+			`{"timestamp":"2026-10-01T08:10:00.000Z","type":"session_meta","payload":{"id":"` + unmatched + `"}}`,
+		})
+
+	configureConversationsRoots(t, dataDir, home)
+	config, err := loadOrCreateConfig(service.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := discoverSessionRoots(config)
+	if len(roots) != 1 {
+		t.Fatalf("fixture produced %d roots, want 1", len(roots))
+	}
+	want := conversationRootID(roots[0])
+
+	state := newRuntimeState()
+	state.Initialized = true
+	state.Files[cursorPath] = FileCursor{LastSeen: now}
+	state.Threads[matched] = ThreadState{Pending: &PendingRetry{
+		Class: classServer, DueAt: now.Add(time.Minute), Attempt: 1, RolloutPath: matchedPath,
+	}}
+	state.Threads[cursorOnly] = ThreadState{Pending: &PendingRetry{
+		Class: classServer, DueAt: now.Add(2*time.Minute), Attempt: 1,
+	}}
+	state.Threads[unmatched] = ThreadState{Pending: &PendingRetry{
+		Class: classServer, DueAt: now.Add(3*time.Minute), Attempt: 1, RolloutPath: outsidePath,
+	}}
+	if err := writeJSONAtomic(service.statePath, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(service.statusPath, StatusSnapshot{
+		Version: appVersion, Running: true, PID: os.Getpid(), LastScanAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := service.snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]ManagedRetry, len(snapshot.Retries))
+	for _, retry := range snapshot.Retries {
+		byID[retry.ThreadID] = retry
+	}
+	if len(byID) != 3 {
+		t.Fatalf("expected 3 retries, got %+v", snapshot.Retries)
+	}
+	if byID[matched].RootID != want {
+		t.Fatalf("monitored rollout got root_id %q, want %q", byID[matched].RootID, want)
+	}
+	if byID[cursorOnly].RootID != want {
+		t.Fatalf("cursor-discovered rollout got root_id %q, want %q", byID[cursorOnly].RootID, want)
+	}
+	if byID[unmatched].RootID != "" {
+		t.Fatalf("unmonitored rollout guessed a root_id %q", byID[unmatched].RootID)
+	}
+	// The wire shape only carries root_id when it resolved: no empty-string
+	// field for the unmatched retry.
+	raw, err := json.Marshal(snapshot.Retries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"root_id":"`+want+`"`) {
+		t.Fatalf("root_id missing from the wire shape: %s", raw)
+	}
+}
+
 func TestManagementRejectsStaleRunningStatus(t *testing.T) {
 	service := newManagementService(t.TempDir())
 	now := time.Now().UTC()
