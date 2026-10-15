@@ -2,7 +2,10 @@ package watchdog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -510,6 +513,203 @@ func TestConversationReaderDeduplicatesDualWrittenMessages(t *testing.T) {
 	}
 	if user.ID == "" {
 		t.Fatal("deduped item lost its id")
+	}
+}
+
+// The in-page dedup window cannot reach across a page boundary: a
+// dual-written pair split by pagination — the response_item copy on the
+// newest page, its event_msg twin the last record of the older page — would
+// render twice. The cursor's fingerprint ring carries the seam-side message
+// fingerprints forward so the twin is still suppressed.
+func TestConversationReaderDedupesPairAcrossBackwardPageBoundary(t *testing.T) {
+	threadID := "019fc0c1-00ee-7e0e-800e-0000000000ee"
+	root, _ := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:00:10.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`,
+		`{"timestamp":"2026-10-03T10:00:20.000Z","type":"event_msg","payload":{"type":"user_message","message":"seam pair"}}`,
+		`{"timestamp":"2026-10-03T10:00:20.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"seam pair"}]}}`,
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"done"}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	// Page 1 (newest-first, limit=2) takes the turn_complete boundary and
+	// the response_item copy; the event_msg twin stays just below the seam.
+	page, err := reader.readItems(context.Background(), rootID, threadID, "", "backward", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("expected a continuation cursor for the split pair")
+	}
+	if got := itemKinds(page.Items); len(got) != 2 || got[0] != "user_message" || got[1] != "boundary:turn_complete" {
+		t.Fatalf("page 1 wrong: %v", got)
+	}
+
+	page2, err := reader.readItems(context.Background(), rootID, threadID, page.NextCursor, "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := itemKinds(page2.Items)
+	want := []string{"boundary:session", "boundary:turn_started"}
+	if len(got) != len(want) {
+		t.Fatalf("cross-page twin not suppressed: %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("item %d = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// Forward polling has the same seam: when the response_item copy of a
+// message is appended only after the tail cursor was minted, the next poll
+// must suppress it instead of replaying the message.
+func TestConversationReaderDedupesForwardAppendAcrossPolls(t *testing.T) {
+	threadID := "019fc0c1-00ff-7f0f-800f-0000000000ff"
+	root, path := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:00:10.000Z","type":"event_msg","payload":{"type":"user_message","message":"poll pair"}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	first, err := reader.readItems(context.Background(), rootID, threadID, "", "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Items) != 2 || first.TailCursor == "" {
+		t.Fatalf("initial forward page wrong: %+v", first)
+	}
+
+	// The second record family lands after the tail cursor was minted, then
+	// a new dual-written message follows.
+	appendRollout(t, path, strings.Join([]string{
+		`{"timestamp":"2026-10-03T10:00:20.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"poll pair"}]}}`,
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"next question"}}`,
+		`{"timestamp":"2026-10-03T10:01:00.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"next question"}]}}`,
+	}, "\n")+"\n")
+
+	second, err := reader.readItems(context.Background(), rootID, threadID, first.TailCursor, "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := itemKinds(second.Items)
+	want := []string{"user_message"}
+	if len(got) != len(want) {
+		t.Fatalf("forward-poll twin replayed: %v", got)
+	}
+	if second.Items[0].Text != "next question" {
+		t.Fatalf("new message lost to dedup: %+v", second.Items[0])
+	}
+}
+
+// Two genuinely identical messages — same text, sent twice, far apart —
+// must both survive even when the newer pair is split across a page seam.
+func TestConversationReaderIdenticalMessagesFarApartBothSurvive(t *testing.T) {
+	threadID := "019fc0c1-01aa-710a-810a-0000000001aa"
+	lines := []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:00:10.000Z","type":"event_msg","payload":{"type":"user_message","message":"ok"}}`,
+		`{"timestamp":"2026-10-03T10:00:10.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}}`,
+	}
+	// Ten emitted boundary records push the second pair well outside the
+	// in-page dedup span.
+	for i := 0; i < 10; i++ {
+		lines = append(lines,
+			fmt.Sprintf(`{"timestamp":"2026-10-03T10:01:%02d.000Z","type":"event_msg","payload":{"type":"warning","message":"w%d"}}`, i, i))
+	}
+	lines = append(lines,
+		`{"timestamp":"2026-10-03T10:02:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"ok"}}`,
+		`{"timestamp":"2026-10-03T10:02:00.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}}`,
+	)
+	root, _ := writeReaderRollout(t, threadID, lines)
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	// The newest page holds only the response_item copy of the second "ok";
+	// its event_msg twin is the last record of the older page.
+	page, err := reader.readItems(context.Background(), rootID, threadID, "", "backward", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := itemKinds(page.Items); len(got) != 1 || got[0] != "user_message" {
+		t.Fatalf("page 1 wrong: %v", got)
+	}
+	page2, err := reader.readItems(context.Background(), rootID, threadID, page.NextCursor, "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Page 2 must show the first "ok" exactly once (its own pair collapsed
+	// in-page) while the seam twin of the second "ok" stays suppressed.
+	userMessages := 0
+	for _, item := range page2.Items {
+		if item.Kind == "user_message" {
+			userMessages++
+			if item.Text != "ok" {
+				t.Fatalf("unexpected user message: %+v", item)
+			}
+		}
+	}
+	if userMessages != 1 {
+		t.Fatalf("expected the first identical message exactly once, got %d user messages in %v", userMessages, itemKinds(page2.Items))
+	}
+}
+
+// Ring fingerprints are consumed on use: when the sibling twin claims the
+// fingerprint, a genuinely repeated identical message inside the ring
+// window still survives.
+func TestConversationReaderRingFingerprintConsumedBySibling(t *testing.T) {
+	threadID := "019fc0c1-01bb-710b-810b-0000000001bb"
+	root, path := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:00:10.000Z","type":"event_msg","payload":{"type":"user_message","message":"dup"}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	first, err := reader.readItems(context.Background(), rootID, threadID, "", "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendRollout(t, path, strings.Join([]string{
+		// The sibling twin of the polled message, then a genuinely repeated
+		// identical message.
+		`{"timestamp":"2026-10-03T10:00:20.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"dup"}]}}`,
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"dup"}}`,
+	}, "\n")+"\n")
+
+	second, err := reader.readItems(context.Background(), rootID, threadID, first.TailCursor, "forward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := itemKinds(second.Items)
+	want := []string{"user_message"}
+	if len(got) != len(want) || second.Items[0].Text != "dup" {
+		t.Fatalf("repeated message inside the ring window must survive: %v", got)
+	}
+}
+
+// The cursor version bumped when the dedup ring was added: a v1 cursor
+// cannot describe ring state and is rejected as invalid so clients
+// re-anchor at the latest page, and a malformed ring invalidates the token
+// like any other structural corruption.
+func TestConversationReaderRejectsLegacyAndMalformedCursors(t *testing.T) {
+	v1 := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":1,"h":"` + strings.Repeat("0", sha256.Size*2) + `","o":0,"s":10,"m":1}`))
+	if _, err := decodeReaderCursor(v1); !errors.Is(err, errConversationCursorInvalid) {
+		t.Fatalf("v1 cursor must be rejected: %v", err)
+	}
+	oversized := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":2,"h":"` + strings.Repeat("0", sha256.Size*2) + `","o":0,"s":10,"m":1,"d":[` +
+			strings.Repeat(`"0123456789abcdef",`, conversationMessageDedupSpan) + `"0123456789abcdef"]}`))
+	if _, err := decodeReaderCursor(oversized); !errors.Is(err, errConversationCursorInvalid) {
+		t.Fatalf("ring beyond the dedup span must be rejected: %v", err)
+	}
+	badFingerprint := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":2,"h":"` + strings.Repeat("0", sha256.Size*2) + `","o":0,"s":10,"m":1,"d":["not-hex"]}`))
+	if _, err := decodeReaderCursor(badFingerprint); !errors.Is(err, errConversationCursorInvalid) {
+		t.Fatalf("non-fingerprint ring entry must be rejected: %v", err)
 	}
 }
 

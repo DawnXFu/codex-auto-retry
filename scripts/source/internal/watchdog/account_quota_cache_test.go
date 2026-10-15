@@ -703,18 +703,66 @@ func TestAccountQuotaViewReachedMarksOnlyEvidencedWindows(t *testing.T) {
 	}
 }
 
-// When a space reports reached but no window reads past the exhaustion
-// threshold, the payload cannot name the binding window: exhausted stays
-// evidenced-only and binding stays unset rather than marking both slots.
-func TestAccountQuotaViewReachedWithoutEvidencedWindowMarksNothing(t *testing.T) {
+// Only rate_limit_reached is a quota-window binding signal. The
+// workspace_*_credits_depleted and *_usage_limit_reached enum variants report
+// workspace spend/credit exhaustion: they must never mark a window binding,
+// even when a window reads past the exhaustion threshold — exhausted itself
+// stays purely percentage-derived.
+func TestAccountQuotaViewWorkspaceReachedVariantsNeverBind(t *testing.T) {
+	observed := time.Now().UTC()
+	for _, variant := range []string{
+		"workspace_owner_credits_depleted",
+		"workspace_member_credits_depleted",
+		"workspace_owner_usage_limit_reached",
+		"workspace_member_usage_limit_reached",
+	} {
+		limits := appAccountRateLimitsReadResult{
+			RateLimitsByLimitID: map[string]appAccountRateLimitSnapshot{
+				quotaCodexLimitID: {
+					LimitID:              ptrTo("codex"),
+					RateLimitReachedType: ptrTo(variant),
+					Primary:              &appAccountRateLimitWindow{UsedPercent: ptrTo(100.0), WindowDurationMins: ptrTo(int64(300))},
+					Secondary:            &appAccountRateLimitWindow{UsedPercent: ptrTo(13.0), WindowDurationMins: ptrTo(int64(10080))},
+				},
+			},
+		}
+		record := &accountQuotaFileRecord{
+			Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
+			FreshUntil: observed.Add(time.Minute), Limits: persistAccountLimits(limits),
+		}
+		view := resolveAccountQuotaView(record, nil, observed)
+		if len(view.Windows) != 2 {
+			t.Fatalf("%s: windows = %+v, want 2", variant, view.Windows)
+		}
+		primary, secondary := view.Windows[0], view.Windows[1]
+		if !primary.Exhausted || primary.Binding {
+			t.Fatalf("%s: exhausted window must not bind under a workspace-limit signal: %+v", variant, primary)
+		}
+		if secondary.Exhausted || secondary.Binding {
+			t.Fatalf("%s: unexhausted window was marked: %+v", variant, secondary)
+		}
+	}
+}
+
+// When a space reports rate_limit_reached but no window reads past the
+// exhaustion threshold, the reached signal still asserts something binds: the
+// fullest window (highest usedPercent) is marked binding rather than leaving
+// every slot blank.
+func TestAccountQuotaViewRateLimitReachedBindsFullestWindow(t *testing.T) {
 	observed := time.Now().UTC()
 	limits := appAccountRateLimitsReadResult{
 		RateLimitsByLimitID: map[string]appAccountRateLimitSnapshot{
 			quotaCodexLimitID: {
 				LimitID:              ptrTo("codex"),
-				RateLimitReachedType: ptrTo("workspace_member_credits_depleted"),
+				RateLimitReachedType: ptrTo("rate_limit_reached"),
 				Primary:              &appAccountRateLimitWindow{UsedPercent: ptrTo(42.0), WindowDurationMins: ptrTo(int64(300))},
 				Secondary:            &appAccountRateLimitWindow{UsedPercent: ptrTo(13.0), WindowDurationMins: ptrTo(int64(10080))},
+			},
+			"premium": {
+				LimitID:              ptrTo("premium"),
+				RateLimitReachedType: ptrTo("rate_limit_reached"),
+				Primary:              &appAccountRateLimitWindow{UsedPercent: ptrTo(20.0)},
+				Secondary:            &appAccountRateLimitWindow{UsedPercent: ptrTo(61.0)},
 			},
 		},
 	}
@@ -723,10 +771,23 @@ func TestAccountQuotaViewReachedWithoutEvidencedWindowMarksNothing(t *testing.T)
 		FreshUntil: observed.Add(time.Minute), Limits: persistAccountLimits(limits),
 	}
 	view := resolveAccountQuotaView(record, nil, observed)
-	for _, window := range view.Windows {
-		if window.Exhausted || window.Binding {
-			t.Fatalf("unidentified reached window was over-marked: %+v", window)
-		}
+	if len(view.Windows) != 4 {
+		t.Fatalf("windows = %+v, want 4", view.Windows)
+	}
+	// Spaces sort by limit key: codex first, premium second.
+	codexPrimary, codexSecondary := view.Windows[0], view.Windows[1]
+	if !codexPrimary.Binding || codexPrimary.Exhausted {
+		t.Fatalf("fullest codex window not marked binding: %+v", codexPrimary)
+	}
+	if codexSecondary.Binding {
+		t.Fatalf("reached fallback marked more than the fullest window: %+v", codexSecondary)
+	}
+	premiumPrimary, premiumSecondary := view.Windows[2], view.Windows[3]
+	if premiumPrimary.Binding {
+		t.Fatalf("non-fullest premium window marked binding: %+v", premiumPrimary)
+	}
+	if !premiumSecondary.Binding || premiumSecondary.Exhausted {
+		t.Fatalf("fullest premium window not marked binding: %+v", premiumSecondary)
 	}
 }
 

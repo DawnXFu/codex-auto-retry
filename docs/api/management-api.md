@@ -160,7 +160,14 @@ Fields a client needs beyond the obvious counters:
   evidence and can never supply reset credits (`status=unavailable`).
   `status=unavailable` + `source=none` means no evidence exists. Absent
   fields stay absent — they are never coerced to zero — and the account
-  identifier is never serialized.
+  identifier is never serialized. `exhausted` derives purely from
+  `used_percent` reaching the exhaustion threshold. `binding` marks the
+  quota-binding window when the backend reports
+  `rateLimitReachedType=rate_limit_reached`: the exhausted window when one
+  exists, otherwise the fullest window (highest `used_percent`), because a
+  reached signal asserts something binds. The workspace
+  `*_credits_depleted` / `*_usage_limit_reached` variants are
+  spend/workspace-limit signals and never set `binding`.
 - `running`/`heartbeat_stale` describe the worker heartbeat; a daemon that
   is down still answers if some process is listening, but `running` is the
   source of truth for protection status.
@@ -199,7 +206,7 @@ identity, and canonical containment under a monitored root.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `cursor` | (empty = newest page) | opaque position token from a previous `next_cursor`/`tail_cursor` |
+| `cursor` | (empty = newest page) | opaque position token from a previous `next_cursor`/`tail_cursor`; bound to the cursor format version — a cursor minted by an older daemon version returns `400 invalid_cursor` and clients re-anchor at the latest page |
 | `direction` | `backward` | `backward` pages persisted history newest-first; `forward` follows appended records incrementally |
 | `limit` | `50` | items per page; clamped to `200`; zero, negative, or non-integer values return `400 {"error": "invalid_limit"}` (same convention as the list endpoint) |
 
