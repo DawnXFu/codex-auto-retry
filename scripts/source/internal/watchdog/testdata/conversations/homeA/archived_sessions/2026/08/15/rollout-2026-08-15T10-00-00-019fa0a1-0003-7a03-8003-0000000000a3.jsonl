@@ -1,0 +1,2 @@
+{"timestamp":"2026-08-15T10:00:00.000Z","type":"session_meta","payload":{"id":"019fa0a1-0003-7a03-8003-0000000000a3","timestamp":"2026-08-15T10:00:00.000Z","cwd":"C:\\repo","originator":"codex_vscode","cli_version":"0.55.0","source":"vscode","title":"Archived cleanup"}}
+{"timestamp":"2026-08-15T10:03:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"cleaned"}]}}
