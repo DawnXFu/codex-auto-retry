@@ -53,6 +53,7 @@ const zh = {
   queue_btn_cancel: "取消",
   queue_btn_restart: "重新开始",
   queue_btn_resume: "恢复",
+  queue_btn_open_conversation: "打开已保存的会话",
   action_failed: "操作失败：{error}",
   action_unavailable: "写操作仅在桌面客户端中可用",
 
@@ -306,6 +307,7 @@ const en: Record<StringKey, string> = {
   queue_btn_cancel: "Cancel",
   queue_btn_restart: "Restart",
   queue_btn_resume: "Resume",
+  queue_btn_open_conversation: "Open saved conversation",
   action_failed: "Action failed: {error}",
   action_unavailable: "Writes are only available in the desktop client",
 

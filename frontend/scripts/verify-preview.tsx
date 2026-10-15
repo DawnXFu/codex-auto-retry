@@ -17,12 +17,30 @@ import {
   buildPreviewConversations,
   type PreviewQuotaVariant,
 } from "../src/fixture";
+import { useConversationIndex } from "../src/hooks";
 import { interpolate, strings, type Lang } from "../src/strings";
 import type { ManagementSnapshot } from "../src/types";
 
 function fail(msg: string): never {
   console.error(msg);
   process.exit(1);
+}
+
+// C-06 deep link: the dashboard takes a thread_id → conversation index. The
+// hook seeds it synchronously from the fixture in preview mode, so SSR shows
+// the linked-title markup for the one queue thread that exists in the
+// catalog (thread ...0006).
+function DashboardWithIndex(props: { snapshot: ManagementSnapshot; now: Date }) {
+  const convIndex = useConversationIndex({ mode: "preview" }, props.snapshot.retries);
+  return (
+    <Dashboard
+      snapshot={props.snapshot}
+      now={props.now}
+      onRefresh={() => {}}
+      convIndex={convIndex}
+      onOpenConversation={() => {}}
+    />
+  );
 }
 
 // dict parity: zh and en must cover identical key sets
@@ -76,7 +94,7 @@ for (const lang of ["zh", "en"] as Lang[]) {
     createElement(
       LangProvider,
       { initial: lang },
-      createElement(Dashboard, { snapshot: baseSnap, now, onRefresh: () => {} }),
+      createElement(DashboardWithIndex, { snapshot: baseSnap, now }),
     ),
   );
   const missingTags = required.filter((s) => !dash.includes(dict[`queue_tag_${s}` as keyof typeof dict]));
@@ -99,6 +117,23 @@ for (const lang of ["zh", "en"] as Lang[]) {
     if (!dash.includes(needle)) fail(`${lang}: dashboard output missing: ${needle}`);
   }
   if (/relimit/i.test(dash)) fail(`${lang}: dashboard renders a relimit budget`);
+
+  // C-06 deep link: exactly one queue thread exists in the preview catalog
+  // (thread ...0006). Its title renders as a button with the localized
+  // open-conversation hint; the other titles stay plain spans.
+  const tlinks = dash.match(/class="t tlink"/g) ?? [];
+  if (tlinks.length !== 1) {
+    fail(`${lang}: expected exactly one linked queue title, found ${tlinks.length}`);
+  }
+  const plainTitles = dash.match(/class="t"/g) ?? [];
+  if (plainTitles.length !== snap.retries.length - 1) {
+    fail(
+      `${lang}: expected ${snap.retries.length - 1} plain queue titles, found ${plainTitles.length}`,
+    );
+  }
+  if (!dash.includes(`title="${dict.queue_btn_open_conversation}"`)) {
+    fail(`${lang}: linked queue title is missing its open-conversation hint`);
+  }
 
   // Every account_quota state must render distinctly: stale source label,
   // rollout fallback + duration-unknown slot label + unavailable credits,
@@ -148,6 +183,11 @@ for (const lang of ["zh", "en"] as Lang[]) {
   );
   for (const needle of [dict.quota_window, interpolate(dict.quota_left, { pct: quotaLeft })]) {
     if (!legacyDash.includes(needle)) fail(`${lang}: dashboard(legacy) output missing: ${needle}`);
+  }
+  // C-06: without a conversation index every title renders as before — no
+  // linked-title markup may appear.
+  if (/class="t tlink"/.test(legacyDash)) {
+    fail(`${lang}: dashboard rendered a linked title without a conversation match`);
   }
 
   for (const snapshot of [snap, null] as const) {
@@ -290,7 +330,7 @@ const enDash = renderToString(
   createElement(
     LangProvider,
     { initial: "en" },
-    createElement(Dashboard, { snapshot: baseSnap, now, onRefresh: () => {} }),
+    createElement(DashboardWithIndex, { snapshot: baseSnap, now }),
   ),
 );
 const enSettings = renderToString(
@@ -354,6 +394,7 @@ for (const [name, html] of [
     .replace(/title="[^"]*"/g, "") // fixture titles are zh data, not UI copy
     .replace(/value="[^"]*"/g, "") // retry_prompt comes from daemon config (data)
     .replace(/<span class="t">[^<]*<\/span>/g, "")
+    .replace(/<button[^>]*class="t tlink"[^>]*>[^<]*<\/button>/g, "") // linked titles are fixture data too
     .replaceAll(`>${strings.zh.settings_lang_zh}<`, "><") // language name stays native
     .replaceAll(`>${strings.zh.settings_lang}<`, "><"); // label is bilingual by design
   if (/\p{Script=Han}/u.test(scrubbed)) {

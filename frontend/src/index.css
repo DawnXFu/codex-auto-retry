@@ -524,6 +524,27 @@ h2 {
   white-space: nowrap;
   min-width: 0;
 }
+/* C-06: a title that resolves to a persisted conversation is a button.
+ * Same metrics as the plain .t span; the accent color + hover underline
+ * carry the link affordance. */
+.qtitle .tlink {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--blue);
+  cursor: pointer;
+  text-align: left;
+}
+.qtitle .tlink:hover {
+  text-decoration: underline;
+}
+.qtitle .tlink:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
 .qtag {
   flex-shrink: 0;
   font-size: 10px;
