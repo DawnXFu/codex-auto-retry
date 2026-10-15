@@ -2,9 +2,11 @@ package watchdog
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +63,7 @@ func catalogIDs(items []conversationSummary) [][2]string {
 func TestConversationCatalogListsOrdinaryConversationsByPersistedActivity(t *testing.T) {
 	homeA, homeB := catalogFixtureRoots(t)
 	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
-	page, err := catalog.list(context.Background(), conversationFilterOrdinary, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterOrdinary, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,11 +98,11 @@ func TestConversationRootIDIsOpaqueAndStableAcrossOrdering(t *testing.T) {
 	homeA, homeB := catalogFixtureRoots(t)
 	first := newConversationCatalog([]sessionRoot{homeA, homeB})
 	second := newConversationCatalog([]sessionRoot{homeB, homeA})
-	pageA, err := first.list(context.Background(), conversationFilterAll, "", "", 0)
+	pageA, err := first.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pageB, err := second.list(context.Background(), conversationFilterAll, "", "", 0)
+	pageB, err := second.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +136,7 @@ func TestConversationCatalogFilters(t *testing.T) {
 	rootA := conversationRootID(homeA)
 	rootB := conversationRootID(homeB)
 
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +158,7 @@ func TestConversationCatalogFilters(t *testing.T) {
 		}
 	}
 
-	page, err = catalog.list(context.Background(), conversationFilterSubagent, "", "", 0)
+	page, err = catalog.list(context.Background(), conversationFilterSubagent, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +172,7 @@ func TestConversationCatalogFilters(t *testing.T) {
 		}
 	}
 
-	page, err = catalog.list(context.Background(), conversationFilterArchived, "", "", 0)
+	page, err = catalog.list(context.Background(), conversationFilterArchived, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +191,7 @@ func TestConversationCatalogRejectsMismatchedAndMetaLessManifests(t *testing.T) 
 	// must stay out of every view, including "all".
 	homeA, homeB := catalogFixtureRoots(t)
 	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +227,7 @@ func TestConversationCatalogPaginationIsStableAndOpaque(t *testing.T) {
 	homeA, homeB := catalogFixtureRoots(t)
 	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
 
-	full, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	full, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +235,7 @@ func TestConversationCatalogPaginationIsStableAndOpaque(t *testing.T) {
 	cursor := ""
 	pages := 0
 	for {
-		page, err := catalog.list(context.Background(), conversationFilterAll, "", cursor, 2)
+		page, err := catalog.list(context.Background(), conversationFilterAll, "", "", cursor, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -270,17 +272,17 @@ func TestConversationCatalogPaginationIsStableAndOpaque(t *testing.T) {
 func TestConversationCatalogCursorRejectsReplayAcrossFilters(t *testing.T) {
 	homeA, homeB := catalogFixtureRoots(t)
 	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 2)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if page.NextCursor == "" {
 		t.Fatal("expected a next cursor")
 	}
-	if _, err := catalog.list(context.Background(), conversationFilterSubagent, "", page.NextCursor, 2); err == nil {
+	if _, err := catalog.list(context.Background(), conversationFilterSubagent, "", "", page.NextCursor, 2); err == nil {
 		t.Fatal("cursor from filter=all was accepted under filter=subagent")
 	}
-	if _, err := catalog.list(context.Background(), conversationFilterAll, "", "not-a-cursor", 2); err == nil {
+	if _, err := catalog.list(context.Background(), conversationFilterAll, "", "", "not-a-cursor", 2); err == nil {
 		t.Fatal("garbage cursor accepted")
 	}
 	// A well-formed envelope with forged fields is still rejected.
@@ -290,7 +292,7 @@ func TestConversationCatalogCursorRejectsReplayAcrossFilters(t *testing.T) {
 		Root:   "r0000",
 		Thread: catalogThreadA1,
 	})
-	if _, err := catalog.list(context.Background(), conversationFilterAll, "", forged, 2); err == nil {
+	if _, err := catalog.list(context.Background(), conversationFilterAll, "", "", forged, 2); err == nil {
 		t.Fatal("cursor with invalid timestamp accepted")
 	}
 }
@@ -364,7 +366,7 @@ func TestConversationCatalogResolvePrefersLiveOverArchivedCopy(t *testing.T) {
 	root := sessionRoot{CodexHome: home, Sessions: filepath.Join(home, "sessions"), ArchivedSessions: filepath.Join(home, "archived_sessions")}
 	catalog := newConversationCatalog([]sessionRoot{root})
 
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +418,7 @@ func TestConversationCatalogSortIgnoresFileMtime(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := sessionRoot{CodexHome: home, Sessions: filepath.Join(home, "sessions")}
-	page, err := newConversationCatalog([]sessionRoot{root}).list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := newConversationCatalog([]sessionRoot{root}).list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +444,7 @@ func TestConversationCatalogIgnoresPartialFinalLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := sessionRoot{CodexHome: home, Sessions: filepath.Join(home, "sessions")}
-	page, err := newConversationCatalog([]sessionRoot{root}).list(context.Background(), conversationFilterOrdinary, "", "", 0)
+	page, err := newConversationCatalog([]sessionRoot{root}).list(context.Background(), conversationFilterOrdinary, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +458,7 @@ func TestConversationCatalogScanBoundMarksPartial(t *testing.T) {
 	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
 	defer func(limit int) { maxCatalogScanFiles = limit }(maxCatalogScanFiles)
 	maxCatalogScanFiles = 2
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +475,7 @@ func TestConversationCatalogListHonorsContextCancel(t *testing.T) {
 	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := catalog.list(ctx, conversationFilterAll, "", "", 0); err == nil {
+	if _, err := catalog.list(ctx, conversationFilterAll, "", "", "", 0); err == nil {
 		t.Fatal("canceled context did not abort the list")
 	}
 }
@@ -497,7 +499,7 @@ func TestConversationCatalogRejectsSymlinkEscape(t *testing.T) {
 	}
 	root := sessionRoot{CodexHome: home, Sessions: sessions}
 	catalog := newConversationCatalog([]sessionRoot{root})
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +517,7 @@ func TestConversationCatalogRejectsSymlinkEscape(t *testing.T) {
 func TestConversationCatalogTitleSkipsAgentsInjection(t *testing.T) {
 	rootD := catalogFixtureRootD(t)
 	catalog := newConversationCatalog([]sessionRoot{rootD})
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +539,7 @@ func TestConversationCatalogTitleSkipsAgentsInjection(t *testing.T) {
 func TestConversationCatalogTitlePrefersRenameRecord(t *testing.T) {
 	rootD := catalogFixtureRootD(t)
 	catalog := newConversationCatalog([]sessionRoot{rootD})
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,12 +580,225 @@ func TestConversationCatalogTitleFindsLateRename(t *testing.T) {
 	)
 	writeRollout(t, sessions, "rollout-2026-10-05T08-00-00-"+threadID+".jsonl", lines)
 	root := sessionRoot{CodexHome: home, Sessions: filepath.Join(home, "sessions")}
-	page, err := newConversationCatalog([]sessionRoot{root}).list(context.Background(), conversationFilterAll, "", "", 0)
+	page, err := newConversationCatalog([]sessionRoot{root}).list(context.Background(), conversationFilterAll, "", "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page.Items) != 1 || page.Items[0].Title != "Quota triage renamed" {
 		t.Fatalf("late rename not picked up: %+v", page.Items)
+	}
+}
+
+// The session_meta payload cwd rides on each summary so clients can show
+// which project directory a conversation ran in; a record without one keeps
+// the field empty rather than guessing.
+func TestConversationCatalogCapturesWorkingDirectory(t *testing.T) {
+	homeA, homeB := catalogFixtureRoots(t)
+	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		want := `C:\repo`
+		if item.ThreadID == catalogThreadB1 {
+			want = `C:\repo2`
+		}
+		if item.Cwd != want {
+			t.Fatalf("item %s cwd = %q, want %q", item.ThreadID, item.Cwd, want)
+		}
+	}
+
+	// A session_meta without a cwd leaves the field empty — never fabricated.
+	home := t.TempDir()
+	sessions := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	threadID := "019fe0e0-0002-7e02-8002-0000000000e2"
+	writeRollout(t, sessions, "rollout-2026-10-06T08-00-00-"+threadID+".jsonl", []string{
+		`{"timestamp":"2026-10-06T08:00:00.000Z","type":"session_meta","payload":{"id":"` + threadID + `","source":"cli"}}`,
+	})
+	bare := sessionRoot{CodexHome: home, Sessions: sessions}
+	barePage, err := newConversationCatalog([]sessionRoot{bare}).list(context.Background(), conversationFilterAll, "", "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(barePage.Items) != 1 || barePage.Items[0].Cwd != "" {
+		t.Fatalf("meta without cwd produced %+v", barePage.Items)
+	}
+}
+
+// dir= narrows the listing to conversations recorded in that working
+// directory. It is a filter, not an identity: an unmatched value returns an
+// empty page, never an error. Matching is an exact compare after
+// clean+case-fold normalization (case-insensitive only where the platform
+// filesystem is).
+func TestConversationCatalogFiltersByDirectory(t *testing.T) {
+	homeA, homeB := catalogFixtureRoots(t)
+	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
+
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", `C:\repo`, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 5 {
+		t.Fatalf("dir-scoped items = %+v, want the 5 C:\\repo conversations", page.Items)
+	}
+	for _, item := range page.Items {
+		if item.Cwd != `C:\repo` {
+			t.Fatalf("dir filter leaked item with cwd %q", item.Cwd)
+		}
+	}
+
+	page, err = catalog.list(context.Background(), conversationFilterAll, "", `C:\repo2`, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ThreadID != catalogThreadB1 {
+		t.Fatalf("dir C:\\repo2 items = %+v, want b1 only", page.Items)
+	}
+
+	page, err = catalog.list(context.Background(), conversationFilterAll, "", `D:\no-such-project`, "", 0)
+	if err != nil {
+		t.Fatalf("unknown dir is a filter miss, not an error: %v", err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("unknown dir matched %+v", page.Items)
+	}
+
+	// Case folding follows the platform filesystem, matching
+	// catalogPathWithin's convention.
+	folded, err := catalog.list(context.Background(), conversationFilterAll, "", `c:\REPO`, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched := len(folded.Items) == 5; matched != conversationPathCaseInsensitive {
+		t.Fatalf("case-folded dir match = %d items, want match=%v on this platform",
+			len(folded.Items), conversationPathCaseInsensitive)
+	}
+}
+
+// Every page reports the distinct working directories present across the
+// filtered scan scope — computed before pagination and regardless of the
+// dir selection itself, so a client's dropdown stays complete and stable.
+// Labels are the dir basename, parent-prefixed on collision like root labels.
+func TestConversationCatalogListReportsDirs(t *testing.T) {
+	homeA, homeB := catalogFixtureRoots(t)
+	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
+
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("expected a next cursor for limit=1")
+	}
+	if len(page.Dirs) != 2 {
+		t.Fatalf("dirs = %+v, want the two recorded cwds", page.Dirs)
+	}
+	labels := map[string]string{}
+	for _, ref := range page.Dirs {
+		if ref.Dir == "" || ref.Label == "" {
+			t.Fatalf("dir ref incomplete: %+v", ref)
+		}
+		labels[ref.Dir] = ref.Label
+	}
+	if labels[`C:\repo`] != "repo" || labels[`C:\repo2`] != "repo2" {
+		t.Fatalf("dir labels = %+v, want dir basenames", page.Dirs)
+	}
+
+	// The selected dir must not shrink the dropdown scope, and a later page
+	// reports the same set.
+	scoped, err := catalog.list(context.Background(), conversationFilterAll, "", `C:\repo2`, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped.Dirs) != 2 {
+		t.Fatalf("dir-scoped dirs = %+v, want the full scope set", scoped.Dirs)
+	}
+	next, err := catalog.list(context.Background(), conversationFilterAll, "", "", page.NextCursor, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Dirs) != len(page.Dirs) {
+		t.Fatalf("page 2 dirs = %+v, want stable %+v", next.Dirs, page.Dirs)
+	}
+	for i := range page.Dirs {
+		if next.Dirs[i] != page.Dirs[i] {
+			t.Fatalf("page 2 dirs diverged: %+v vs %+v", next.Dirs, page.Dirs)
+		}
+	}
+}
+
+// Basename collisions between recorded working directories disambiguate with
+// the parent segment, the same convention as monitored-root labels.
+func TestConversationDirLabelsDisambiguateDuplicates(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	sessions := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	threads := []struct{ id, cwd string }{
+		{"019fe0e0-0003-7e03-8003-0000000000e3", filepath.Join(base, "one", "proj")},
+		{"019fe0e0-0004-7e04-8004-0000000000e4", filepath.Join(base, "two", "proj")},
+		{"019fe0e0-0005-7e05-8005-0000000000e5", filepath.Join(base, "three", "solo")},
+	}
+	for i, tc := range threads {
+		writeRollout(t, sessions, fmt.Sprintf("rollout-2026-10-06T08-0%d-00-%s.jsonl", i, tc.id), []string{
+			`{"timestamp":"2026-10-06T08:00:00.000Z","type":"session_meta","payload":{"id":"` + tc.id +
+				`","source":"cli","cwd":` + strconv.Quote(tc.cwd) + `}}`,
+		})
+	}
+	root := sessionRoot{CodexHome: home, Sessions: sessions}
+	page, err := newConversationCatalog([]sessionRoot{root}).list(context.Background(), conversationFilterAll, "", "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{}
+	for _, ref := range page.Dirs {
+		labels[ref.Dir] = ref.Label
+	}
+	sep := "/"
+	want := map[string]string{
+		threads[0].cwd: "one" + sep + "proj",
+		threads[1].cwd: "two" + sep + "proj",
+		threads[2].cwd: "solo",
+	}
+	for dir, label := range want {
+		if labels[dir] != label {
+			t.Fatalf("dir %q label = %q, want %q (all %+v)", dir, labels[dir], label, page.Dirs)
+		}
+	}
+}
+
+// A cursor is bound to the dir scope that issued it, exactly like the filter
+// and root bindings: replay under a different dir is a client error.
+func TestConversationCatalogCursorBindsToDir(t *testing.T) {
+	homeA, homeB := catalogFixtureRoots(t)
+	catalog := newConversationCatalog([]sessionRoot{homeA, homeB})
+
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", `C:\repo`, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("expected a next cursor")
+	}
+	if _, err := catalog.list(context.Background(), conversationFilterAll, "", `C:\repo2`, page.NextCursor, 1); err == nil {
+		t.Fatal("C:\\repo cursor accepted under C:\\repo2")
+	}
+	if _, err := catalog.list(context.Background(), conversationFilterAll, "", "", page.NextCursor, 1); err == nil {
+		t.Fatal("dir-scoped cursor accepted without the dir")
+	}
+	// Same dir replay continues fine.
+	next, err := catalog.list(context.Background(), conversationFilterAll, "", `C:\repo`, page.NextCursor, 10)
+	if err != nil {
+		t.Fatalf("same-dir cursor replay failed: %v", err)
+	}
+	if len(next.Items) != 4 {
+		t.Fatalf("continuation items = %+v, want the remaining 4", next.Items)
 	}
 }
 
@@ -595,7 +810,7 @@ func TestConversationCatalogFiltersByRoot(t *testing.T) {
 	rootA := conversationRootID(homeA)
 	rootB := conversationRootID(homeB)
 
-	page, err := catalog.list(context.Background(), conversationFilterAll, rootA, "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterAll, rootA, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +823,7 @@ func TestConversationCatalogFiltersByRoot(t *testing.T) {
 		}
 	}
 
-	page, err = catalog.list(context.Background(), conversationFilterAll, rootB, "", 0)
+	page, err = catalog.list(context.Background(), conversationFilterAll, rootB, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,10 +836,10 @@ func TestConversationCatalogFiltersByRoot(t *testing.T) {
 		}
 	}
 
-	if _, err := catalog.list(context.Background(), conversationFilterAll, "rdeadbeefdeadbeef", "", 0); err == nil {
+	if _, err := catalog.list(context.Background(), conversationFilterAll, "rdeadbeefdeadbeef", "", "", 0); err == nil {
 		t.Fatal("unknown root id listed instead of rejected")
 	}
-	if _, err := catalog.list(context.Background(), conversationFilterAll, "../../etc", "", 0); err == nil {
+	if _, err := catalog.list(context.Background(), conversationFilterAll, "../../etc", "", "", 0); err == nil {
 		t.Fatal("path-shaped root id listed instead of rejected")
 	}
 }
@@ -638,7 +853,7 @@ func TestConversationCatalogListReportsRoots(t *testing.T) {
 	rootA := conversationRootID(homeA)
 	rootB := conversationRootID(homeB)
 
-	page, err := catalog.list(context.Background(), conversationFilterArchived, rootA, "", 0)
+	page, err := catalog.list(context.Background(), conversationFilterArchived, rootA, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +911,7 @@ func TestConversationCatalogCursorBindsToRoot(t *testing.T) {
 	rootA := conversationRootID(homeA)
 	rootB := conversationRootID(homeB)
 
-	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", 2)
+	page, err := catalog.list(context.Background(), conversationFilterAll, "", "", "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,22 +919,22 @@ func TestConversationCatalogCursorBindsToRoot(t *testing.T) {
 		t.Fatal("expected a next cursor")
 	}
 	// Unscoped cursor replayed under a root scope → reject.
-	if _, err := catalog.list(context.Background(), conversationFilterAll, rootA, page.NextCursor, 2); err == nil {
+	if _, err := catalog.list(context.Background(), conversationFilterAll, rootA, "", page.NextCursor, 2); err == nil {
 		t.Fatal("unscoped cursor accepted under a root scope")
 	}
 	// Root-scoped cursor replayed under a different root → reject.
-	scoped, err := catalog.list(context.Background(), conversationFilterAll, rootA, "", 1)
+	scoped, err := catalog.list(context.Background(), conversationFilterAll, rootA, "", "", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if scoped.NextCursor == "" {
 		t.Fatal("expected a scoped next cursor")
 	}
-	if _, err := catalog.list(context.Background(), conversationFilterAll, rootB, scoped.NextCursor, 1); err == nil {
+	if _, err := catalog.list(context.Background(), conversationFilterAll, rootB, "", scoped.NextCursor, 1); err == nil {
 		t.Fatal("rootA cursor accepted under rootB")
 	}
 	// Same root replay is still fine and continues the page.
-	next, err := catalog.list(context.Background(), conversationFilterAll, rootA, scoped.NextCursor, 10)
+	next, err := catalog.list(context.Background(), conversationFilterAll, rootA, "", scoped.NextCursor, 10)
 	if err != nil {
 		t.Fatalf("same-root cursor replay failed: %v", err)
 	}

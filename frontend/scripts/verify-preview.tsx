@@ -74,6 +74,37 @@ if ((rootScoped.roots?.length ?? 0) !== previewConvs.roots!.length) {
   fail("preview fixture roots list changed under root scoping");
 }
 
+// Directory scoping: conversations carry the recorded working directory
+// (session_meta payload cwd); the page reports the scope's distinct dirs
+// (dir + label) — stable while a dir is selected so the dropdown never
+// collapses to the current selection.
+const previewDirs = previewConvs.dirs ?? [];
+if (previewDirs.length < 2) {
+  fail("preview fixture reports fewer than two working directories — the directory filter cannot demo");
+}
+for (const ref of previewDirs) {
+  if (!ref.dir || !ref.label) fail(`preview fixture dir ref incomplete: ${JSON.stringify(ref)}`);
+}
+const allConvs = buildPreviewConversations("all");
+const previewDir = previewDirs.find(
+  (d) => buildPreviewConversations("all", { dir: d.dir }).items.length < allConvs.items.length,
+);
+if (!previewDir) fail("no preview fixture dir narrows the conversation list");
+const dirScoped = buildPreviewConversations("all", { dir: previewDir.dir });
+if (dirScoped.items.length === 0) {
+  fail("preview fixture dir scoping returned no items");
+}
+if (dirScoped.items.some((c) => c.cwd !== previewDir.dir)) {
+  fail("preview fixture dir scoping leaked items from another directory");
+}
+if ((dirScoped.dirs?.length ?? 0) !== previewDirs.length) {
+  fail("preview fixture dirs list changed under dir scoping");
+}
+// Every item carries the recorded cwd so rows can show the project label.
+if (allConvs.items.some((c) => !c.cwd)) {
+  fail("preview fixture has conversations without a cwd");
+}
+
 // The data source is the single preview/live/none seam: pages consume it
 // instead of branching on conn.mode or importing the fixture directly. The
 // fixture adapter also exposes the synchronous seeds SSR relies on. Fetch
@@ -106,6 +137,17 @@ if ((rootScoped.roots?.length ?? 0) !== previewConvs.roots!.length) {
         fail("fixture source leaked items outside the requested root");
       }
     });
+  void previewSource
+    .fetchConversations("all", { dir: previewDir.dir })
+    .then((page) => {
+      if (page.items.some((c) => c.cwd !== previewDir.dir)) {
+        fail("fixture source leaked items outside the requested dir");
+      }
+    });
+  const dirSeeded = previewSource.seedConversations?.("ordinary", undefined, previewDir.dir);
+  if (!dirSeeded || dirSeeded.items.some((c) => c.cwd !== previewDir.dir)) {
+    fail("fixture source dir seed returned items outside the requested dir");
+  }
   void previewSource
     .fetchConversationItems(previewThread.root_id, previewThread.thread_id, {
       direction: "backward",
@@ -345,7 +387,12 @@ for (const lang of ["zh", "en"] as Lang[]) {
     dict.conv_root_all,
     `aria-label="${dict.conv_root_filter}"`,
     "conv-root-select",
+    dict.conv_dir_all,
+    `aria-label="${dict.conv_dir_filter}"`,
+    "conv-dir-select",
+    "conv-cwd",
     previewRoot.label,
+    previewDir.label,
     "conv-item",
     "conv-list",
     dict.conv_last_active.split("{ago}")[0].trim(),

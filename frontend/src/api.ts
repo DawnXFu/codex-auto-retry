@@ -142,11 +142,14 @@ export interface ConversationItemsOpts {
 
 export interface ConversationListOpts {
   /** opaque position token from a previous page's next_cursor — bound to the
-   * filter AND root scope that issued it, so callers must pass both back */
+   * filter AND root/dir scopes that issued it, so callers must pass all
+   * back */
   cursor?: string;
   limit?: number;
   /** monitored-root identity from the page's roots[]; absent = all roots */
   rootId?: string;
+  /** recorded working directory from the page's dirs[]; absent = all dirs */
+  dir?: string;
 }
 
 export interface DataSource {
@@ -166,7 +169,11 @@ export interface DataSource {
     opts?: ConversationItemsOpts,
   ): Promise<ConversationItemsPage>;
   /** Synchronous first-paint seeds — present only on the fixture adapter. */
-  seedConversations?(filter?: ConversationListFilter, rootId?: string): ConversationListPage;
+  seedConversations?(
+    filter?: ConversationListFilter,
+    rootId?: string,
+    dir?: string,
+  ): ConversationListPage;
   seedConversationItems?(
     rootId: string,
     threadId: string,
@@ -203,8 +210,8 @@ const fixtureSource: DataSource = {
       ? Promise.resolve(page)
       : Promise.reject(new ApiError(404, "conversation_not_found"));
   },
-  seedConversations: (filter = "ordinary", rootId) =>
-    buildPreviewConversations(filter, { rootId }),
+  seedConversations: (filter = "ordinary", rootId, dir) =>
+    buildPreviewConversations(filter, { rootId, dir }),
   seedConversationItems: (rootId, threadId, opts = {}) =>
     buildPreviewConversationItems(rootId, threadId, opts),
 };
@@ -224,6 +231,7 @@ function liveSource(conn: Extract<Connection, { mode: "live" }>): DataSource {
       const q = new URLSearchParams();
       if (filter !== "ordinary") q.set("filter", filter);
       if (opts.rootId) q.set("root", opts.rootId);
+      if (opts.dir) q.set("dir", opts.dir);
       if (opts.cursor) q.set("cursor", opts.cursor);
       q.set("limit", String(opts.limit ?? 50));
       return fetchAPI<ConversationListPage>(conn, `/conversations?${q.toString()}`);

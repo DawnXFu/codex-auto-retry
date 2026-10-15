@@ -88,7 +88,9 @@ func parseConversationFilter(raw string) (conversationFilter, error) {
 }
 
 // conversationSummary is one manifest entry handed to the API layer. It never
-// carries a filesystem path; identity is (root_id, thread_id) only. It is an
+// carries a filesystem path; identity is (root_id, thread_id) only. Cwd is
+// the working directory recorded in the session_meta payload — session
+// metadata the catalog already reads, not a resolved catalog path. It is an
 // internal handoff type, not a wire shape — the API maps it onto
 // conversationsListItem (api_conversations.go) for serialization.
 type conversationSummary struct {
@@ -99,6 +101,7 @@ type conversationSummary struct {
 	Title      string
 	StartedAt  string
 	LastActive string
+	Cwd        string
 }
 
 // conversationRootRef is the client-facing identity of one monitored
@@ -111,15 +114,29 @@ type conversationRootRef struct {
 	Label  string `json:"label"`
 }
 
+// conversationDirRef is the client-facing identity of one recorded working
+// directory: the cwd value itself (which clients pass back as the dir
+// parameter) plus a compact display label derived from it — the basename,
+// extended with the parent directory name (joined by "/") only when two dirs
+// share a basename.
+type conversationDirRef struct {
+	Dir   string `json:"dir"`
+	Label string `json:"label"`
+}
+
 // conversationListPage is one page of catalog output. NextCursor is opaque;
 // callers must treat it as an unforgeable position token. Partial reports that
 // scan bounds stopped the enumeration early. Roots carries every monitored
 // root — regardless of filter or root scoping — so a client's filter list
-// stays stable. Like conversationSummary this is an internal handoff type;
+// stays stable. Dirs carries every distinct working directory in the
+// filtered scan scope (before pagination and ignoring the dir selection
+// itself) so a client's directory dropdown stays complete and stable while
+// paging. Like conversationSummary this is an internal handoff type;
 // conversationsListResponse is the wire shape.
 type conversationListPage struct {
 	Items      []conversationSummary
 	Roots      []conversationRootRef
+	Dirs       []conversationDirRef
 	NextCursor string
 	Partial    bool
 }
@@ -170,6 +187,7 @@ type conversationManifest struct {
 	kind          string
 	title         string
 	explicitTitle string
+	cwd           string
 	startedAt     time.Time
 	lastActive    time.Time
 }
@@ -229,8 +247,93 @@ func (c *conversationCatalog) rootLabels() []conversationRootRef {
 	return refs
 }
 
-func (c *conversationCatalog) list(ctx context.Context, filter conversationFilter, rootID, cursor string, limit int) (conversationListPage, error) {
+// conversationDirKey normalizes a working directory for equality: clean the
+// separators and fold case only where the platform filesystem does — the
+// same convention as catalogPathWithin.
+func conversationDirKey(dir string) string {
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if conversationPathCaseInsensitive {
+		dir = strings.ToLower(dir)
+	}
+	return dir
+}
+
+// conversationPathBase/ParentBase split recorded cwds on both separator
+// styles: a rollout written on another platform can carry foreign separators
+// and the label should still read as its last path segment.
+func conversationPathBase(p string) string {
+	p = strings.TrimRight(strings.TrimSpace(p), `/\`)
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		p = p[i+1:]
+	}
+	return p
+}
+
+func conversationPathParentBase(p string) string {
+	p = strings.TrimRight(strings.TrimSpace(p), `/\`)
+	i := strings.LastIndexAny(p, `/\`)
+	if i < 0 {
+		return ""
+	}
+	return conversationPathBase(p[:i])
+}
+
+// dirLabels returns the client-facing ref of every distinct working
+// directory among manifests — deduplicated on the normalized dir key,
+// basename-labeled, parent-disambiguated on collision (same convention as
+// rootLabels). Output is sorted by label so the dropdown order is stable
+// between requests.
+func conversationDirLabels(cwds []string) []conversationDirRef {
+	type entry struct {
+		dir  string
+		base string
+	}
+	seen := make(map[string]bool, len(cwds))
+	entries := make([]entry, 0, len(cwds))
+	shared := make(map[string]int, len(cwds))
+	for _, cwd := range cwds {
+		cwd = strings.TrimSpace(cwd)
+		if cwd == "" {
+			continue
+		}
+		key := conversationDirKey(cwd)
+		if key == "" || key == "." || seen[key] {
+			continue
+		}
+		seen[key] = true
+		base := conversationPathBase(cwd)
+		if base == "" {
+			base = cwd
+		}
+		shared[strings.ToLower(base)]++
+		entries = append(entries, entry{dir: cwd, base: base})
+	}
+	refs := make([]conversationDirRef, 0, len(entries))
+	for _, e := range entries {
+		label := e.base
+		if shared[strings.ToLower(label)] > 1 {
+			if parent := conversationPathParentBase(e.dir); parent != "" && parent != label {
+				label = parent + "/" + label
+			}
+		}
+		refs = append(refs, conversationDirRef{Dir: e.dir, Label: label})
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		li, lj := strings.ToLower(refs[i].Label), strings.ToLower(refs[j].Label)
+		if li != lj {
+			return li < lj
+		}
+		return conversationDirKey(refs[i].Dir) < conversationDirKey(refs[j].Dir)
+	})
+	return refs
+}
+
+func (c *conversationCatalog) list(ctx context.Context, filter conversationFilter, rootID, dir, cursor string, limit int) (conversationListPage, error) {
 	rootID = strings.TrimSpace(rootID)
+	dirKey := ""
+	if strings.TrimSpace(dir) != "" {
+		dirKey = conversationDirKey(dir)
+	}
 	after, err := decodeConversationCursor(cursor)
 	if err != nil {
 		return conversationListPage{}, err
@@ -245,7 +348,7 @@ func (c *conversationCatalog) list(ctx context.Context, filter conversationFilte
 			return conversationListPage{}, fmt.Errorf("%w", errConversationRootUnknown)
 		}
 	}
-	if after != nil && (after.Filter != string(filter) || after.Scope != rootID) {
+	if after != nil && (after.Filter != string(filter) || after.Scope != rootID || after.Dir != dirKey) {
 		return conversationListPage{}, fmt.Errorf("%w: filter changed between pages", errConversationCursorInvalid)
 	}
 	if limit <= 0 {
@@ -271,6 +374,7 @@ func (c *conversationCatalog) list(ctx context.Context, filter conversationFilte
 	})
 
 	items := make([]conversationSummary, 0, limit)
+	var cwds []string
 	var last conversationManifest
 	remaining := 0
 	for _, manifest := range merged {
@@ -278,6 +382,15 @@ func (c *conversationCatalog) list(ctx context.Context, filter conversationFilte
 			continue
 		}
 		if !filterMatches(filter, manifest) {
+			continue
+		}
+		// The dirs list is the whole filtered scan scope: it ignores the dir
+		// selection and the cursor so a client's dropdown stays complete and
+		// stable while a dir is selected and while paging.
+		if manifest.cwd != "" {
+			cwds = append(cwds, manifest.cwd)
+		}
+		if dirKey != "" && conversationDirKey(manifest.cwd) != dirKey {
 			continue
 		}
 		if after != nil && !manifestAfterCursor(manifest, *after) {
@@ -290,11 +403,17 @@ func (c *conversationCatalog) list(ctx context.Context, filter conversationFilte
 		items = append(items, manifest.toSummary())
 		last = manifest
 	}
-	page := conversationListPage{Items: items, Roots: c.rootLabels(), Partial: partial}
+	page := conversationListPage{
+		Items:   items,
+		Roots:   c.rootLabels(),
+		Dirs:    conversationDirLabels(cwds),
+		Partial: partial,
+	}
 	if remaining > 0 {
 		page.NextCursor = encodeConversationCursor(conversationCursor{
 			Filter: string(filter),
 			Scope:  rootID,
+			Dir:    dirKey,
 			Last:   last.lastActive.UTC().Format(time.RFC3339Nano),
 			Root:   last.rootID,
 			Thread: last.threadID,
@@ -337,6 +456,7 @@ func (s conversationManifest) toSummary() conversationSummary {
 		Kind:     s.kind,
 		Archived: s.archived,
 		Title:    s.title,
+		Cwd:      s.cwd,
 	}
 	if s.explicitTitle != "" {
 		summary.Title = s.explicitTitle
@@ -351,12 +471,13 @@ func (s conversationManifest) toSummary() conversationSummary {
 }
 
 // conversationCursor is a keyset position: the (activity, root, thread) of the
-// last emitted item. It encodes the filter and the root scope so a cursor
-// cannot be replayed against a different view.
+// last emitted item. It encodes the filter, the root scope, and the dir scope
+// so a cursor cannot be replayed against a different view.
 type conversationCursor struct {
 	V      int    `json:"v"`
 	Filter string `json:"f"`
 	Scope  string `json:"s,omitempty"`
+	Dir    string `json:"d,omitempty"`
 	Last   string `json:"ts"`
 	Root   string `json:"r"`
 	Thread string `json:"t"`
@@ -485,8 +606,16 @@ func mergeConversationManifests(manifests []conversationManifest) []conversation
 			if m.title != "" {
 				current.title = m.title
 			}
-		} else if current.title == "" {
-			current.title = m.title
+			if m.cwd != "" {
+				current.cwd = m.cwd
+			}
+		} else {
+			if current.title == "" {
+				current.title = m.title
+			}
+			if current.cwd == "" {
+				current.cwd = m.cwd
+			}
 		}
 		// An explicit naming signal on any segment wins for the merged
 		// thread regardless of which file is the preferred manifest.
@@ -508,12 +637,13 @@ func preferConversationManifest(candidate, current conversationManifest) bool {
 	return candidate.path < current.path
 }
 
-// catalogSessionMeta captures the identity fields of a session_meta record.
-// Message content is never decoded here.
+// catalogSessionMeta captures the identity fields of a session_meta record
+// plus its recorded working directory. Message content is never decoded here.
 type catalogSessionMeta struct {
 	ID             string          `json:"id"`
 	Source         json.RawMessage `json:"source"`
 	ParentThreadID string          `json:"parent_thread_id"`
+	Cwd            string          `json:"cwd"`
 }
 
 // inspectConversationManifest reads the bounded head and tail windows of one
@@ -609,6 +739,7 @@ func inspectConversationManifestHandle(file *os.File, info os.FileInfo, path, th
 	if catalogMetaIsSubagent(*meta) {
 		manifest.kind = conversationKindSubagent
 	}
+	manifest.cwd = strings.TrimSpace(meta.Cwd)
 	return manifest, true
 }
 

@@ -66,12 +66,18 @@ Query parameters:
   excludes archived entries, `archived` returns any kind. Unknown values →
   `400 {"error": "invalid_filter"}`.
 - `root` — optional `root_id` scoping the list to one monitored session
-  root. Composes with `filter`/`cursor`/`limit`. An unknown or malformed
-  root id → `400 {"error": "invalid_root"}`.
+  root. Composes with `filter`/`dir`/`cursor`/`limit`. An unknown or
+  malformed root id → `400 {"error": "invalid_root"}`.
+- `dir` — optional working-directory scoping: exact match against the
+  `cwd` recorded in each conversation's `session_meta` payload, compared
+  after path cleanup; the compare is case-insensitive where the platform
+  filesystem is (Windows) and case-sensitive elsewhere. Composes with
+  `filter`/`root`/`cursor`/`limit`. It is a filter, not an identity: an
+  unmatched value returns an empty page, never an error.
 - `cursor` — opaque keyset token from a previous page's `next_cursor`. It is
-  bound to the filter **and** root scope that issued it; replaying it under
-  a different filter or root is an error. Malformed or mismatched →
-  `400 {"error": "invalid_cursor"}`.
+  bound to the filter **and** the root/dir scopes that issued it; replaying
+  it under a different filter, root, or dir is an error. Malformed or
+  mismatched → `400 {"error": "invalid_cursor"}`.
 - `limit` — positive integer page size. Values above the maximum (200) are
   clamped, never an error; zero, negative, or non-integer →
   `400 {"error": "invalid_limit"}`. Default page size is 50.
@@ -91,9 +97,15 @@ Response `200` body:
                             // Codex-injected boilerplate stripped
     started_at?: string;    // RFC 3339, earliest persisted record time
     last_activity?: string; // RFC 3339, latest persisted record time
+    cwd?: string;           // working directory recorded in the session_meta
+                            // payload — absent when the record has none
   }];
   roots: [{
     root_id: string;        // same opaque identity items carry
+    label: string;          // compact display name — see below
+  }];
+  dirs: [{
+    dir: string;            // recorded cwd value — pass back as `dir`
     label: string;          // compact display name — see below
   }];
   next_cursor?: string;     // present only while more items follow
@@ -103,11 +115,20 @@ Response `200` body:
 ```
 
 `roots` always lists **every** monitored session root — including roots with
-no matching items under the current filter/scope — so a client's directory
+no matching items under the current filter/scope — so a client's root
 filter stays stable across views. `label` is compact display text derived
 from the root's Codex home path: the home basename (e.g. `.codex`,
 `project-home`), extended with the parent directory name joined by `/` only
 when two monitored homes share a basename. It never echoes a full path.
+
+`dirs` lists every **distinct** working directory present across the whole
+filtered scan scope — the `filter`/`root`-matching set, computed before
+pagination and regardless of the `dir` selection itself — so a client's
+project-directory dropdown stays complete and stable while a dir is
+selected and while paging. `label` is the same compact convention as
+`roots[].label`: the directory basename (e.g. `order-service`), extended
+with the parent directory name joined by `/` only when two dirs share a
+basename.
 
 Ordering is latest persisted record activity, with a stable
 `(root_id, thread_id)` tie-break; file mtime and rename time never feed the
@@ -207,7 +228,7 @@ Fields a client needs beyond the obvious counters:
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 400 | `{"error": "invalid_filter"}` | `/conversations`: unknown `filter` value |
-| 400 | `{"error": "invalid_cursor"}` | `/conversations`: malformed cursor or one issued under a different filter/root scope |
+| 400 | `{"error": "invalid_cursor"}` | `/conversations`: malformed cursor or one issued under a different filter/root/dir scope |
 | 400 | `{"error": "invalid_root"}` | `/conversations`: `root` is not a discovered monitored root |
 | 400 | `{"error": "invalid_limit"}` | `/conversations`: `limit` is zero, negative, or not an integer |
 | 401 | `{"error": "unauthorized"}` | missing/wrong bearer token |

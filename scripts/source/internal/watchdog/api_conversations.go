@@ -21,19 +21,25 @@ var conversationsScanSlots = make(chan struct{}, 4)
 // whether the catalog scan completed within its bounds
 // (complete_persisted | partial), mirroring the detail endpoint's page state.
 // Roots lists every monitored session root (id + compact label) so a client
-// can render a stable directory filter even for roots with no matching items.
+// can render a stable root filter even for roots with no matching items.
+// Dirs lists every distinct working directory recorded in the filtered scan
+// scope (dir value + compact label) so a client's project-directory filter
+// stays complete while a dir is selected and while paging.
 type conversationsListResponse struct {
 	Items      []conversationsListItem `json:"items"`
 	Roots      []conversationRootRef   `json:"roots"`
+	Dirs       []conversationDirRef    `json:"dirs"`
 	NextCursor string                  `json:"next_cursor,omitempty"`
 	Partial    bool                    `json:"partial"`
 	State      string                  `json:"state"`
 }
 
 // conversationsListItem is the wire form of one catalog summary. Identity is
-// the opaque (root_id, thread_id) pair; no filesystem path ever leaves the
-// process. Title is session metadata the catalog already derives inside its
-// bounded head scan, not message content.
+// the opaque (root_id, thread_id) pair; no catalog-resolved filesystem path
+// ever leaves the process. Title is session metadata the catalog already
+// derives inside its bounded head scan, not message content; Cwd is the
+// working directory recorded in the session_meta payload (absent when the
+// record carries none).
 type conversationsListItem struct {
 	RootID       string `json:"root_id"`
 	ThreadID     string `json:"thread_id"`
@@ -42,6 +48,7 @@ type conversationsListItem struct {
 	Title        string `json:"title,omitempty"`
 	StartedAt    string `json:"started_at,omitempty"`
 	LastActivity string `json:"last_activity,omitempty"`
+	Cwd          string `json:"cwd,omitempty"`
 }
 
 // conversationsListHandler serves GET /conversations. It is registered on the
@@ -74,7 +81,7 @@ func conversationsListHandler(service *managementService, token string) http.Han
 			return
 		}
 
-		page, err := service.conversationsList(r.Context(), filter, query.Get("root"), query.Get("cursor"), limit)
+		page, err := service.conversationsList(r.Context(), filter, query.Get("root"), query.Get("dir"), query.Get("cursor"), limit)
 		if err != nil {
 			if r.Context().Err() != nil {
 				return // client is gone; nothing to write to
@@ -126,24 +133,28 @@ func (m *managementService) conversationCatalog() (*conversationCatalog, error) 
 }
 
 // conversationsList returns one bounded page from the shared catalog.
-func (m *managementService) conversationsList(ctx context.Context, filter conversationFilter, rootID, cursor string, limit int) (conversationListPage, error) {
+func (m *managementService) conversationsList(ctx context.Context, filter conversationFilter, rootID, dir, cursor string, limit int) (conversationListPage, error) {
 	catalog, err := m.conversationCatalog()
 	if err != nil {
 		return conversationListPage{}, err
 	}
-	return catalog.list(ctx, filter, rootID, cursor, limit)
+	return catalog.list(ctx, filter, rootID, dir, cursor, limit)
 }
 
 func conversationsListResponseFor(page conversationListPage) conversationsListResponse {
 	response := conversationsListResponse{
 		Items:      make([]conversationsListItem, 0, len(page.Items)),
 		Roots:      page.Roots,
+		Dirs:       page.Dirs,
 		NextCursor: page.NextCursor,
 		Partial:    page.Partial,
 		State:      conversationStateCompletePersisted,
 	}
 	if response.Roots == nil {
 		response.Roots = []conversationRootRef{}
+	}
+	if response.Dirs == nil {
+		response.Dirs = []conversationDirRef{}
 	}
 	if page.Partial {
 		response.State = conversationStatePartial
@@ -157,6 +168,7 @@ func conversationsListResponseFor(page conversationListPage) conversationsListRe
 			Title:        summary.Title,
 			StartedAt:    summary.StartedAt,
 			LastActivity: summary.LastActive,
+			Cwd:          summary.Cwd,
 		})
 	}
 	return response

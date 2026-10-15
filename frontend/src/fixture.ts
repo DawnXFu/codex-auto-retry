@@ -346,6 +346,15 @@ function previewRoots(): { root_id: string; label: string }[] {
   }));
 }
 
+// Recorded working directories for the fixture catalog (the session_meta
+// payload cwd) — three distinct project dirs so the directory filter demos
+// at ?preview=1.
+const PREVIEW_CWDS = {
+  orderService: "C:\\Users\\you\\projects\\order-service",
+  autoRetry: "C:\\Users\\you\\projects\\codex-auto-retry",
+  logkit: "D:\\oss\\logkit",
+} as const;
+
 function previewConversations(): ConversationSummary[] {
   if (previewConvsCache) return previewConvsCache;
   const t = (idx: number, minsAgo: number) => {
@@ -353,25 +362,69 @@ function previewConversations(): ConversationSummary[] {
     const started = iso(-(minsAgo + 60 + idx * 17) * 60_000);
     return { started_at: started, last_activity: last };
   };
-  const defs: [string, string, "ordinary" | "subagent", boolean, string][] = [
-    // [thread_id, title, kind, archived, root suffix]
-    ["019f9d5d-0000-7000-8000-000000000006", "编写订单服务单元测试", "ordinary", false, "a1"],
-    ["019f9d5d-0000-7000-8000-000000000101", "Design a quota-window backoff policy", "ordinary", false, "a1"],
-    ["019f9d5d-0000-7000-8000-000000000102", "Subagent: scan log rotation edge cases", "subagent", false, "a1"],
-    ["019f9d5d-0000-7000-8000-000000000103", "Refactor the quota evidence cache", "ordinary", false, "b2"],
-    ["019f9d5d-0000-7000-8000-000000000104", "Draft release notes for 0.7.12", "ordinary", true, "b2"],
-    ["019f9d5d-0000-7000-8000-000000000105", "Subagent: fixture audit", "subagent", true, "c3"],
-    ["019f9d5d-0000-7000-8000-000000000106", "", "ordinary", false, "c3"],
+  const defs: [string, string, "ordinary" | "subagent", boolean, string, string][] = [
+    // [thread_id, title, kind, archived, root suffix, cwd]
+    ["019f9d5d-0000-7000-8000-000000000006", "编写订单服务单元测试", "ordinary", false, "a1", PREVIEW_CWDS.orderService],
+    ["019f9d5d-0000-7000-8000-000000000101", "Design a quota-window backoff policy", "ordinary", false, "a1", PREVIEW_CWDS.autoRetry],
+    ["019f9d5d-0000-7000-8000-000000000102", "Subagent: scan log rotation edge cases", "subagent", false, "a1", PREVIEW_CWDS.autoRetry],
+    ["019f9d5d-0000-7000-8000-000000000103", "Refactor the quota evidence cache", "ordinary", false, "b2", PREVIEW_CWDS.autoRetry],
+    ["019f9d5d-0000-7000-8000-000000000104", "Draft release notes for 0.7.12", "ordinary", true, "b2", PREVIEW_CWDS.orderService],
+    ["019f9d5d-0000-7000-8000-000000000105", "Subagent: fixture audit", "subagent", true, "c3", PREVIEW_CWDS.logkit],
+    ["019f9d5d-0000-7000-8000-000000000106", "", "ordinary", false, "c3", PREVIEW_CWDS.logkit],
   ];
-  previewConvsCache = defs.map(([thread, title, kind, archived, root], i) => ({
+  previewConvsCache = defs.map(([thread, title, kind, archived, root, cwd], i) => ({
     root_id: `r${root}${"0".repeat(13)}`,
     thread_id: thread,
     kind,
     archived,
     title: title || undefined,
+    cwd,
     ...t(i, 8 + i * 137),
   }));
   return previewConvsCache;
+}
+
+// Split a recorded cwd on both separator styles — a rollout can carry a path
+// written on another platform and the label should still read as its last
+// path segment.
+function pathBaseName(p: string): string {
+  const t = p.trim().replace(/[/\\]+$/, "");
+  const i = Math.max(t.lastIndexOf("/"), t.lastIndexOf("\\"));
+  return i >= 0 ? t.slice(i + 1) : t;
+}
+
+function pathParentBaseName(p: string): string {
+  const t = p.trim().replace(/[/\\]+$/, "");
+  const i = Math.max(t.lastIndexOf("/"), t.lastIndexOf("\\"));
+  return i >= 0 ? pathBaseName(t.slice(0, i)) : "";
+}
+
+// Distinct working directories among a scoped set, labeled the same way the
+// API labels them: basename, parent-prefixed only on collision, sorted by
+// label so the dropdown order is stable.
+function previewDirs(convs: ConversationSummary[]): { dir: string; label: string }[] {
+  const seen = new Map<string, string>();
+  for (const c of convs) {
+    const cwd = c.cwd?.trim();
+    if (cwd) seen.set(cwd.toLowerCase(), cwd);
+  }
+  const dirs = [...seen.values()];
+  const shared = new Map<string, number>();
+  for (const d of dirs) {
+    const base = pathBaseName(d).toLowerCase();
+    shared.set(base, (shared.get(base) ?? 0) + 1);
+  }
+  return dirs
+    .map((dir) => {
+      const base = pathBaseName(dir) || dir;
+      let label = base;
+      if ((shared.get(base.toLowerCase()) ?? 0) > 1) {
+        const parent = pathParentBaseName(dir);
+        if (parent && parent !== base) label = `${parent}/${base}`;
+      }
+      return { dir, label };
+    })
+    .sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase()) || (a.dir < b.dir ? -1 : 1));
 }
 
 const previewThreadItems = new Map<string, ConversationItem[]>();
@@ -439,10 +492,10 @@ function decodePreviewCursor(raw: string | undefined, prefix: string): number | 
 
 export function buildPreviewConversations(
   filter: ConversationListFilter = "ordinary",
-  opts: { cursor?: string; limit?: number; rootId?: string } = {},
+  opts: { cursor?: string; limit?: number; rootId?: string; dir?: string } = {},
 ): ConversationListPage {
   const all = previewConversations();
-  const filtered = all.filter((c) => {
+  const scoped = all.filter((c) => {
     if (opts.rootId && c.root_id !== opts.rootId) return false;
     switch (filter) {
       case "archived":
@@ -455,12 +508,15 @@ export function buildPreviewConversations(
         return !c.archived;
     }
   });
+  // dir= narrows the page; the dirs list below stays computed over the whole
+  // filtered scope so the dropdown never collapses to the selection.
+  const filtered = scoped.filter((c) => !opts.dir || c.cwd === opts.dir);
   const start = decodePreviewCursor(opts.cursor, "c:");
   const from = start === undefined ? 0 : Number.isNaN(start) ? filtered.length : start;
   const page = filtered.slice(from, from + Math.max(1, opts.limit ?? 50));
   const next = from + page.length;
   return {
-    items: page.map(({ root_id, thread_id, kind, archived, title, started_at, last_activity }) => ({
+    items: page.map(({ root_id, thread_id, kind, archived, title, started_at, last_activity, cwd }) => ({
       root_id,
       thread_id,
       kind,
@@ -468,10 +524,12 @@ export function buildPreviewConversations(
       title,
       started_at,
       last_activity,
+      cwd,
     })),
     // Like the API, the root list is stable across filter/root scoping so
-    // the directory filter's options never flicker between views.
+    // the root filter's options never flicker between views.
     roots: previewRoots(),
+    dirs: previewDirs(scoped),
     next_cursor: next < filtered.length ? `c:${next}` : undefined,
     partial: false,
     state: "complete_persisted",
