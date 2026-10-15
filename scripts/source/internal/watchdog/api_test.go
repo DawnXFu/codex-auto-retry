@@ -67,18 +67,31 @@ func apiRequest(t *testing.T, descriptor apiDescriptor, path, token string) (int
 func TestManagementAPIAuthAndSnapshot(t *testing.T) {
 	descriptor, _ := startTestAPI(t)
 
-	if status, _ := apiRequest(t, descriptor, "/healthz", ""); status != http.StatusOK {
+	// Every management API response carries Cache-Control: no-store —
+	// snapshot and liveness payloads are private state, never cacheable.
+	status, header, _ := conversationsAPIRequest(t, descriptor, "/healthz", "")
+	if status != http.StatusOK {
 		t.Fatalf("healthz status = %d", status)
 	}
-	if status, _ := apiRequest(t, descriptor, "/snapshot", ""); status != http.StatusUnauthorized {
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("healthz Cache-Control = %q, want no-store", got)
+	}
+	status, header, _ = conversationsAPIRequest(t, descriptor, "/snapshot", "")
+	if status != http.StatusUnauthorized {
 		t.Fatalf("snapshot without token status = %d", status)
 	}
-	if status, _ := apiRequest(t, descriptor, "/snapshot", "wrong-token"); status != http.StatusUnauthorized {
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("snapshot 401 Cache-Control = %q, want no-store", got)
+	}
+	if status, _ = apiRequest(t, descriptor, "/snapshot", "wrong-token"); status != http.StatusUnauthorized {
 		t.Fatalf("snapshot with wrong token status = %d", status)
 	}
-	status, body := apiRequest(t, descriptor, "/snapshot", descriptor.Token)
+	status, header, body := conversationsAPIRequest(t, descriptor, "/snapshot", descriptor.Token)
 	if status != http.StatusOK {
 		t.Fatalf("snapshot status = %d body=%s", status, body)
+	}
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("snapshot Cache-Control = %q, want no-store", got)
 	}
 	var snapshot ManagementSnapshot
 	if err := json.Unmarshal(body, &snapshot); err != nil {

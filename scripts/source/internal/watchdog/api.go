@@ -108,8 +108,12 @@ func bearerAuthorized(r *http.Request, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(presented)), []byte(token)) == 1
 }
 
+// writeAPIJSON is the single serialization point for management API
+// responses. Cache-Control: no-store is attached here so every response —
+// success or error, on every endpoint — carries it.
 func writeAPIJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
