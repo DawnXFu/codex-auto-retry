@@ -187,7 +187,7 @@ func TestConversationCatalogRejectsMismatchedAndMetaLessManifests(t *testing.T) 
 	}
 }
 
-func TestParseconversationFilter(t *testing.T) {
+func TestParseConversationFilter(t *testing.T) {
 	for input, want := range map[string]conversationFilter{
 		"":         conversationFilterOrdinary,
 		"ordinary": conversationFilterOrdinary,
@@ -197,12 +197,12 @@ func TestParseconversationFilter(t *testing.T) {
 		"archived": conversationFilterArchived,
 		" ALL ":    conversationFilterAll,
 	} {
-		got, err := parseconversationFilter(input)
+		got, err := parseConversationFilter(input)
 		if err != nil || got != want {
-			t.Fatalf("parseconversationFilter(%q) = %q, %v; want %q", input, got, err, want)
+			t.Fatalf("parseConversationFilter(%q) = %q, %v; want %q", input, got, err, want)
 		}
 	}
-	if _, err := parseconversationFilter("everything"); err == nil {
+	if _, err := parseConversationFilter("everything"); err == nil {
 		t.Fatal("expected error for unknown filter")
 	}
 }

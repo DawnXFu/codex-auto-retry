@@ -456,6 +456,63 @@ func TestConversationReaderHonorsContextCancel(t *testing.T) {
 	}
 }
 
+// Real Codex rollouts persist one logical chat message twice — an event_msg
+// user_message/agent_message record and a response_item message record with
+// the same content — and the reader must not render it twice. The collapse is
+// a conservative heuristic: identical text, different family, nearby.
+func TestConversationReaderDeduplicatesDualWrittenMessages(t *testing.T) {
+	threadID := "019fc0c1-00dd-7d0d-800d-0000000000dd"
+	root, _ := writeReaderRollout(t, threadID, []string{
+		readerMetaLine(threadID, "2026-10-03T10:00:00.000Z"),
+		`{"timestamp":"2026-10-03T10:00:10.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}`,
+		// One logical user message, written by both record families. The
+		// event_msg copy lacks the attachment flag the response_item copy
+		// carries, so the canonical projection upgrades the kept item.
+		`{"timestamp":"2026-10-03T10:00:20.000Z","type":"event_msg","payload":{"type":"user_message","message":"same question"}}`,
+		`{"timestamp":"2026-10-03T10:00:20.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"same question"},{"type":"input_image","image_url":"file:///C:/shots/b.png"}]}}`,
+		// One logical assistant message, response_item first this time.
+		`{"timestamp":"2026-10-03T10:01:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"same answer"}]}}`,
+		`{"timestamp":"2026-10-03T10:01:00.200Z","type":"event_msg","payload":{"type":"agent_message","message":"same answer"}}`,
+		`{"timestamp":"2026-10-03T10:01:30.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"same answer"}}`,
+		// A genuinely repeated identical message — same family, sent twice —
+		// must not collapse.
+		`{"timestamp":"2026-10-03T10:02:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"yes"}}`,
+		`{"timestamp":"2026-10-03T10:02:30.000Z","type":"event_msg","payload":{"type":"user_message","message":"yes"}}`,
+	})
+	reader := newConversationReader(newConversationCatalog([]sessionRoot{root}))
+	rootID := conversationRootID(root)
+
+	page, err := reader.readItems(context.Background(), rootID, threadID, "", "backward", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := itemKinds(page.Items)
+	want := []string{
+		"boundary:session",
+		"boundary:turn_started",
+		"user_message",
+		"assistant_message",
+		"boundary:turn_complete",
+		"user_message",
+		"user_message",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("dual-written messages not deduplicated: %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("item %d = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+	user := page.Items[2]
+	if user.Text != "same question" || !user.Omitted {
+		t.Fatalf("canonical response_item projection lost its omitted flag: %+v", user)
+	}
+	if user.ID == "" {
+		t.Fatal("deduped item lost its id")
+	}
+}
+
 func TestConversationReaderUnsupportedAndNotFound(t *testing.T) {
 	reader, root := readerFixtureReader(t)
 	rootID := conversationRootID(root)

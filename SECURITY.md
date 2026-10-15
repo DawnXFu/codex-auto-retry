@@ -32,4 +32,8 @@ fail-open change that disables an unsafe recovery path.
 The default mode leaves Codex on its official backend. Shared recovery is
 opt-in, loopback-only, ownership-checked, and process-scoped. The watchdog does
 not need or store API keys, and it does not retain conversation or tool content
-to make retry decisions.
+to make retry decisions. The Management API's read-only conversation endpoints
+(`GET /conversations*`) do stream persisted rollout content to the
+bearer-authenticated caller — bounded to whitelisted session roots and opaque
+`(root_id, thread_id)` identities, marked `Cache-Control: no-store`, and
+content is never logged or written to any other file.

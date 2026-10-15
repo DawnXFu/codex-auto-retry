@@ -183,8 +183,6 @@ Fields a client needs beyond the obvious counters:
 
 ## Conversation items endpoint
 
-<!-- C-04: conversation detail pagination (spec #19, milestone 2). -->
-
 `GET /conversations/{rootId}/{threadId}/items` returns one bounded page of
 projected conversation items for a single persisted conversation. It is
 implemented in `scripts/source/internal/watchdog/api_conversation_items.go`
@@ -203,7 +201,7 @@ identity, and canonical containment under a monitored root.
 | --- | --- | --- |
 | `cursor` | (empty = newest page) | opaque position token from a previous `next_cursor`/`tail_cursor` |
 | `direction` | `backward` | `backward` pages persisted history newest-first; `forward` follows appended records incrementally |
-| `limit` | `50` | items per page; clamped to `200`, non-numeric/negative values return `400` |
+| `limit` | `50` | items per page; clamped to `200`; zero, negative, or non-integer values return `400 {"error": "invalid_limit"}` (same convention as the list endpoint) |
 
 **Response** (`application/json`, `Cache-Control: no-store` on every
 response, including errors):
@@ -232,7 +230,9 @@ response, including errors):
 `state=partial` means scan bounds or degraded records limited the projection;
 `state=unsupported` means the resolved file no longer carries a `session_meta`
 for the thread. Streaming deltas, deleted/rotated history, and unpersisted
-content are never fabricated.
+content are never fabricated. Wire names follow the snake_case Management API
+convention: the spec's `completePersisted` is the `complete_persisted` state
+value.
 
 **Status mapping.**
 

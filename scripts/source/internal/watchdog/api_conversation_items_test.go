@@ -185,6 +185,7 @@ func TestConversationItemsAPIErrorMapping(t *testing.T) {
 		"bad direction":  "direction=sideways",
 		"bad cursor":     "cursor=not-a-cursor",
 		"bad limit":      "limit=abc",
+		"zero limit":     "limit=0",
 		"negative limit": "limit=-3",
 	} {
 		status, _, body := conversationItemsRequest(t, descriptor, base+"?"+query, descriptor.Token)

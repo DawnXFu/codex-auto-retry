@@ -25,8 +25,11 @@ const (
 	accountQuotaBackoffMax   = 2 * time.Minute
 	accountQuotaVerifyBudget = 3 * time.Second
 
-	accountQuotaFileName    = "account-quota.json"
-	accountQuotaFileVersion = 1
+	accountQuotaFileName = "account-quota.json"
+	// Version 2 trimmed the persisted limits payload to what the view
+	// resolver consumes; version-1 records held the raw RPC result and are
+	// tolerated on read (ignored) rather than partially decoded.
+	accountQuotaFileVersion = 2
 	// maxAccountQuotaFileBytes bounds the persisted evidence file. It is far
 	// above any real account/rateLimits/read payload; the bound exists so a
 	// corrupt or hostile file cannot make the management surface parse
@@ -43,16 +46,71 @@ const accountQuotaReasonGenerationChanged = "account_quota_generation_changed"
 // written by the worker to dataDir/account-quota.json on every transition and
 // read by the management surface. It carries only the newest accepted account
 // read plus the last failure reason; the accountId generation handle is
-// deliberately absent (appAccountRateLimitsReadResult never marshals it), and
+// deliberately absent (it is verified in memory, never marshaled), and
 // rollout evidence is not duplicated here — readers resolve it from
 // state.json's quota field.
 type accountQuotaFileRecord struct {
-	Version    int                             `json:"version"`
-	Available  bool                            `json:"available"`
-	Reason     string                          `json:"reason,omitempty"`
-	ObservedAt time.Time                       `json:"observed_at,omitempty"`
-	FreshUntil time.Time                       `json:"fresh_until,omitempty"`
-	Limits     *appAccountRateLimitsReadResult `json:"limits,omitempty"`
+	Version    int                          `json:"version"`
+	Available  bool                         `json:"available"`
+	Reason     string                       `json:"reason,omitempty"`
+	ObservedAt time.Time                    `json:"observed_at,omitempty"`
+	FreshUntil time.Time                    `json:"fresh_until,omitempty"`
+	Limits     *accountQuotaPersistedLimits `json:"limits,omitempty"`
+}
+
+// accountQuotaPersistedLimits is the trimmed durable form of one accepted
+// account/rateLimits/read result. The view resolver only consumes per-space
+// windows plus the reset-credit count, so the rest of the RPC payload —
+// the credits detail array, credit balances, planType, upsell banner,
+// ordinary-usage permission, and spend-control detail — is dropped at write
+// time and never touches the data dir.
+type accountQuotaPersistedLimits struct {
+	RateLimits          *accountQuotaPersistedSpace           `json:"rateLimits,omitempty"`
+	RateLimitsByLimitID map[string]accountQuotaPersistedSpace `json:"rateLimitsByLimitId,omitempty"`
+	// ResetCreditCount is rateLimitResetCredits.availableCount; nil means
+	// unknown, never zero. The credits detail array is deliberately absent.
+	ResetCreditCount *int64 `json:"resetCreditCount,omitempty"`
+}
+
+// accountQuotaPersistedSpace carries the window evidence of one Evidence
+// Space that the view resolver needs — identity, the space-level reached
+// flag, and the two window slots — and nothing else.
+type accountQuotaPersistedSpace struct {
+	LimitID              *string                    `json:"limitId,omitempty"`
+	LimitName            *string                    `json:"limitName,omitempty"`
+	RateLimitReachedType *string                    `json:"rateLimitReachedType,omitempty"`
+	Primary              *appAccountRateLimitWindow `json:"primary,omitempty"`
+	Secondary            *appAccountRateLimitWindow `json:"secondary,omitempty"`
+}
+
+// persistAccountLimits projects a decoded account read into the trimmed
+// record shape; see accountQuotaPersistedLimits for why detail fields are
+// dropped.
+func persistAccountLimits(limits appAccountRateLimitsReadResult) *accountQuotaPersistedLimits {
+	persisted := &accountQuotaPersistedLimits{}
+	if limits.RateLimits != nil {
+		persisted.RateLimits = ptrTo(persistAccountSpace(*limits.RateLimits))
+	}
+	if len(limits.RateLimitsByLimitID) > 0 {
+		persisted.RateLimitsByLimitID = make(map[string]accountQuotaPersistedSpace, len(limits.RateLimitsByLimitID))
+		for key, space := range limits.RateLimitsByLimitID {
+			persisted.RateLimitsByLimitID[key] = persistAccountSpace(space)
+		}
+	}
+	if limits.RateLimitResetCredits != nil {
+		persisted.ResetCreditCount = limits.RateLimitResetCredits.AvailableCount
+	}
+	return persisted
+}
+
+func persistAccountSpace(shot appAccountRateLimitSnapshot) accountQuotaPersistedSpace {
+	return accountQuotaPersistedSpace{
+		LimitID:              shot.LimitID,
+		LimitName:            shot.LimitName,
+		RateLimitReachedType: shot.RateLimitReachedType,
+		Primary:              shot.Primary,
+		Secondary:            shot.Secondary,
+	}
 }
 
 // accountQuotaCache is the single-flight refresh worker behind the account
@@ -262,8 +320,7 @@ func (c *accountQuotaCache) recordLocked() accountQuotaFileRecord {
 		record.Available = true
 		record.ObservedAt = c.last.ObservedAt
 		record.FreshUntil = c.last.ObservedAt.Add(c.freshFor)
-		limits := c.last.Limits
-		record.Limits = &limits
+		record.Limits = persistAccountLimits(c.last.Limits)
 	}
 	return record
 }
@@ -297,6 +354,12 @@ func loadAccountQuotaFile(path string) (*accountQuotaFileRecord, error) {
 	var record accountQuotaFileRecord
 	if err := json.Unmarshal(data, &record); err != nil {
 		return nil, fmt.Errorf("parse account quota record: %w", err)
+	}
+	if record.Version != accountQuotaFileVersion {
+		// A record written by an older daemon (or no version at all) predates
+		// the trimmed payload shape; it is tolerated as "no usable evidence"
+		// and the worker rewrites the file on its next transition.
+		return nil, nil
 	}
 	return &record, nil
 }
@@ -408,42 +471,42 @@ func accountReadQuotaView(record *accountQuotaFileRecord, status string) account
 		Status:     status,
 		Source:     accountQuotaSourceAccountRead,
 		Windows:    accountReadWindows(record.Limits),
-		ObservedAt: ptrToCopy(record.ObservedAt),
+		ObservedAt: ptrTo(record.ObservedAt),
 	}
 	if !record.FreshUntil.IsZero() {
-		view.FreshUntil = ptrToCopy(record.FreshUntil)
+		view.FreshUntil = ptrTo(record.FreshUntil)
 	}
-	credits := record.Limits.RateLimitResetCredits
+	credits := record.Limits.ResetCreditCount
 	switch {
-	case credits == nil || credits.AvailableCount == nil:
-		// Absent/null is unknown, never zero.
+	case credits == nil:
+		// Absent is unknown, never zero.
 		view.ResetCredits = accountQuotaResetCreditSum{Status: accountQuotaCreditsUnknown}
 	case status == accountQuotaStatusFresh:
 		view.ResetCredits = accountQuotaResetCreditSum{
 			Status:         accountQuotaCreditsKnown,
-			AvailableCount: ptrToCopy(*credits.AvailableCount),
-			ObservedAt:     ptrToCopy(record.ObservedAt),
+			AvailableCount: ptrTo(*credits),
+			ObservedAt:     ptrTo(record.ObservedAt),
 		}
 	default:
 		view.ResetCredits = accountQuotaResetCreditSum{
 			Status:         accountQuotaCreditsStale,
-			AvailableCount: ptrToCopy(*credits.AvailableCount),
-			ObservedAt:     ptrToCopy(record.ObservedAt),
+			AvailableCount: ptrTo(*credits),
+			ObservedAt:     ptrTo(record.ObservedAt),
 		}
 	}
 	return view
 }
 
-// accountReadWindows flattens the complete account snapshot into per-slot
+// accountReadWindows flattens the persisted account snapshot into per-slot
 // windows. rateLimitsByLimitId is authoritative when present (ADR-0003
 // evidence spaces); the legacy single-bucket rateLimits is its fallback.
 // Output order is deterministic: spaces sorted by limit key, primary before
 // secondary inside each space.
-func accountReadWindows(limits *appAccountRateLimitsReadResult) []accountQuotaViewWindow {
+func accountReadWindows(limits *accountQuotaPersistedLimits) []accountQuotaViewWindow {
 	windows := []accountQuotaViewWindow{}
 	type namedSnapshot struct {
 		id   string
-		shot appAccountRateLimitSnapshot
+		shot accountQuotaPersistedSpace
 	}
 	spaces := []namedSnapshot{}
 	if len(limits.RateLimitsByLimitID) > 0 {
@@ -467,6 +530,15 @@ func accountReadWindows(limits *appAccountRateLimitsReadResult) []accountQuotaVi
 		if space.shot.LimitName != nil {
 			limitName = *space.shot.LimitName
 		}
+		// rateLimitReachedType is a space-level signal: the wire schema has no
+		// per-window reached flag (RateLimitWindow carries only usedPercent,
+		// windowDurationMins, resetsAt), so it cannot identify which window of
+		// the space binds. It is therefore only honored where a window
+		// independently evidences exhaustion — a space where only the 5-hour
+		// window is reached must not render its weekly sibling exhausted or
+		// binding. When reached is set but no window reads past the
+		// exhaustion threshold, the payload cannot name the binding window
+		// and binding stays unset rather than over-marking both slots.
 		reached := space.shot.RateLimitReachedType != nil && strings.TrimSpace(*space.shot.RateLimitReachedType) != ""
 		for _, slot := range []struct {
 			name   string
@@ -488,12 +560,10 @@ func accountReadWindows(limits *appAccountRateLimitsReadResult) []accountQuotaVi
 				resetsAt := time.Unix(*slot.window.ResetsAt, 0).UTC()
 				window.ResetsAt = &resetsAt
 			}
-			if reached || (window.UsedPercent != nil && *window.UsedPercent >= quotaExhaustedPercent) {
-				// A limit the backend reports as reached is the one blocking
-				// usage for this account generation.
-				window.Exhausted = true
-				window.Binding = true
-			}
+			window.Exhausted = window.UsedPercent != nil && *window.UsedPercent >= quotaExhaustedPercent
+			// A reached space plus an exhausted window is the strongest
+			// binding evidence the account read can offer.
+			window.Binding = reached && window.Exhausted
 			windows = append(windows, window)
 		}
 	}
@@ -557,10 +627,10 @@ func rolloutQuotaView(quota *QuotaState, snapshot *QuotaSnapshot) accountQuotaVi
 	return accountQuotaView{
 		Status:       accountQuotaStatusStale,
 		Source:       accountQuotaSourceRollout,
-		ObservedAt:   ptrToCopy(snapshot.ObservedAt),
+		ObservedAt:   ptrTo(snapshot.ObservedAt),
 		Windows:      windows,
 		ResetCredits: accountQuotaResetCreditSum{Status: accountQuotaCreditsUnavailable},
 	}
 }
 
-func ptrToCopy[T any](value T) *T { return &value }
+func ptrTo[T any](value T) *T { return &value }

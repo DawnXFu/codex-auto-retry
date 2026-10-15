@@ -33,7 +33,6 @@ func conversationItemsHandler(service *managementService, token string) http.Han
 			writeAPIJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
 
 		if !conversationItemsEscapedPathClean(r.URL.EscapedPath()) {
 			writeAPIJSON(w, http.StatusNotFound, map[string]string{"error": "conversation_not_found"})
@@ -101,16 +100,17 @@ func conversationItemsEscapedPathClean(escaped string) bool {
 
 var errConversationItemsLimit = errors.New("invalid conversation items limit")
 
-// conversationItemsLimit validates the optional page-size parameter. Empty
-// and zero fall through to the reader's default; over-large values are
-// clamped there. Non-numeric and negative input is a client error.
+// conversationItemsLimit validates the optional page-size parameter, sharing
+// the list endpoint's convention: empty selects the reader's default,
+// over-large values are clamped there, and zero, negative, or non-numeric
+// input is a client error.
 func conversationItemsLimit(raw string) (int, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return 0, nil
 	}
 	value, err := strconv.Atoi(trimmed)
-	if err != nil || value < 0 {
+	if err != nil || value < 1 {
 		return 0, errConversationItemsLimit
 	}
 	return value, nil

@@ -419,16 +419,19 @@ legacy fields rather than rejecting the file; `QuotaSnapshot.UnmarshalJSON`
   "type": "object",
   "required": ["version", "available"],
   "properties": {
-    "version": { "type": "integer", "const": 1 },
+    "version": { "type": "integer", "const": 2 },
     "available": { "type": "boolean" },
     "reason": { "type": "string", "description": "privacy-safe last failure reason (accountQuotaReason* taxonomy)" },
     "observed_at": { "type": "string", "format": "date-time" },
     "fresh_until": { "type": "string", "format": "date-time" },
-    "limits": { "$comment": "appAccountRateLimitsReadResult verbatim; accountId is never serialized" }
+    "limits": { "$comment": "accountQuotaPersistedLimits — the trimmed view-resolver inputs only: per-space windows (limitId/limitName/rateLimitReachedType/primary/secondary) plus resetCreditCount. The RPC payload's credits detail array, credit balances, planType, upsell banner, and spend-control detail are dropped at write time." }
   }
 }
 ```
 
+- **Versioning:** readers accept only `version == 2`; records written by older
+  daemons (which persisted the raw RPC payload) are tolerated as "no usable
+  evidence" and rewritten on the worker's next transition.
 - **Privacy:** the backend `accountId` generation handle and the verified
   endpoint coordinates are deliberately never written; readers that need
   generation checks re-verify `shared-server.json` instead.
