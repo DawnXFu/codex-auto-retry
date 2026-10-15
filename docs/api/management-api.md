@@ -43,6 +43,9 @@ auth remains a documented optional hardening (ADR-0004).
 | `GET /snapshot` | bearer token | `ManagementSnapshot` JSON — full queue, config, quota, and capability view |
 | `GET /conversations` | bearer token | paginated list of persisted Codex conversations under monitored session roots |
 
+Every response on every endpoint — success or error, authenticated or not —
+carries `Cache-Control: no-store` (attached by `writeAPIJSON`).
+
 `GET /snapshot` is served by `managementService.snapshot(now)`
 (`management.go`) — the same assembler the tray uses. All timestamps are
 RFC 3339 UTC; clients render local-timezone times themselves.
@@ -203,7 +206,7 @@ identity, and canonical containment under a monitored root.
 | `limit` | `50` | items per page; clamped to `200`, non-numeric/negative values return `400` |
 
 **Response** (`application/json`, `Cache-Control: no-store` on every
-authenticated response):
+response, including errors):
 
 ```ts
 {

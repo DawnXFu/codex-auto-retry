@@ -76,8 +76,10 @@ func TestConversationItemsAPIAuthPageAndFollow(t *testing.T) {
 	descriptor, rootID := conversationItemsTestAPI(t, home)
 	base := fmt.Sprintf("/conversations/%s/%s/items", rootID, itemsAPIThreadID)
 
-	if status, _, _ := conversationItemsRequest(t, descriptor, base, ""); status != http.StatusUnauthorized {
+	if status, header, _ := conversationItemsRequest(t, descriptor, base, ""); status != http.StatusUnauthorized {
 		t.Fatalf("items without token status = %d", status)
+	} else if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("items 401 Cache-Control = %q, want no-store", got)
 	}
 	if status, _, _ := conversationItemsRequest(t, descriptor, base, "wrong-token"); status != http.StatusUnauthorized {
 		t.Fatalf("items with wrong token status = %d", status)

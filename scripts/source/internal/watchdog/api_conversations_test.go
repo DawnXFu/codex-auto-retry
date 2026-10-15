@@ -1,14 +1,17 @@
 package watchdog
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // conversationsAPIRequest mirrors apiRequest but also returns the response
@@ -286,5 +289,63 @@ func TestConversationsAPIEmptyWhenNoRoots(t *testing.T) {
 	}
 	if len(page.Items) != 0 || page.NextCursor != "" || page.State != "complete_persisted" {
 		t.Fatalf("empty listing = %+v", page)
+	}
+}
+
+// C-07 acceptance criterion: conversation reads are file-reader only. List
+// and item requests must leave the recovery scanner's persisted cursors
+// (state.json) byte-identical and must never drop command files.
+func TestConversationsAPIReadsDoNotMutateScannerStateOrCommands(t *testing.T) {
+	descriptor, dataDir := startTestAPI(t)
+	home, rolloutPath := conversationItemsFixtureHome(t, itemsAPIThreadID)
+	configureConversationsRoots(t, dataDir, home)
+
+	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	roots := discoverSessionRoots(config)
+	if len(roots) != 1 {
+		t.Fatalf("fixture config discovered %d roots, want 1", len(roots))
+	}
+	rootID := conversationRootID(roots[0])
+
+	// Seed state.json exactly as the recovery scanner persists it: a file
+	// cursor for the very rollout the conversation endpoints are about to read.
+	state := newRuntimeState()
+	state.Initialized = true
+	state.Files[strings.ToLower(filepath.Clean(rolloutPath))] = FileCursor{
+		Offset:   7,
+		LastSeen: time.Date(2026, 10, 3, 10, 0, 0, 0, time.UTC),
+	}
+	statePath := filepath.Join(dataDir, "state.json")
+	if err := writeJSONAtomic(statePath, state); err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+
+	page := conversationsAPIList(t, descriptor, "?filter=all")
+	if len(page.Items) != 1 {
+		t.Fatalf("fixture list = %+v", page.Items)
+	}
+	status, _, body := conversationsAPIRequest(t, descriptor,
+		fmt.Sprintf("/conversations/%s/%s/items?limit=5", rootID, itemsAPIThreadID), descriptor.Token)
+	if status != http.StatusOK {
+		t.Fatalf("items status = %d body=%s", status, body)
+	}
+
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("conversation reads rewrote state.json (scanner cursors moved)")
+	}
+	commands, invalid, err := loadControlCommandFiles(filepath.Join(dataDir, "commands"))
+	if err != nil || len(commands) != 0 || len(invalid) != 0 {
+		t.Fatalf("conversation reads dropped command files: %+v invalid=%v err=%v", commands, invalid, err)
 	}
 }
