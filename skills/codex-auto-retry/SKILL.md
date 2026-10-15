@@ -251,7 +251,11 @@ remains undecoded and unsaved. Before dispatch, a
 separate reader extracts only the required execution settings from the latest `turn_context` and
 `thread_settings_applied` records. It does not retain, forward, or log prompts,
 developer instructions, assistant messages, tool arguments, tool results, API
-keys, or response bodies.
+keys, or response bodies. The one display-path exception is the Management API
+conversation viewer: `GET /conversations*` streams persisted rollout content to
+the bearer-authenticated caller, whitelist-bounded to monitored session roots
+and opaque identities, `Cache-Control: no-store`, with content never logged or
+written elsewhere.
 
 The controller connects only to Codex App on a loopback endpoint and sends a
 fixed structured recovery program. It does not read drafts or automate the

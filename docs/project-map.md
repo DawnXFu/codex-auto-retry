@@ -67,7 +67,14 @@ Domain code lives under `scripts/source/internal/watchdog` (package
 | `subagent_recovery.go` | Durable acknowledgement of deterministic parent recovery events for the exact existing child. |
 | `control.go` | Persistent pause state and atomic retry-now/cancel/restart command files shared with management surfaces. |
 | `management.go` | Privacy-bounded queue snapshots, process-backed heartbeat freshness, Windows StartupApproved status, settings updates, and management command submission. |
-| `api.go` | Loopback Management API server: `api.json` discovery descriptor, bearer-token auth, and `GET /snapshot`. |
+| `api.go` | Loopback Management API server: `api.json` discovery descriptor, bearer-token auth, `GET /snapshot`, and the read-only `GET /conversations*` route registration. |
+| `account_rate_limits.go` | `account/rateLimits/read` DTOs preserving absent-vs-zero readings; the account identifier is parsed for generation checks but is unmarshal-only and never serialized. |
+| `account_quota_reader.go` | Attach-only account quota read against the verified shared app-server endpoint; a short-lived JSON-RPC connection, never an Ensure/start path. |
+| `account_quota_cache.go` | Single-flight background account quota refresh with bounded backoff and generation invalidation, persisting the trimmed `account-quota.json` record and resolving the `account_quota` snapshot view (rollout evidence fallback). |
+| `conversation_catalog.go` | Read-only whitelist catalog of persisted conversations under monitored session roots: opaque `(root_id, thread_id)` identities, manifest validation, filters, and keyset cursors. |
+| `conversation_reader.go` | Read-only projection of one rollout file into bounded display-item pages: session_meta identity re-verified on the open handle, dual-written message dedup, cursor invalidation on file change. |
+| `api_conversations.go` | `GET /conversations` handler: bearer auth, filter/limit/cursor validation, bounded concurrent catalog scans, and the internal-to-wire list mapping. |
+| `api_conversation_items.go` | `GET /conversations/{rootId}/{threadId}/items` handler: opaque-identity gate rejecting path-shaped parameters, per-read concurrency bound, and privacy-safe error mapping. |
 | `tray_systray.go`, `tray_shared.go`, `tray_icons.go`, `tray_notify.go` | Cross-platform notification-area icon (fyne.io/systray), live tooltip/countdown, menu controls, beeep notifications, and desktop-client launch. `tray_headless.go` covers platforms without a systray backend. |
 | `process_windows.go` | Windows process-liveness verification, Codex Desktop detection, hidden inherited-console attributes, and owned process-tree cleanup. |
 | `scanner.go` | Incremental JSONL reads, file cursors, payload-based goal-task routing, parent-to-child recovery-event routing, rollout paths, and mirrored-session detection. |

@@ -146,7 +146,11 @@ the explicit launcher, existing-process, stale-shell and self-update boundaries.
 2. The snapshot reads atomic views of `status.json`, `state.json`,
    `control.json`, and `config.json`. It exposes task IDs, privacy-safe short
    labels, retry categories, attempts, actions, and due times, but no
-   conversation content.
+   conversation content. Conversation content is reachable only through the
+   dedicated read-only `GET /conversations*` endpoints: bearer-gated,
+   whitelist-bounded to monitored session roots, `Cache-Control: no-store`,
+   and content is never logged or persisted beyond the rollout files
+   themselves.
 3. The desktop client polls the snapshot and updates each countdown locally
    once per second. It is a pure protocol client and imports no domain code.
 4. A settings write atomically updates only `config.json`. The runner reloads
@@ -496,6 +500,12 @@ fields; `retry_now` pulls a parked wait forward to dispatch immediately and
   tool arguments, and tool results are never retained or forwarded by either
   parser, except that the watchdog parses its own fixed subagent recovery event
   and retains only its validated parent, child, and deterministic event IDs.
+  One display-path carve-out exists: the Management API conversation endpoints
+  (`GET /conversations`, `GET /conversations/{rootId}/{threadId}/items`) stream
+  persisted rollout content straight to the authenticated caller — bearer-gated,
+  bounded to whitelisted session roots and opaque `(root_id, thread_id)`
+  identities, marked `no-store`, and content is never logged or written to any
+  other file. Nothing else in the watchdog reads message text.
 - Logs contain short task identifiers, retry categories, attempt numbers,
   delays, background action categories, and privacy-safe reason codes only.
 - API keys, bearer tokens, provider URLs, request bodies, error bodies, drafts,

@@ -57,7 +57,7 @@ Long-running Codex work can be interrupted after tools have already executed or 
 - **Bounded operation**: Separates recovery and no-progress limits, applies a time circuit breaker, and stops with an explicit reason when a local channel is unavailable.
 - **Current Desktop compatibility**: Supports current rollout filenames and the official Windows IPC owner route (`\\.\pipe\codex-ipc`), with the plugin-owned WebSocket as an optional verified path.
 - **Fail-open safety**: Shared backend mode is opt-in; normal Codex startup uses its official backend when the optional recovery path is unavailable.
-- **Privacy-conscious state**: Retry decisions retain lifecycle metadata only; conversation text, tool contents, credentials, and response bodies are not stored for recovery.
+- **Privacy-conscious state**: Retry decisions retain lifecycle metadata only; conversation text, tool contents, credentials, and response bodies are not stored for recovery. The Management API's read-only conversation viewer streams persisted rollout content to the bearer-authenticated desktop client on loopback only — whitelist-bounded, `no-store`, never logged.
 
 ---
 

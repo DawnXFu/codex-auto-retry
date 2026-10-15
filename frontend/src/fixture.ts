@@ -337,7 +337,7 @@ function previewConversations(): ConversationSummary[] {
   const defs: [string, string, "ordinary" | "subagent", boolean, string][] = [
     // [thread_id, title, kind, archived, root suffix]
     ["019f9d5d-0000-7000-8000-000000000006", "编写订单服务单元测试", "ordinary", false, "a1"],
-    ["019f9d5d-0000-7000-8000-000000000101", "Design a rate-limit backoff policy", "ordinary", false, "a1"],
+    ["019f9d5d-0000-7000-8000-000000000101", "Design a quota-window backoff policy", "ordinary", false, "a1"],
     ["019f9d5d-0000-7000-8000-000000000102", "Subagent: scan log rotation edge cases", "subagent", false, "a1"],
     ["019f9d5d-0000-7000-8000-000000000103", "Refactor the quota evidence cache", "ordinary", false, "b2"],
     ["019f9d5d-0000-7000-8000-000000000104", "Draft release notes for 0.7.12", "ordinary", true, "b2"],

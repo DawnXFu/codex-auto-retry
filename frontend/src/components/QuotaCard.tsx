@@ -11,6 +11,20 @@ import { clockTime, dayLabel, fmtHMS, relAgo, secondsUntil } from "../time";
 // reset-credits row and a source/freshness line. The old summary stays as
 // fallback for daemons predating the account quota reader. In both modes we
 // display REMAINING percent (100 - used_percent); 0 is a valid reading.
+// Quota Window durations with assigned identity (spec #19): 300 minutes is
+// the 5-hour window, 10080 the weekly window. They mirror the
+// accountQuotaWindow*Minutes constants in the daemon.
+const QUOTA_WINDOW_5H_MINUTES = 300;
+const QUOTA_WINDOW_WEEKLY_MINUTES = 10080;
+
+// The card displays REMAINING percent (100 - used_percent), clamped so an
+// out-of-range reading can never render a negative or >100% bar; a null
+// reading stays unknown rather than being coerced.
+function remainingPercent(usedPercent: number | null | undefined): number | null {
+  if (usedPercent == null) return null;
+  return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+}
+
 export default function QuotaCard(props: {
   quota?: ManagedQuota;
   accountQuota?: AccountQuota;
@@ -71,8 +85,7 @@ function AccountQuotaView(props: { aq: AccountQuota; now: Date; waiting: number 
 function AccountWindowRow(props: { w: AccountQuotaWindow; now: Date }) {
   const { t, tr } = useI18n();
   const w = props.w;
-  const remaining =
-    w.used_percent != null ? Math.max(0, Math.min(100, Math.round(100 - w.used_percent))) : null;
+  const remaining = remainingPercent(w.used_percent);
   const tag = w.exhausted ? t("quota_acct_exhausted") : w.binding ? t("quota_binding") : "";
   const cd = w.resets_at ? fmtHMS(secondsUntil(w.resets_at, props.now)) : "";
 
@@ -109,8 +122,8 @@ function AccountWindowRow(props: { w: AccountQuotaWindow; now: Date }) {
 // 300 = 5-hour, 10080 = weekly; anything else is "duration unknown" and
 // keeps its primary/secondary slot label.
 function windowName(w: AccountQuotaWindow, t: TFunc, tr: TRFunc): string {
-  if (w.duration_minutes === 300) return t("quota_acct_win_5h");
-  if (w.duration_minutes === 10080) return t("quota_acct_win_week");
+  if (w.duration_minutes === QUOTA_WINDOW_5H_MINUTES) return t("quota_acct_win_5h");
+  if (w.duration_minutes === QUOTA_WINDOW_WEEKLY_MINUTES) return t("quota_acct_win_week");
   const slot = tr(`quota_acct_slot_${w.slot}`, w.slot);
   return t("quota_acct_win_unknown", { slot });
 }
@@ -150,7 +163,7 @@ function freshnessText(aq: AccountQuota, now: Date, t: TFunc): string {
 function LegacyQuota(props: { quota?: ManagedQuota; now: Date }) {
   const { t } = useI18n();
   const q = props.quota;
-  const remaining = q ? Math.max(0, Math.min(100, Math.round(100 - q.used_percent))) : 0;
+  const remaining = remainingPercent(q?.used_percent) ?? 0;
   const cd = q?.resets_at ? fmtHMS(secondsUntil(q.resets_at, props.now)) : "";
 
   return (
