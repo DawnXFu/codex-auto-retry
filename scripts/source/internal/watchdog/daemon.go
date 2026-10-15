@@ -50,6 +50,12 @@ type daemon struct {
 	writeStatusFile                     func(string, any) error
 	stateWriteDeferred                  bool
 	statusWriteDeferred                 bool
+	// accountQuota is the optional single-flight display-read cache. It is nil
+	// when the runner cannot attach to a shared app-server at all; the
+	// management surface then resolves account quota from rollout evidence
+	// alone.
+	accountQuota     *accountQuotaCache
+	accountQuotaPath string
 }
 
 func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeRunner) (*daemon, error) {
@@ -96,6 +102,21 @@ func newDaemon(config Config, dataDir string, logger *safeLogger, runner resumeR
 			return writeRuntimeStateAtomic(path, state)
 		},
 		writeStatusFile: writeJSONAtomic,
+	}
+	daemon.accountQuotaPath = filepath.Join(dataDir, accountQuotaFileName)
+	if reader, ok := runner.(accountQuotaReader); ok {
+		cache := newAccountQuotaCache(daemon.accountQuotaPath, logger)
+		cache.reader = reader
+		// The post-read generation re-check is optional: without it a late
+		// response can still be installed, but evidence is still dropped on
+		// confirmed generation changes reported by later reads.
+		if verifier, ok := runner.(accountQuotaEndpointSource); ok {
+			cache.verifier = verifier
+		}
+		daemon.accountQuota = cache
+	} else {
+		// A stale record must not outlive the capability that produced it.
+		_ = os.Remove(daemon.accountQuotaPath)
 	}
 	daemon.reconcileStartupState(time.Now().UTC())
 	return daemon, nil
@@ -180,6 +201,7 @@ func (d *daemon) tick(ctx context.Context, now time.Time) error {
 	if !sharedBackendEnabled {
 		d.reconcileSharedBackendCleanup(ctx)
 	}
+	d.maybeRefreshAccountQuota(ctx, now, sharedBackendEnabled)
 	d.reconcileAwaitingLifecycle(ctx, now)
 	d.mu.Lock()
 	jobs := d.dispatchDueLocked(now)

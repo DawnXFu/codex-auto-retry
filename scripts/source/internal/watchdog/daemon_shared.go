@@ -52,6 +52,26 @@ func (d *daemon) checkSharedAppServerMemory(ctx context.Context, now time.Time) 
 	d.controllerState = state
 	d.mu.Unlock()
 }
+
+// maybeRefreshAccountQuota kicks the single-flight display read when the
+// cache decides one is due. It never performs the read inline: the tick only
+// claims the flight slot, and the goroutine tracked by d.wg performs the
+// attach, generation check, and persistence. Disabled shared mode and
+// runners without the attach capability degrade to the rollout fallback.
+func (d *daemon) maybeRefreshAccountQuota(ctx context.Context, now time.Time, sharedBackendEnabled bool) {
+	cache := d.accountQuota
+	if cache == nil || !sharedBackendEnabled {
+		return
+	}
+	if !cache.startRefresh(now) {
+		return
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		cache.refresh(ctx)
+	}()
+}
 func (d *daemon) reconcileSharedBackendCleanup(ctx context.Context) {
 	cleaner, ok := d.runner.(sharedBackendCleanupReconciler)
 	if !ok {
