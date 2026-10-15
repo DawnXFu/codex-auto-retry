@@ -177,3 +177,73 @@ Fields a client needs beyond the obvious counters:
 | 405 | Go `net/http` default | wrong method (routes are `GET`-only) |
 | 500 | `{"error": "snapshot_unavailable"}` | state/config unreadable this tick |
 | 500 | `{"error": "conversations_unavailable"}` | `/conversations` catalog scan failed internally |
+
+## Conversation items endpoint
+
+<!-- C-04: conversation detail pagination (spec #19, milestone 2). -->
+
+`GET /conversations/{rootId}/{threadId}/items` returns one bounded page of
+projected conversation items for a single persisted conversation. It is
+implemented in `scripts/source/internal/watchdog/api_conversation_items.go`
+on top of `ConversationCatalog.resolve` and `ConversationReader.readItems`.
+
+**Identity contract.** `{rootId}` and `{threadId}` are the opaque
+`(root_id, thread_id)` pair from the conversations list, never filesystem
+paths. Any parameter shaped like a path fragment (containing `/`, `\`, `..`,
+or the encodings `%2e`/`%5c`/`%2f`) is refused before whitelist resolution,
+and resolution itself validates the rollout filename, its `session_meta`
+identity, and canonical containment under a monitored root.
+
+**Query parameters.**
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `cursor` | (empty = newest page) | opaque position token from a previous `next_cursor`/`tail_cursor` |
+| `direction` | `backward` | `backward` pages persisted history newest-first; `forward` follows appended records incrementally |
+| `limit` | `50` | items per page; clamped to `200`, non-numeric/negative values return `400` |
+
+**Response** (`application/json`, `Cache-Control: no-store` on every
+authenticated response):
+
+```ts
+{
+  items: [{
+    id: string;              // stable within the file generation
+    kind: "user_message" | "assistant_message" | "tool_call" |
+          "tool_result" | "boundary" | "unknown";
+    timestamp?: string;      // RFC 3339
+    text?: string;           // bounded; attachments/oversize flag `omitted`
+    tool?: string;           // tool_call name
+    marker?: string;         // boundary/unknown subtype
+    collapsed?: boolean;
+    omitted?: boolean;
+  }];
+  next_cursor?: string;      // continue in the requested direction
+  tail_cursor?: string;      // anchor at end of persisted content for forward polling
+  state: "complete_persisted" | "partial" | "unsupported";
+  archived?: boolean;
+  kind?: "ordinary" | "subagent";
+}
+```
+
+`state=partial` means scan bounds or degraded records limited the projection;
+`state=unsupported` means the resolved file no longer carries a `session_meta`
+for the thread. Streaming deltas, deleted/rotated history, and unpersisted
+content are never fabricated.
+
+**Status mapping.**
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | page JSON | one page (possibly empty when nothing new persists) |
+| 400 | `{"error": "invalid_cursor" \| "invalid_direction" \| "invalid_limit"}` | malformed client parameter |
+| 401 | `{"error": "unauthorized"}` | missing/wrong bearer token |
+| 404 | `{"error": "conversation_not_found"}` | unknown root/thread, invalid identity, or path-shaped parameter |
+| 409 | `{"error": "conversation_changed"}` | rollout truncated/replaced/rotated since the cursor was minted; clients re-anchor |
+| 500 | `{"error": "conversations_unavailable"}` | internal read failure (never carries detail or content) |
+| 503 | `{"error": "conversation_read_unavailable"}` | request context ended while waiting for a read slot |
+
+**Bounds.** At most 4 detail reads run concurrently (queued requests wait on
+their own request context); each read is internally bounded by line size,
+scan bytes, and scan duration. No conversation content or filesystem detail
+appears in error bodies or logs.

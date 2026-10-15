@@ -78,6 +78,7 @@ func serveManagementAPI(ctx context.Context, service *managementService, dataDir
 		writeAPIJSON(w, http.StatusOK, snapshot)
 	})
 	mux.HandleFunc("GET /conversations", conversationsListHandler(service, token))
+	mux.HandleFunc("GET /conversations/{rootId}/{threadId}/items", conversationItemsHandler(service, token))
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
