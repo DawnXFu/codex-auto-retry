@@ -154,14 +154,27 @@ type conversationManifest struct {
 	lastActive time.Time
 }
 
+// resolvedConversationFile is one whitelisted rollout file belonging to a
+// resolved conversation: a canonical, containment-checked path plus its
+// archive state.
+type resolvedConversationFile struct {
+	Path     string
+	Archived bool
+}
+
 // resolvedConversation is the whitelisted-file handoff used by
-// ConversationReader: an opaque (root_id, thread_id) mapped back to a
-// validated real path under the root that produced it.
+// ConversationReader: an opaque (root_id, thread_id) mapped back to validated
+// real paths under the root that produced it. A thread resumed across several
+// rollout files resolves to every segment, ordered chronologically by first
+// persisted record timestamp (stable path tiebreak) so the reader can treat
+// the set as one concatenated log.
 type resolvedConversation struct {
 	RootID   string
 	ThreadID string
 	Root     sessionRoot
-	Path     string
+	Files    []resolvedConversationFile
+	// Archived is true only when every constituent file sits under
+	// archived_sessions; a mixed live+archived set reads as live.
 	Archived bool
 	Kind     string
 }
@@ -614,18 +627,21 @@ func tailTimestamp(file *os.File, size int64) (time.Time, bool) {
 	return latest, !latest.IsZero()
 }
 
-// resolve maps an opaque (root_id, thread_id) pair back to the validated
-// rollout file a reader may open. It never accepts client-supplied paths.
-func (c *conversationCatalog) resolve(rootID, threadID string) (resolvedConversation, error) {
+// resolveCandidates walks the whitelisted directories of one root and
+// collects every rollout file that both names the thread in its filename and
+// re-asserts that identity in its persisted session_meta. Each candidate is a
+// canonical path already verified to stay inside its scan directory.
+func (c *conversationCatalog) resolveCandidates(rootID, threadID string) (sessionRoot, []conversationManifest, error) {
 	threadID = strings.ToLower(strings.TrimSpace(threadID))
 	if threadIDFromPath(threadID+".jsonl") != threadID {
-		return resolvedConversation{}, fmt.Errorf("%w: invalid thread id", errConversationNotFound)
+		return sessionRoot{}, nil, fmt.Errorf("%w: invalid thread id", errConversationNotFound)
 	}
 	root, ok := c.byID[rootID]
 	if !ok {
-		return resolvedConversation{}, fmt.Errorf("%w: unknown root", errConversationNotFound)
+		return sessionRoot{}, nil, fmt.Errorf("%w: unknown root", errConversationNotFound)
 	}
 	var candidates []conversationManifest
+	seen := map[string]bool{}
 	for _, directory := range root.scanDirectories() {
 		archived := rootDirIsArchived(root, directory)
 		realDir, err := realCatalogDir(directory)
@@ -640,13 +656,14 @@ func (c *conversationCatalog) resolve(rootID, threadID string) (resolvedConversa
 				return errCatalogScanTruncated
 			}
 			resolved, ok := catalogCandidatePath(realDir, path)
-			if !ok {
+			if !ok || seen[resolved] {
 				return nil
 			}
 			manifest, ok := inspectConversationManifest(resolved, threadID)
 			if !ok {
 				return nil
 			}
+			seen[resolved] = true
 			manifest.rootID = rootID
 			manifest.archived = archived
 			candidates = append(candidates, manifest)
@@ -654,7 +671,18 @@ func (c *conversationCatalog) resolve(rootID, threadID string) (resolvedConversa
 		})
 	}
 	if len(candidates) == 0 {
-		return resolvedConversation{}, fmt.Errorf("%w", errConversationNotFound)
+		return sessionRoot{}, nil, fmt.Errorf("%w", errConversationNotFound)
+	}
+	return root, candidates, nil
+}
+
+// resolve maps an opaque (root_id, thread_id) pair back to the single
+// preferred rollout file (live sessions/ copy over an archived twin). It
+// never accepts client-supplied paths.
+func (c *conversationCatalog) resolve(rootID, threadID string) (resolvedConversation, error) {
+	root, candidates, err := c.resolveCandidates(rootID, threadID)
+	if err != nil {
+		return resolvedConversation{}, err
 	}
 	primary := candidates[0]
 	for _, candidate := range candidates[1:] {
@@ -666,10 +694,53 @@ func (c *conversationCatalog) resolve(rootID, threadID string) (resolvedConversa
 		RootID:   rootID,
 		ThreadID: threadID,
 		Root:     root,
-		Path:     primary.path,
+		Files:    []resolvedConversationFile{{Path: primary.path, Archived: primary.archived}},
 		Archived: primary.archived,
 		Kind:     primary.kind,
 	}, nil
+}
+
+// resolveAll resolves every whitelisted segment of the thread into one
+// resolvedConversation whose Files form a virtual concatenated log, oldest
+// segment first. Ordering follows the first persisted record timestamp in
+// each file (stable path tiebreak); archive state is deliberately ignored for
+// ordering so a live segment can precede or follow an archived one purely by
+// record time. Archived reports true only when every segment is archived, and
+// Kind comes from the preferred manifest's session_meta as in resolve.
+func (c *conversationCatalog) resolveAll(rootID, threadID string) (resolvedConversation, error) {
+	root, candidates, err := c.resolveCandidates(rootID, threadID)
+	if err != nil {
+		return resolvedConversation{}, err
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if !candidates[i].startedAt.Equal(candidates[j].startedAt) {
+			return candidates[i].startedAt.Before(candidates[j].startedAt)
+		}
+		return candidates[i].path < candidates[j].path
+	})
+	resolved := resolvedConversation{
+		RootID:   rootID,
+		ThreadID: threadID,
+		Root:     root,
+		Archived: true,
+	}
+	preferred := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if preferConversationManifest(candidate, preferred) {
+			preferred = candidate
+		}
+	}
+	resolved.Kind = preferred.kind
+	for _, candidate := range candidates {
+		resolved.Files = append(resolved.Files, resolvedConversationFile{
+			Path:     candidate.path,
+			Archived: candidate.archived,
+		})
+		if !candidate.archived {
+			resolved.Archived = false
+		}
+	}
+	return resolved, nil
 }
 
 func rootDirIsArchived(root sessionRoot, directory string) bool {

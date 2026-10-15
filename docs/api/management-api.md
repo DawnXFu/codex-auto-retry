@@ -201,7 +201,12 @@ Fields a client needs beyond the obvious counters:
 `GET /conversations/{rootId}/{threadId}/items` returns one bounded page of
 projected conversation items for a single persisted conversation. It is
 implemented in `scripts/source/internal/watchdog/api_conversation_items.go`
-on top of `ConversationCatalog.resolve` and `ConversationReader.readItems`.
+on top of `ConversationCatalog.resolveAll` and `ConversationReader.readItems`.
+A thread resumed across several rollout files resolves to every whitelisted
+segment; the reader stitches them into one chronological log ordered by each
+segment's first persisted record timestamp, suppresses identical records
+duplicated across files, and reports `archived` only when every segment is
+archived.
 
 **Identity contract.** `{rootId}` and `{threadId}` are the opaque
 `(root_id, thread_id)` pair from the conversations list, never filesystem

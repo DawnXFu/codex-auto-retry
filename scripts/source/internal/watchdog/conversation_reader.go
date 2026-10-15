@@ -73,10 +73,12 @@ const (
 const conversationMessageDedupSpan = 8
 
 // readerCursorVersion identifies the opaque cursor schema. Version 2 added
-// the dedup fingerprint ring (the d field); earlier cursors cannot describe
-// ring state and are rejected as invalid so clients re-anchor at the latest
-// page — permitted under the opaque-cursor contract.
-const readerCursorVersion = 2
+// the dedup fingerprint ring (the d field); version 3 generalizes positions
+// to a constituent file index plus per-file fingerprints so one conversation
+// can span multiple rollout files. Earlier cursors cannot describe the file
+// set and are rejected as invalid so clients re-anchor at the latest page —
+// permitted under the opaque-cursor contract.
+const readerCursorVersion = 3
 
 // Completeness states for a page of items.
 const (
@@ -127,6 +129,9 @@ type conversationItem struct {
 	// family records which persisted record family produced the item
 	// (conversationFamily*); it feeds message dedup and is internal-only.
 	family string
+	// fileIndex records which constituent rollout file produced the item in
+	// a multi-segment read; it feeds cross-file dedup and is internal-only.
+	fileIndex int
 }
 
 // conversationItemPage is one page of projected items in chronological order.
@@ -150,25 +155,35 @@ func newConversationReader(catalog *conversationCatalog) *conversationReader {
 	return &conversationReader{catalog: catalog}
 }
 
-// readerCursor is the opaque position token for item pages. The fingerprint
-// (first-line hash, size, mtime at issue) detects truncation, replacement,
-// and rotation without trusting client-supplied positions. D is a bounded
-// ring — at most conversationMessageDedupSpan entries — of short message
-// fingerprints for the most recently emitted user/assistant items nearest
-// the cursor's seam, so a dual-written pair split across a page boundary or
-// a forward poll still collapses. Fingerprints are hashes only; raw message
-// text never enters a cursor.
-type readerCursor struct {
-	V    int      `json:"v"`
-	Head string   `json:"h"`
-	Off  int64    `json:"o"`
-	Size int64    `json:"s"`
-	Mod  int64    `json:"m"`
-	D    []string `json:"d,omitempty"`
+// readerCursorFile fingerprints one constituent rollout file: its first-line
+// hash plus size and mtime at issue. A cursor carries one entry per resolved
+// file so truncation, replacement, or rotation of ANY segment invalidates it;
+// the last segment is allowed to grow (append-only tail writes keep forward
+// cursors alive).
+type readerCursorFile struct {
+	Head string `json:"h"`
+	Size int64  `json:"s"`
+	Mod  int64  `json:"m"`
 }
 
-func encodeReaderCursor(head string, off, size, mod int64, dedup []string) string {
-	data, err := json.Marshal(readerCursor{V: readerCursorVersion, Head: head, Off: off, Size: size, Mod: mod, D: dedup})
+// readerCursor is the opaque position token for item pages. F+O address one
+// byte position inside the resolved file set (file index + offset within that
+// file) and Files fingerprints the whole constituent set. D is a bounded
+// ring — at most conversationMessageDedupSpan entries — of short fingerprints
+// for the emitted items nearest the cursor's seam, so a dual-written pair or
+// a cross-file duplicated record split across a page boundary or a forward
+// poll still collapses. Fingerprints are hashes only; raw message text never
+// enters a cursor.
+type readerCursor struct {
+	V     int                `json:"v"`
+	F     int                `json:"f"`
+	O     int64              `json:"o"`
+	Files []readerCursorFile `json:"w"`
+	D     []string           `json:"d,omitempty"`
+}
+
+func encodeReaderCursor(fileIndex int, off int64, files []readerCursorFile, dedup []string) string {
+	data, err := json.Marshal(readerCursor{V: readerCursorVersion, F: fileIndex, O: off, Files: files, D: dedup})
 	if err != nil {
 		return ""
 	}
@@ -188,11 +203,17 @@ func decodeReaderCursor(raw string) (*readerCursor, error) {
 	if err := json.Unmarshal(data, &cursor); err != nil {
 		return nil, fmt.Errorf("%w", errConversationCursorInvalid)
 	}
-	head, err := hex.DecodeString(cursor.Head)
-	if cursor.V != readerCursorVersion || err != nil || len(head) != sha256.Size ||
-		cursor.Off < 0 || cursor.Size < 0 || cursor.Mod < 0 ||
+	if cursor.V != readerCursorVersion || cursor.F < 0 || cursor.O < 0 ||
+		len(cursor.Files) == 0 || len(cursor.Files) > maxCatalogResolveCandidates ||
+		cursor.F >= len(cursor.Files) ||
 		len(cursor.D) > conversationMessageDedupSpan {
 		return nil, fmt.Errorf("%w", errConversationCursorInvalid)
+	}
+	for _, witness := range cursor.Files {
+		head, err := hex.DecodeString(witness.Head)
+		if err != nil || len(head) != sha256.Size || witness.Size < 0 || witness.Mod < 0 {
+			return nil, fmt.Errorf("%w", errConversationCursorInvalid)
+		}
 	}
 	for _, fingerprint := range cursor.D {
 		decoded, err := hex.DecodeString(fingerprint)
@@ -214,24 +235,82 @@ func parseConversationDirection(raw string) (string, error) {
 	}
 }
 
-// readItems resolves the opaque identity to a whitelisted rollout file, then
-// returns one bounded page of projected items. The file is re-validated after
-// open so a swapped file can never borrow the resolved identity (TOCTOU).
+// readItems resolves the opaque identity to the whitelisted rollout files of
+// a conversation, then returns one bounded page of projected items. Each file
+// is re-validated after open so a swapped file can never borrow the resolved
+// identity (TOCTOU).
 func (r *conversationReader) readItems(ctx context.Context, rootID, threadID, cursor, direction string, limit int) (conversationItemPage, error) {
 	direction, err := parseConversationDirection(direction)
 	if err != nil {
 		return conversationItemPage{}, err
 	}
-	resolved, err := r.catalog.resolve(rootID, threadID)
+	resolved, err := r.catalog.resolveAll(rootID, threadID)
 	if err != nil {
 		return conversationItemPage{}, err
 	}
 	return r.readResolvedItems(ctx, resolved, cursor, direction, limit)
 }
 
-// readResolvedItems reads one page from an already-whitelisted rollout file.
-// Splitting it from resolve keeps the identity mapping the only place that
-// accepts (root_id, thread_id).
+// conversationOpenFile is one constituent rollout file held open for a read,
+// with the witness data cursors carry: first-line hash, size, mtime, and the
+// end of persisted content (before any trailing partial line).
+type conversationOpenFile struct {
+	file    *os.File
+	size    int64
+	mod     int64
+	tail    int64
+	headHex string
+}
+
+// errConversationIdentityMismatch marks a file that opened cleanly but no
+// longer carries a session_meta for the thread — a post-resolve swap, never
+// a usable segment.
+var errConversationIdentityMismatch = errors.New("conversation identity mismatch")
+
+// openConversationFile opens one resolved segment and re-validates its
+// persisted identity on the open handle — never a second path open — so a
+// file swapped between resolve and read cannot borrow the identity.
+func openConversationFile(path, threadID string) (*conversationOpenFile, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: rollout open", errConversationNotFound)
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		file.Close()
+		return nil, fmt.Errorf("%w: rollout stat", errConversationNotFound)
+	}
+	if _, ok := inspectConversationManifestHandle(file, info, path, threadID); !ok {
+		file.Close()
+		return nil, errConversationIdentityMismatch
+	}
+	head, ok := readFirstRolloutLine(file, info.Size())
+	if !ok {
+		file.Close()
+		return nil, errConversationIdentityMismatch
+	}
+	headSum := sha256.Sum256(head)
+	return &conversationOpenFile{
+		file:    file,
+		size:    info.Size(),
+		mod:     info.ModTime().UnixNano(),
+		tail:    rolloutTailOffset(file, info.Size()),
+		headHex: hex.EncodeToString(headSum[:]),
+	}, nil
+}
+
+// conversationScanBudget is the single byte/time budget shared by every
+// constituent file of one read: a multi-segment page gets the same scan
+// bounds as a single-file one, not a per-file multiplication.
+type conversationScanBudget struct {
+	deadline time.Time
+	scanned  int64
+}
+
+// readResolvedItems reads one page from an already-whitelisted conversation,
+// treating the file set as one virtual concatenated log ordered oldest file
+// first. Splitting it from resolveAll keeps the identity mapping the only
+// place that accepts (root_id, thread_id).
 func (r *conversationReader) readResolvedItems(ctx context.Context, resolved resolvedConversation, cursor, direction string, limit int) (conversationItemPage, error) {
 	threadID := resolved.ThreadID
 	position, err := decodeReaderCursor(cursor)
@@ -248,17 +327,67 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 		limit = maxReaderPageLimit
 	}
 
-	file, err := os.Open(resolved.Path)
-	if err != nil {
+	// Open every constituent file and witness it. With a cursor, the whole
+	// minted set must still exist — a vanished or re-identified segment means
+	// the file set changed under the client.
+	files := make([]*conversationOpenFile, 0, len(resolved.Files))
+	identityMissed := false
+	for _, segment := range resolved.Files {
+		file, err := openConversationFile(segment.Path, threadID)
+		if err != nil {
+			if errors.Is(err, errConversationIdentityMismatch) {
+				identityMissed = true
+			}
+			continue
+		}
+		files = append(files, file)
+	}
+	defer func() {
+		for _, file := range files {
+			file.file.Close()
+		}
+	}()
+	if position != nil && len(files) != len(position.Files) {
+		return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
+	}
+	if len(files) == 0 {
+		if identityMissed {
+			return conversationItemPage{
+				Items:    []conversationItem{},
+				State:    conversationStateUnsupported,
+				Archived: resolved.Archived,
+				Kind:     resolved.Kind,
+			}, nil
+		}
 		return conversationItemPage{}, fmt.Errorf("%w: rollout open", errConversationNotFound)
 	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return conversationItemPage{}, fmt.Errorf("%w: rollout stat", errConversationNotFound)
+	if position != nil {
+		// Every constituent file is checked against its minted fingerprint.
+		// The newest segment may grow (appended records); earlier segments
+		// are frozen history — any size or mtime drift invalidates.
+		last := len(files) - 1
+		for i, file := range files {
+			witness := position.Files[i]
+			if file.headHex != witness.Head || file.size < witness.Size || file.mod < witness.Mod {
+				return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
+			}
+			if i != last && (file.size != witness.Size || file.mod != witness.Mod) {
+				return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
+			}
+		}
+		target := files[position.F]
+		if position.O > target.size {
+			return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
+		}
+		if position.O > 0 {
+			// Issued offsets only ever sit on record boundaries: byte O-1
+			// must be the newline terminating the previous record.
+			boundary := make([]byte, 1)
+			if _, err := target.file.ReadAt(boundary, position.O-1); err != nil || boundary[0] != '\n' {
+				return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
+			}
+		}
 	}
-	size := info.Size()
-	mod := info.ModTime().UnixNano()
 
 	page := conversationItemPage{
 		Items:    []conversationItem{},
@@ -266,39 +395,7 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 		Archived: resolved.Archived,
 		Kind:     resolved.Kind,
 	}
-	// Identity is only trustworthy if the file still carries a session_meta
-	// for this thread. The check runs on the already-open handle — never a
-	// second path open — so a swapped file cannot borrow the resolved
-	// identity between resolve and read. Anything else is an unsupported
-	// projection, not an empty conversation.
-	if _, ok := inspectConversationManifestHandle(file, info, resolved.Path, threadID); !ok {
-		page.State = conversationStateUnsupported
-		return page, nil
-	}
-	head, ok := readFirstRolloutLine(file, size)
-	if !ok {
-		page.State = conversationStateUnsupported
-		return page, nil
-	}
-	headSum := sha256.Sum256(head)
-	headHex := hex.EncodeToString(headSum[:])
-	if position != nil {
-		if size < position.Size || headHex != position.Head ||
-			mod < position.Mod || position.Off > size {
-			return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
-		}
-		if position.Off > 0 {
-			// Issued offsets only ever sit on record boundaries: byte Off-1
-			// must be the newline terminating the previous record.
-			boundary := make([]byte, 1)
-			if _, err := file.ReadAt(boundary, position.Off-1); err != nil || boundary[0] != '\n' {
-				return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
-			}
-		}
-	}
-
-	tail := rolloutTailOffset(file, size)
-	deadline := time.Now().Add(maxReaderScanDuration)
+	budget := &conversationScanBudget{deadline: time.Now().Add(maxReaderScanDuration)}
 	// The incoming cursor's fingerprint ring covers the seam between this
 	// page and what the client already rendered; leftovers the scan does not
 	// consume carry into freshly minted cursors.
@@ -306,62 +403,87 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 	if position != nil {
 		dedupRing = position.D
 	}
+	lastFile := len(files) - 1
+	witnesses := conversationWitnesses(files)
+	tailFile := lastFile
+	tailOff := files[lastFile].tail
 
 	if direction == conversationDirectionForward {
-		start := int64(0)
+		startFile, start := 0, int64(0)
 		if position != nil {
-			start = position.Off
+			startFile, start = position.F, position.O
 		}
-		items, resume, hasMore, partial, err := scanConversationForward(ctx, file, start, tail, limit, deadline)
+		items, resumeFile, resumeOff, hasMore, partial, err := scanConversationFilesForward(ctx, files, startFile, start, limit, budget)
 		if err != nil {
 			return conversationItemPage{}, err
 		}
 		items, dedupRing = suppressCrossPageDuplicates(items, dedupRing, direction)
-		page.Items = dedupeConversationMessages(items)
+		page.Items = dedupeConversationMessages(suppressEarlierFileDuplicates(items))
 		if partial {
 			page.State = conversationStatePartial
 		}
 		// A forward anchor seams at the page's newest edge: keep the K
 		// latest fingerprints — unconsumed leftovers are the older emitted
-		// messages, this page's are newer.
-		pageFps := conversationPageFingerprints(page.Items)
+		// messages, this page's are newer. Record fingerprints are minted
+		// only for items from a non-tail file: only they can twin a
+		// later-segment duplicate.
+		pageFps := conversationPageFingerprints(page.Items, func(item conversationItem) bool {
+			return item.fileIndex < lastFile
+		})
 		tailRing := mintForwardRing(dedupRing, pageFps)
-		page.TailCursor = encodeReaderCursor(headHex, tail, size, mod, tailRing)
+		page.TailCursor = encodeReaderCursor(tailFile, tailOff, witnesses, tailRing)
 		if hasMore {
-			page.NextCursor = encodeReaderCursor(headHex, resume, size, mod, tailRing)
+			page.NextCursor = encodeReaderCursor(resumeFile, resumeOff, witnesses, tailRing)
 		}
 		return page, nil
 	}
 
-	end := tail
+	endFile, end := lastFile, tailOff
 	if position != nil {
-		if position.Off > tail {
+		if position.O > files[position.F].tail {
 			return conversationItemPage{}, fmt.Errorf("%w", errConversationFileChanged)
 		}
-		end = position.Off
+		endFile, end = position.F, position.O
 	}
-	items, resume, hasMore, partial, err := scanConversationBackward(ctx, file, end, limit, deadline)
+	items, resumeFile, resumeOff, hasMore, partial, err := scanConversationFilesBackward(ctx, files, endFile, end, limit, budget)
 	if err != nil {
 		return conversationItemPage{}, err
 	}
 	items, dedupRing = suppressCrossPageDuplicates(items, dedupRing, direction)
-	page.Items = dedupeConversationMessages(items)
+	page.Items = dedupeConversationMessages(suppressEarlierFileDuplicates(items))
 	if partial {
 		page.State = conversationStatePartial
 	}
-	pageFps := conversationPageFingerprints(page.Items)
 	// The tail anchor faces appended content; the chronologically newest
 	// emitted fingerprints are the unconsumed leftovers (they describe the
 	// newer page this page was paged from), then this page's own tail.
-	tailRing := mintBackwardTailRing(pageFps, dedupRing)
-	page.TailCursor = encodeReaderCursor(headHex, tail, size, mod, tailRing)
+	pageFpsTail := conversationPageFingerprints(page.Items, func(item conversationItem) bool {
+		return item.fileIndex < lastFile
+	})
+	tailRing := mintBackwardTailRing(pageFpsTail, dedupRing)
+	page.TailCursor = encodeReaderCursor(tailFile, tailOff, witnesses, tailRing)
 	if hasMore {
 		// The older seam sits at this page's oldest edge: keep the K
 		// fingerprints of the first emitted messages, padding with
-		// unconsumed leftovers when the page is thin.
-		page.NextCursor = encodeReaderCursor(headHex, resume, size, mod, mintBackwardRing(pageFps, dedupRing))
+		// unconsumed leftovers when the page is thin. Record fingerprints
+		// are minted only for items from a later segment: only they can
+		// twin an earlier-file duplicate on the next page.
+		pageFpsOlder := conversationPageFingerprints(page.Items, func(item conversationItem) bool {
+			return item.fileIndex > 0
+		})
+		page.NextCursor = encodeReaderCursor(resumeFile, resumeOff, witnesses, mintBackwardRing(pageFpsOlder, dedupRing))
 	}
 	return page, nil
+}
+
+// conversationWitnesses snapshots the per-file fingerprints minted into
+// cursors: head hash, size, and mtime of every constituent file.
+func conversationWitnesses(files []*conversationOpenFile) []readerCursorFile {
+	witnesses := make([]readerCursorFile, len(files))
+	for i, file := range files {
+		witnesses[i] = readerCursorFile{Head: file.headHex, Size: file.size, Mod: file.mod}
+	}
+	return witnesses
 }
 
 // readFirstRolloutLine returns the first complete (newline-terminated) line
@@ -413,25 +535,77 @@ func rolloutTailOffset(file *os.File, size int64) int64 {
 	return start
 }
 
-// scanConversationBackward collects up to limit projected items scanning
-// toward the head from end (exclusive). Items come out in chronological
+// scanConversationFilesBackward pages toward the head of the virtual log:
+// file fileIndex from end (exclusive), then earlier files from each one's
+// persisted tail. Items come out in chronological order. resume is the
+// (file, offset) start of the oldest line this page processed — a continuing
+// backward page ends there — and hasMore reports whether unprocessed content
+// remains before it.
+func scanConversationFilesBackward(ctx context.Context, files []*conversationOpenFile, fileIndex int, end int64, limit int, budget *conversationScanBudget) (items []conversationItem, resumeFile int, resumeOff int64, hasMore, partial bool, err error) {
+	// Files are scanned newest-first but their pages assemble oldest-first:
+	// each per-file page is already chronological internally.
+	segments := make([][]conversationItem, 0, fileIndex+1)
+	emitted := 0
+	for fi := fileIndex; fi >= 0; fi-- {
+		fileEnd := end
+		if fi != fileIndex {
+			fileEnd = files[fi].tail
+		}
+		if fileEnd <= 0 {
+			continue // no persisted records in this segment
+		}
+		if emitted >= limit {
+			// The limit landed exactly on a file boundary; the next page
+			// resumes at this file's tail.
+			return assembleSegments(segments), fi, fileEnd, true, partial, nil
+		}
+		page, boundary, more, degraded, scanErr := scanConversationBackward(ctx, files[fi], fi, fileEnd, limit-emitted, budget)
+		if scanErr != nil {
+			return nil, 0, 0, false, partial, scanErr
+		}
+		segments = append(segments, page)
+		emitted += len(page)
+		partial = partial || degraded
+		if more {
+			return assembleSegments(segments), fi, boundary, true, partial, nil
+		}
+	}
+	return assembleSegments(segments), 0, 0, false, partial, nil
+}
+
+// assembleSegments flattens per-file pages scanned newest-first into the
+// page's chronological order (oldest file first).
+func assembleSegments(segments [][]conversationItem) []conversationItem {
+	total := 0
+	for _, segment := range segments {
+		total += len(segment)
+	}
+	items := make([]conversationItem, 0, total)
+	for i := len(segments) - 1; i >= 0; i-- {
+		items = append(items, segments[i]...)
+	}
+	return items
+}
+
+// scanConversationBackward collects up to limit projected items scanning one
+// file toward the head from end (exclusive). Items come out in chronological
 // order. resume is the start offset of the oldest line this page processed:
 // a continuing backward page ends there, so emitted content is never replayed
 // and every issued offset sits after a newline (the cursor boundary
 // invariant). hasMore reports whether unprocessed content remains before it.
-func scanConversationBackward(ctx context.Context, file *os.File, end int64, limit int, deadline time.Time) (items []conversationItem, resume int64, hasMore, partial bool, err error) {
+// The shared budget carries byte and time bounds across constituent files.
+func scanConversationBackward(ctx context.Context, file *conversationOpenFile, fileIndex int, end int64, limit int, budget *conversationScanBudget) (items []conversationItem, resume int64, hasMore, partial bool, err error) {
 	collected := make([]conversationItem, 0, limit)
 	lineEnd := end
 	boundary := end
 	pos := end
-	scanned := int64(0)
 	stopped := false
 	for pos > 0 && !stopped {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, false, partial, err
 		}
-		remaining := maxReaderScanBytes - scanned
-		if time.Now().After(deadline) || remaining <= 0 {
+		remaining := maxReaderScanBytes - budget.scanned
+		if time.Now().After(budget.deadline) || remaining <= 0 {
 			partial = true
 			break
 		}
@@ -444,19 +618,19 @@ func scanConversationBackward(ctx context.Context, file *os.File, end int64, lim
 		}
 		start := pos - block
 		buffer := make([]byte, block)
-		read, readErr := file.ReadAt(buffer, start)
+		read, readErr := file.file.ReadAt(buffer, start)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return nil, 0, false, partial, readErr
 		}
 		buffer = buffer[:read]
-		scanned += int64(len(buffer))
+		budget.scanned += int64(len(buffer))
 		for i := len(buffer) - 1; i >= 0; i-- {
 			if buffer[i] != '\n' {
 				continue
 			}
 			lineStart := start + int64(i) + 1
 			if lineStart < lineEnd {
-				item, emit, degraded, itemErr := readConversationLine(file, lineStart, lineEnd)
+				item, emit, degraded, itemErr := readConversationLine(file.file, fileIndex, lineStart, lineEnd)
 				if itemErr != nil {
 					return nil, 0, false, partial, itemErr
 				}
@@ -480,7 +654,7 @@ func scanConversationBackward(ctx context.Context, file *os.File, end int64, lim
 		// The first line ends at lineEnd with no leading newline. Only process
 		// it when the scan really reached the head; a bounds break leaves
 		// lineEnd mid-file and that range is not one line.
-		item, emit, degraded, itemErr := readConversationLine(file, 0, lineEnd)
+		item, emit, degraded, itemErr := readConversationLine(file.file, fileIndex, 0, lineEnd)
 		if itemErr != nil {
 			return nil, 0, false, partial, itemErr
 		}
@@ -499,18 +673,51 @@ func scanConversationBackward(ctx context.Context, file *os.File, end int64, lim
 	return collected, boundary, boundary > 0, partial, nil
 }
 
-// scanConversationForward projects complete lines starting at start up to
-// tail (the end of persisted content). resume is the byte offset of the first
-// unread byte after the last processed line; hasMore reports whether more
-// complete content sits between resume and tail.
-func scanConversationForward(ctx context.Context, file *os.File, start, tail int64, limit int, deadline time.Time) (items []conversationItem, resume int64, hasMore, partial bool, err error) {
-	if _, err := file.Seek(start, io.SeekStart); err != nil {
+// scanConversationFilesForward pages toward the tail of the virtual log:
+// file fileIndex from start, then each later file from its head up to its
+// persisted tail. resume is the (file, offset) of the first unread byte after
+// the last processed line; hasMore reports whether more complete content
+// sits between resume and the virtual log's end.
+func scanConversationFilesForward(ctx context.Context, files []*conversationOpenFile, fileIndex int, start int64, limit int, budget *conversationScanBudget) (items []conversationItem, resumeFile int, resumeOff int64, hasMore, partial bool, err error) {
+	collected := make([]conversationItem, 0, limit)
+	for fi := fileIndex; fi < len(files); fi++ {
+		fileStart := start
+		if fi != fileIndex {
+			fileStart = 0
+		}
+		if fileStart >= files[fi].tail {
+			continue // nothing persisted in this segment
+		}
+		if len(collected) >= limit {
+			// The limit landed exactly on a file boundary; the next page
+			// resumes at this file's head.
+			return collected, fi, fileStart, true, partial, nil
+		}
+		page, pos, more, degraded, scanErr := scanConversationForward(ctx, files[fi], fi, fileStart, files[fi].tail, limit-len(collected), budget)
+		if scanErr != nil {
+			return nil, 0, 0, false, partial, scanErr
+		}
+		collected = append(collected, page...)
+		partial = partial || degraded
+		if more {
+			return collected, fi, pos, true, partial, nil
+		}
+	}
+	return collected, 0, 0, false, partial, nil
+}
+
+// scanConversationForward projects complete lines of one file starting at
+// start up to tail (the end of persisted content). resume is the byte offset
+// of the first unread byte after the last processed line; hasMore reports
+// whether more complete content sits between resume and tail. The shared
+// budget carries byte and time bounds across constituent files.
+func scanConversationForward(ctx context.Context, file *conversationOpenFile, fileIndex int, start, tail int64, limit int, budget *conversationScanBudget) (items []conversationItem, resume int64, hasMore, partial bool, err error) {
+	if _, err := file.file.Seek(start, io.SeekStart); err != nil {
 		return nil, 0, false, false, err
 	}
-	reader := bufio.NewReaderSize(file, int(maxReaderBlockBytes))
+	reader := bufio.NewReaderSize(file.file, int(maxReaderBlockBytes))
 	pos := start
 	lineStart := start
-	scanned := int64(0)
 	collected := make([]conversationItem, 0, limit)
 	var line []byte
 	oversized := false
@@ -518,12 +725,12 @@ func scanConversationForward(ctx context.Context, file *os.File, start, tail int
 		if err := ctx.Err(); err != nil {
 			return nil, 0, false, partial, err
 		}
-		if time.Now().After(deadline) || scanned >= maxReaderScanBytes {
+		if time.Now().After(budget.deadline) || budget.scanned >= maxReaderScanBytes {
 			return collected, pos, pos < tail, true, nil
 		}
 		fragment, readErr := reader.ReadSlice('\n')
 		pos += int64(len(fragment))
-		scanned += int64(len(fragment))
+		budget.scanned += int64(len(fragment))
 		if !oversized {
 			line = append(line, fragment...)
 			if int64(len(line)) > maxReaderLineBytes {
@@ -549,13 +756,14 @@ func scanConversationForward(ctx context.Context, file *os.File, start, tail int
 			}
 			partial = true
 			collected = append(collected, conversationItem{
-				ID:      conversationItemID(lineStart),
-				Kind:    conversationItemUnknown,
-				Marker:  "oversized",
-				Omitted: true,
+				ID:        conversationItemID(fileIndex, lineStart),
+				Kind:      conversationItemUnknown,
+				Marker:    "oversized",
+				Omitted:   true,
+				fileIndex: fileIndex,
 			})
 		} else if complete {
-			item, emit, degraded, itemErr := projectConversationLine(bytes.TrimSuffix(line, []byte{'\n'}), lineStart)
+			item, emit, degraded, itemErr := projectConversationLine(bytes.TrimSuffix(line, []byte{'\n'}), fileIndex, lineStart)
 			if itemErr != nil {
 				return collected, pos, pos < tail, partial, itemErr
 			}
@@ -581,40 +789,43 @@ func scanConversationForward(ctx context.Context, file *os.File, start, tail int
 
 // readConversationLine loads one line span and projects it. Lines past the
 // size cap are never fully read; they become bounded placeholders.
-func readConversationLine(file *os.File, start, end int64) (conversationItem, bool, bool, error) {
+func readConversationLine(file *os.File, fileIndex int, start, end int64) (conversationItem, bool, bool, error) {
 	length := end - start
 	if length <= 0 {
 		return conversationItem{}, false, false, nil
 	}
 	if length > maxReaderLineBytes {
 		return conversationItem{
-			ID:      conversationItemID(start),
-			Kind:    conversationItemUnknown,
-			Marker:  "oversized",
-			Omitted: true,
+			ID:        conversationItemID(fileIndex, start),
+			Kind:      conversationItemUnknown,
+			Marker:    "oversized",
+			Omitted:   true,
+			fileIndex: fileIndex,
 		}, true, true, nil
 	}
 	buffer := make([]byte, length)
 	if _, err := file.ReadAt(buffer, start); err != nil && !errors.Is(err, io.EOF) {
 		return conversationItem{}, false, false, err
 	}
-	return projectConversationLine(buffer, start)
+	return projectConversationLine(buffer, fileIndex, start)
 }
 
-func conversationItemID(offset int64) string {
-	return fmt.Sprintf("i%x", offset)
+// conversationItemID is the display id of a projected record: file index
+// plus byte offset inside it, so two segments can never mint the same id.
+func conversationItemID(fileIndex int, offset int64) string {
+	return fmt.Sprintf("i%x-%x", fileIndex, offset)
 }
 
 // projectConversationLine maps one persisted record to a display item. The
 // emit result is false for recognized record families the chat view
 // deliberately does not show (settings, quota, reasoning, streaming noise).
 // degraded is true when the record could not be faithfully projected.
-func projectConversationLine(line []byte, offset int64) (conversationItem, bool, bool, error) {
+func projectConversationLine(line []byte, fileIndex int, offset int64) (conversationItem, bool, bool, error) {
 	line = bytes.TrimRight(line, "\r")
 	if len(bytes.TrimSpace(line)) == 0 {
 		return conversationItem{}, false, false, nil
 	}
-	item := conversationItem{ID: conversationItemID(offset)}
+	item := conversationItem{ID: conversationItemID(fileIndex, offset), fileIndex: fileIndex}
 	var envelope eventEnvelope
 	if err := json.Unmarshal(line, &envelope); err != nil {
 		item.Kind = conversationItemUnknown
@@ -974,6 +1185,17 @@ func conversationMessageFingerprint(kind, family, text string) string {
 	return hex.EncodeToString(sum[:conversationMessageFingerprintBytes])
 }
 
+// conversationRecordFingerprint hashes a record's cross-file identity —
+// kind, persisted timestamp, and normalized text — into the same short
+// cursor-safe fingerprint space as conversationMessageFingerprint. Two
+// files carrying the same record (a copied resume prefix, a mirrored
+// segment) produce identical fingerprints; the "record" domain tag keeps
+// them disjoint from dual-family message fingerprints.
+func conversationRecordFingerprint(item conversationItem) string {
+	sum := sha256.Sum256([]byte("record\x00" + item.Kind + "\x00" + item.Timestamp + "\x00" + item.Text))
+	return hex.EncodeToString(sum[:conversationMessageFingerprintBytes])
+}
+
 // conversationSiblingFamily returns the other persisted record family that
 // dual-writes a chat message. Non-message items carry no family and have no
 // sibling.
@@ -1010,13 +1232,16 @@ func suppressCrossPageDuplicates(items []conversationItem, ring []string, direct
 		if direction == conversationDirectionBackward {
 			i = len(items) - 1 - step
 		}
-		sibling := conversationSiblingFamily(items[i].family)
-		if sibling == "" {
-			continue
+		// Two fingerprint kinds share the ring: the sibling-family hash of a
+		// dual-written message, and the record fingerprint of an item already
+		// emitted from a neighboring segment file.
+		var messageFp string
+		if sibling := conversationSiblingFamily(items[i].family); sibling != "" {
+			messageFp = conversationMessageFingerprint(items[i].Kind, sibling, items[i].Text)
 		}
-		fingerprint := conversationMessageFingerprint(items[i].Kind, sibling, items[i].Text)
+		recordFp := conversationRecordFingerprint(items[i])
 		for j := range ring {
-			if !used[j] && ring[j] == fingerprint {
+			if !used[j] && (ring[j] == messageFp || ring[j] == recordFp) {
 				used[j] = true
 				suppressed[i] = true
 				break
@@ -1038,18 +1263,76 @@ func suppressCrossPageDuplicates(items []conversationItem, ring []string, direct
 	return kept, leftover
 }
 
-// conversationPageFingerprints hashes the page's emitted chat messages in
-// chronological order. Only items that actually render carry fingerprints —
-// a record suppressed before emission never enters the ring.
-func conversationPageFingerprints(items []conversationItem) []string {
+// conversationPageFingerprints hashes the page's emitted items in
+// chronological order. Two fingerprint kinds interleave: chat messages carry
+// their family fingerprint for dual-write collapse, and items matching
+// crossFile (a file-index predicate) additionally carry a record fingerprint
+// so an identical record emitted from a neighboring segment file still
+// collapses across a page seam. Only items that actually render carry
+// fingerprints — a record suppressed before emission never enters the ring.
+func conversationPageFingerprints(items []conversationItem, crossFile func(item conversationItem) bool) []string {
 	fingerprints := make([]string, 0, len(items))
 	for _, item := range items {
-		if item.family == "" {
-			continue
+		if item.family != "" {
+			fingerprints = append(fingerprints, conversationMessageFingerprint(item.Kind, item.family, item.Text))
 		}
-		fingerprints = append(fingerprints, conversationMessageFingerprint(item.Kind, item.family, item.Text))
+		if crossFile != nil && crossFile(item) {
+			fingerprints = append(fingerprints, conversationRecordFingerprint(item))
+		}
 	}
 	return fingerprints
+}
+
+// conversationFileDedupBound caps the cross-file duplicate window inside one
+// page: fingerprints of already-emitted items live in a bounded FIFO map, so
+// a copied prefix longer than this still leaves the oldest duplicates
+// rendered. The bound trades a worst-case double-render for a fixed memory
+// cost independent of segment size.
+const conversationFileDedupBound = 256
+
+// suppressEarlierFileDuplicates drops items from a segment file when an
+// identical record (same kind, timestamp, and normalized text) was already
+// emitted from an earlier file — resumed rollouts can re-persist copied
+// records at their head, and the earlier segment's copy keeps the position.
+// Items arrive in virtual-log order so file indices are nondecreasing; the
+// earlier occurrence's file index stays recorded so a within-file duplicate
+// is never suppressed by its own twin.
+func suppressEarlierFileDuplicates(items []conversationItem) []conversationItem {
+	if len(items) < 2 {
+		return items
+	}
+	multiFile := false
+	for i := range items {
+		if items[i].fileIndex > 0 {
+			multiFile = true
+			break
+		}
+	}
+	if !multiFile {
+		return items
+	}
+	type sighting struct{ fileIndex int }
+	seen := make(map[string]sighting, conversationFileDedupBound)
+	order := make([]string, 0, conversationFileDedupBound)
+	kept := make([]conversationItem, 0, len(items))
+	for _, item := range items {
+		fp := conversationRecordFingerprint(item)
+		if first, ok := seen[fp]; ok {
+			if first.fileIndex < item.fileIndex {
+				continue // identical record already emitted from an earlier file
+			}
+			kept = append(kept, item)
+			continue
+		}
+		if len(order) >= conversationFileDedupBound {
+			delete(seen, order[0])
+			order = order[1:]
+		}
+		seen[fp] = sighting{fileIndex: item.fileIndex}
+		order = append(order, fp)
+		kept = append(kept, item)
+	}
+	return kept
 }
 
 // mintForwardRing keeps the K newest fingerprints for a forward-facing

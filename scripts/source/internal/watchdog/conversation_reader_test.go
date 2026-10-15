@@ -690,24 +690,41 @@ func TestConversationReaderRingFingerprintConsumedBySibling(t *testing.T) {
 	}
 }
 
-// The cursor version bumped when the dedup ring was added: a v1 cursor
-// cannot describe ring state and is rejected as invalid so clients
-// re-anchor at the latest page, and a malformed ring invalidates the token
-// like any other structural corruption.
+// The cursor version bumped when the dedup ring was added (v2) and again
+// when positions generalized to a file set (v3): older cursors cannot
+// describe the constituent files and are rejected as invalid so clients
+// re-anchor at the latest page, and a malformed ring or file witness
+// invalidates the token like any other structural corruption.
 func TestConversationReaderRejectsLegacyAndMalformedCursors(t *testing.T) {
 	v1 := base64.RawURLEncoding.EncodeToString([]byte(
 		`{"v":1,"h":"` + strings.Repeat("0", sha256.Size*2) + `","o":0,"s":10,"m":1}`))
 	if _, err := decodeReaderCursor(v1); !errors.Is(err, errConversationCursorInvalid) {
 		t.Fatalf("v1 cursor must be rejected: %v", err)
 	}
+	v2 := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":2,"h":"` + strings.Repeat("0", sha256.Size*2) + `","o":0,"s":10,"m":1}`))
+	if _, err := decodeReaderCursor(v2); !errors.Is(err, errConversationCursorInvalid) {
+		t.Fatalf("v2 cursor must be rejected: %v", err)
+	}
+	witness := `{"h":"` + strings.Repeat("0", sha256.Size*2) + `","s":10,"m":1}`
+	missingSet := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":3,"f":0,"o":0}`))
+	if _, err := decodeReaderCursor(missingSet); !errors.Is(err, errConversationCursorInvalid) {
+		t.Fatalf("cursor without the file witness set must be rejected: %v", err)
+	}
+	outOfRange := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"v":3,"f":2,"o":0,"w":[` + witness + `]}`))
+	if _, err := decodeReaderCursor(outOfRange); !errors.Is(err, errConversationCursorInvalid) {
+		t.Fatalf("cursor pointing past its file set must be rejected: %v", err)
+	}
 	oversized := base64.RawURLEncoding.EncodeToString([]byte(
-		`{"v":2,"h":"` + strings.Repeat("0", sha256.Size*2) + `","o":0,"s":10,"m":1,"d":[` +
+		`{"v":3,"f":0,"o":0,"w":[` + witness + `],"d":[` +
 			strings.Repeat(`"0123456789abcdef",`, conversationMessageDedupSpan) + `"0123456789abcdef"]}`))
 	if _, err := decodeReaderCursor(oversized); !errors.Is(err, errConversationCursorInvalid) {
 		t.Fatalf("ring beyond the dedup span must be rejected: %v", err)
 	}
 	badFingerprint := base64.RawURLEncoding.EncodeToString([]byte(
-		`{"v":2,"h":"` + strings.Repeat("0", sha256.Size*2) + `","o":0,"s":10,"m":1,"d":["not-hex"]}`))
+		`{"v":3,"f":0,"o":0,"w":[` + witness + `],"d":["not-hex"]}`))
 	if _, err := decodeReaderCursor(badFingerprint); !errors.Is(err, errConversationCursorInvalid) {
 		t.Fatalf("non-fingerprint ring entry must be rejected: %v", err)
 	}
@@ -737,7 +754,7 @@ func TestConversationReaderUnsupportedAndNotFound(t *testing.T) {
 		RootID:   conversationRootID(tmpRoot),
 		ThreadID: threadID,
 		Root:     tmpRoot,
-		Path:     path,
+		Files:    []resolvedConversationFile{{Path: path}},
 	}
 	if err := os.WriteFile(path, []byte(
 		`{"timestamp":"2026-10-03T10:00:00.000Z","type":"session_meta","payload":{"id":"019fc0c1-00ff-7c0f-800f-0000000000ff","source":"cli"}}`+"\n"), 0o600); err != nil {
