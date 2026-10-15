@@ -157,7 +157,7 @@ func (r *appResumeRunner) SharedBackendMemory(ctx context.Context) (memorySample
 func (r *appResumeRunner) ReadAccountQuota(ctx context.Context) accountQuotaReadResult {
 	reader, ok := r.controller.(accountQuotaReader)
 	if !ok {
-		return unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved)
+		return unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved, true)
 	}
 	return reader.ReadAccountQuota(ctx)
 }

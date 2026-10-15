@@ -689,15 +689,31 @@ func managedRetries(state RuntimeState, now time.Time, resolveTitle threadTitleR
 // matches no monitored root contributes nothing — the field stays absent and
 // the client simply renders no deep link.
 func rolloutRootID(candidates []string, roots []sessionRoot) string {
+	type rootDir struct {
+		root    sessionRoot
+		realDir string
+	}
+	var dirs []rootDir
+	for _, root := range roots {
+		for _, directory := range root.scanDirectories() {
+			realDir, err := realCatalogDir(directory)
+			if err != nil {
+				continue
+			}
+			dirs = append(dirs, rootDir{root: root, realDir: realDir})
+		}
+	}
 	for _, path := range candidates {
 		if strings.TrimSpace(path) == "" {
 			continue
 		}
-		for _, root := range roots {
-			for _, directory := range root.scanDirectories() {
-				if catalogPathWithin(directory, path) {
-					return conversationRootID(root)
-				}
+		for _, dir := range dirs {
+			// catalogCandidatePath shares the catalog's own containment
+			// check (EvalSymlinks + canonical real dir), so a rollout
+			// spelled through a symlinked/junctioned home resolves to the
+			// same root_id the catalog would issue.
+			if _, ok := catalogCandidatePath(dir.realDir, path); ok {
+				return conversationRootID(dir.root)
 			}
 		}
 	}

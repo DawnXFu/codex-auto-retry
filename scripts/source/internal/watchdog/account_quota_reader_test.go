@@ -96,14 +96,15 @@ func TestAccountQuotaReaderReportsUnavailableWithoutEndpoint(t *testing.T) {
 
 func TestAccountQuotaReaderClassifiesVerificationFailures(t *testing.T) {
 	for _, scenario := range []struct {
-		err     error
-		want    string
-		wantGen accountQuotaGeneration
+		err      error
+		want     string
+		wantGen  accountQuotaGeneration
+		wantTerm bool
 	}{
-		{errSharedServerUnsupported, accountQuotaReasonUnsupported, accountQuotaGenerationDisproved},
-		{errSharedServerOwnershipUnknown, accountQuotaReasonUnverified, accountQuotaGenerationDisproved},
-		{errSharedServerUnavailable, accountQuotaReasonNotRunning, accountQuotaGenerationDisproved},
-		{errors.New("corrupt shared-server.json"), accountQuotaReasonNotRunning, accountQuotaGenerationDisproved},
+		{errSharedServerUnsupported, accountQuotaReasonUnsupported, accountQuotaGenerationDisproved, true},
+		{errSharedServerOwnershipUnknown, accountQuotaReasonUnverified, accountQuotaGenerationDisproved, false},
+		{errSharedServerUnavailable, accountQuotaReasonNotRunning, accountQuotaGenerationDisproved, false},
+		{errors.New("corrupt shared-server.json"), accountQuotaReasonNotRunning, accountQuotaGenerationDisproved, false},
 	} {
 		source := &staticAccountQuotaEndpointSource{err: scenario.err}
 		result := newAccountQuotaReader(source).ReadAccountQuota(context.Background())
@@ -113,6 +114,25 @@ func TestAccountQuotaReaderClassifiesVerificationFailures(t *testing.T) {
 		if result.Generation != scenario.wantGen {
 			t.Fatalf("endpoint error %v produced generation %v, want %v", scenario.err, result.Generation, scenario.wantGen)
 		}
+		if result.Terminal != scenario.wantTerm {
+			t.Fatalf("endpoint error %v produced terminal %v, want %v", scenario.err, result.Terminal, scenario.wantTerm)
+		}
+	}
+}
+
+func TestAccountQuotaReaderCanceledContextProvesNothing(t *testing.T) {
+	// A canceled caller context (e.g. daemon shutdown) must not invalidate
+	// cached evidence: the cancel proves nothing about the endpoint
+	// generation, so the verdict stays inconclusive.
+	source := &staticAccountQuotaEndpointSource{err: errors.New("unreached")}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := newAccountQuotaReader(source).ReadAccountQuota(ctx)
+	if result.Available || result.Reason != accountQuotaReasonCanceled {
+		t.Fatalf("canceled context produced %+v, want reason %q", result, accountQuotaReasonCanceled)
+	}
+	if result.Generation != accountQuotaGenerationInconclusive {
+		t.Fatalf("canceled context produced generation %v, want inconclusive", result.Generation)
 	}
 }
 

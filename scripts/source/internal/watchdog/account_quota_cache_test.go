@@ -63,7 +63,7 @@ func (r *scriptedQuotaReader) ReadAccountQuota(ctx context.Context) accountQuota
 			r.mu.Lock()
 			r.inFlight--
 			r.mu.Unlock()
-			return unavailableAccountQuota(accountQuotaReasonTimeout, accountQuotaGenerationInconclusive)
+			return unavailableAccountQuota(accountQuotaReasonTimeout, accountQuotaGenerationInconclusive, false)
 		}
 	}
 	r.mu.Lock()
@@ -222,7 +222,7 @@ func TestAccountQuotaCachePersistsAcceptedSnapshot(t *testing.T) {
 }
 
 func TestAccountQuotaCacheBackoffBoundsFailureRetries(t *testing.T) {
-	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive)}
+	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive, false)}
 	cache := newTestQuotaCache(reader, nil)
 	now := time.Now().UTC()
 
@@ -254,8 +254,8 @@ func TestAccountQuotaCacheBackoffBoundsFailureRetries(t *testing.T) {
 func TestAccountQuotaCacheSuccessResetsBackoff(t *testing.T) {
 	backend := testQuotaBackend(13)
 	reader := &scriptedQuotaReader{results: []accountQuotaReadResult{
-		unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive),
-		unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive),
+		unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive, false),
+		unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive, false),
 		{Available: true, Backend: backend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
 	}}
 	cache := newTestQuotaCache(reader, nil)
@@ -278,7 +278,7 @@ func TestAccountQuotaCacheSuccessResetsBackoff(t *testing.T) {
 }
 
 func TestAccountQuotaCacheDisablesOnUnsupported(t *testing.T) {
-	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved)}
+	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved, true)}
 	path := filepath.Join(t.TempDir(), "account-quota.json")
 	cache := newTestQuotaCache(reader, nil)
 	cache.persistPath = path
@@ -319,7 +319,7 @@ func TestAccountQuotaCacheInvalidatesEvidenceWhenEndpointDisappears(t *testing.T
 	backend := testQuotaBackend(17)
 	reader := &scriptedQuotaReader{results: []accountQuotaReadResult{
 		{Available: true, Backend: backend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
-		unavailableAccountQuota(accountQuotaReasonNotRunning, accountQuotaGenerationDisproved),
+		unavailableAccountQuota(accountQuotaReasonNotRunning, accountQuotaGenerationDisproved, false),
 	}}
 	cache := newTestQuotaCache(reader, nil)
 	for i := 0; i < 2; i++ {
@@ -408,11 +408,12 @@ func TestAccountQuotaCacheKeepsEvidenceWhenPostVerifyInconclusive(t *testing.T) 
 		{Available: true, Backend: backend, ObservedAt: observed, Limits: accountLimitsForTest(t)},
 		{Available: true, Backend: backend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
 	}}
-	// VerifiedEndpoint fails at the post-read check: the generation cannot be
-	// confirmed, so the response is dropped but the old evidence is kept.
+	// VerifiedEndpoint hits its deadline at the post-read check: the
+	// generation cannot be confirmed, so the response is dropped but the
+	// old evidence is kept — an inconclusive re-check proves nothing.
 	verifier := &fakeQuotaVerifier{results: []verifyOutcome{
 		{endpoint: backend},
-		{err: errors.New("state file unreadable")},
+		{err: context.DeadlineExceeded},
 	}}
 	cache := newTestQuotaCache(reader, verifier)
 	for i := 0; i < 2; i++ {
@@ -422,6 +423,30 @@ func TestAccountQuotaCacheKeepsEvidenceWhenPostVerifyInconclusive(t *testing.T) 
 	record := cache.record()
 	if !record.Available || !record.ObservedAt.Equal(observed) {
 		t.Fatalf("inconclusive generation check mutated retained evidence: %+v", record)
+	}
+}
+
+func TestAccountQuotaCacheDropsEvidenceWhenPostVerifyDisproved(t *testing.T) {
+	backend := testQuotaBackend(32)
+	reader := &scriptedQuotaReader{results: []accountQuotaReadResult{
+		{Available: true, Backend: backend, ObservedAt: time.Now().UTC().Add(-time.Hour), Limits: accountLimitsForTest(t)},
+		{Available: true, Backend: backend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
+	}}
+	// The post-read re-check proves ownership can no longer be verified:
+	// the late response is dropped AND the stale cached generation's
+	// freshness claim is destroyed.
+	verifier := &fakeQuotaVerifier{results: []verifyOutcome{
+		{endpoint: backend},
+		{err: errSharedServerOwnershipUnknown},
+	}}
+	cache := newTestQuotaCache(reader, verifier)
+	for i := 0; i < 2; i++ {
+		kickRefresh(t, cache, i)
+		runQuotaRefresh(cache)
+	}
+	record := cache.record()
+	if record.Available {
+		t.Fatalf("disproved generation evidence was retained: %+v", record)
 	}
 }
 

@@ -39,6 +39,9 @@ const (
 	// accountQuotaReasonTimeout — the attach-and-read cycle exceeded its
 	// display-read budget.
 	accountQuotaReasonTimeout = "account_quota_read_timeout"
+	// accountQuotaReasonCanceled — the caller's context was canceled
+	// mid-cycle (e.g. daemon shutdown); proves nothing about the endpoint.
+	accountQuotaReasonCanceled = "shared_app_server_canceled"
 )
 
 // verifiedSharedEndpoint identifies one attach target after ownership and
@@ -95,6 +98,10 @@ type accountQuotaReadResult struct {
 	// Generation records what this result proves about the endpoint
 	// generation it ran against; see accountQuotaGeneration.
 	Generation accountQuotaGeneration
+	// Terminal marks failures that can never succeed on this install
+	// (unsupported platform or server kind), so the cache can stop
+	// scheduling refreshes instead of backing off forever.
+	Terminal bool
 	// Limits is the decoded account/rateLimits/read response; it is zero
 	// unless Available is true.
 	Limits appAccountRateLimitsReadResult
@@ -136,7 +143,7 @@ func newAccountQuotaReader(source accountQuotaEndpointSource) *sharedAccountQuot
 
 func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) accountQuotaReadResult {
 	if r == nil || r.source == nil {
-		return unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved)
+		return unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved, true)
 	}
 	timeout := r.timeout
 	if timeout <= 0 {
@@ -146,11 +153,11 @@ func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) account
 	defer cancel()
 	endpoint, err := r.source.VerifiedEndpoint(readCtx)
 	if err != nil {
-		reason, generation := accountQuotaEndpointOutcome(readCtx, err)
-		return unavailableAccountQuota(reason, generation)
+		reason, generation, terminal := accountQuotaEndpointOutcome(readCtx, err)
+		return unavailableAccountQuota(reason, generation, terminal)
 	}
 	if strings.TrimSpace(endpoint.Endpoint) == "" {
-		return unavailableAccountQuota(accountQuotaReasonNotRunning, accountQuotaGenerationDisproved)
+		return unavailableAccountQuota(accountQuotaReasonNotRunning, accountQuotaGenerationDisproved, false)
 	}
 	client, err := dialAppServerRPC(readCtx, endpoint.Endpoint)
 	if err != nil {
@@ -170,8 +177,8 @@ func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) account
 	}
 }
 
-func unavailableAccountQuota(reason string, generation accountQuotaGeneration) accountQuotaReadResult {
-	return accountQuotaReadResult{Available: false, Reason: reason, Generation: generation}
+func unavailableAccountQuota(reason string, generation accountQuotaGeneration, terminal bool) accountQuotaReadResult {
+	return accountQuotaReadResult{Available: false, Reason: reason, Generation: generation, Terminal: terminal}
 }
 
 // unavailableAccountQuotaAt marks a failure that occurred after the endpoint
@@ -186,20 +193,24 @@ func unavailableAccountQuotaAt(endpoint verifiedSharedEndpoint, reason string) a
 }
 
 // accountQuotaEndpointOutcome classifies an endpoint-discovery failure into
-// the diagnostics reason plus the generation verdict. Unsupported and
-// ownership-unverifiable sources prove no usable endpoint generation exists;
-// a spent deadline proves nothing. The verdict is decided here, at result
-// construction — the cache never re-derives it from the reason string.
-func accountQuotaEndpointOutcome(ctx context.Context, err error) (string, accountQuotaGeneration) {
+// the diagnostics reason, the generation verdict, and terminality.
+// Unsupported and ownership-unverifiable sources prove no usable endpoint
+// generation exists; a spent deadline or a canceled caller context proves
+// nothing — shutdown must not invalidate cached evidence. The verdict is
+// decided here, at result construction — the cache never re-derives it from
+// the reason string.
+func accountQuotaEndpointOutcome(ctx context.Context, err error) (string, accountQuotaGeneration, bool) {
 	switch {
 	case errors.Is(err, errSharedServerUnsupported):
-		return accountQuotaReasonUnsupported, accountQuotaGenerationDisproved
+		return accountQuotaReasonUnsupported, accountQuotaGenerationDisproved, true
 	case errors.Is(err, errSharedServerOwnershipUnknown):
-		return accountQuotaReasonUnverified, accountQuotaGenerationDisproved
+		return accountQuotaReasonUnverified, accountQuotaGenerationDisproved, false
 	case accountQuotaDeadlineSpent(ctx, err):
-		return accountQuotaReasonTimeout, accountQuotaGenerationInconclusive
+		return accountQuotaReasonTimeout, accountQuotaGenerationInconclusive, false
+	case errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled):
+		return accountQuotaReasonCanceled, accountQuotaGenerationInconclusive, false
 	default:
-		return accountQuotaReasonNotRunning, accountQuotaGenerationDisproved
+		return accountQuotaReasonNotRunning, accountQuotaGenerationDisproved, false
 	}
 }
 
@@ -222,8 +233,12 @@ func accountQuotaDeadlineSpent(ctx context.Context, err error) bool {
 // accountQuotaCallReason maps a call-stage failure to its diagnostics reason;
 // the generation verdict is attached separately by the result constructor.
 func accountQuotaCallReason(ctx context.Context, err error, fallback string) string {
-	if accountQuotaDeadlineSpent(ctx, err) {
+	switch {
+	case accountQuotaDeadlineSpent(ctx, err):
 		return accountQuotaReasonTimeout
+	case errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled):
+		return accountQuotaReasonCanceled
+	default:
+		return fallback
 	}
-	return fallback
 }

@@ -187,7 +187,9 @@ func (c *accountQuotaCache) refresh(ctx context.Context) {
 	// can never be claimed for an unverifiable generation) but keeps existing
 	// evidence.
 	var current *verifiedSharedEndpoint
-	var verifyErr error
+	var verifyReason string
+	var verifyGen accountQuotaGeneration
+	var verifyTerminal bool
 	late := false
 	if result.Available && c.verifier != nil {
 		verifyTimeout := c.verifyTimeout
@@ -196,10 +198,14 @@ func (c *accountQuotaCache) refresh(ctx context.Context) {
 		}
 		verifyCtx, cancel := context.WithTimeout(ctx, verifyTimeout)
 		verified, err := c.verifier.VerifiedEndpoint(verifyCtx)
+		if err != nil {
+			// Classify while verifyCtx still carries the real cause —
+			// after cancel() its Err() reads Canceled for every failure.
+			verifyReason, verifyGen, verifyTerminal = accountQuotaEndpointOutcome(verifyCtx, err)
+		}
 		cancel()
 		if err != nil {
 			late = true
-			verifyErr = err
 		} else {
 			current = &verified
 			late = verified != result.Backend
@@ -215,14 +221,22 @@ func (c *accountQuotaCache) refresh(ctx context.Context) {
 		c.nextAttempt = now.Add(c.backoffDelayLocked())
 		reason := accountQuotaReasonGenerationChanged
 		if current == nil {
-			reason, _ = accountQuotaEndpointOutcome(ctx, verifyErr)
+			reason = verifyReason
+			// A disproved re-check means no usable endpoint generation
+			// exists at all — drop cached freshness like a failed read.
+			// Inconclusive re-checks (verify timeout, cancellation) keep it.
+			if verifyGen == accountQuotaGenerationDisproved && c.hasLast {
+				c.hasLast = false
+				c.dirty = true
+				c.logf("account quota evidence invalidated category=account_quota reason=%s", reason)
+			}
+			if verifyTerminal {
+				c.disabled = true
+			}
 		}
 		if c.lastReason != reason {
 			c.lastReason = reason
 			c.dirty = true
-		}
-		if reason == accountQuotaReasonUnsupported {
-			c.disabled = true
 		}
 		// A confirmed different generation also destroys the freshness claim
 		// of whatever the cache still holds.
@@ -260,7 +274,7 @@ func (c *accountQuotaCache) refresh(ctx context.Context) {
 			c.dirty = true
 			c.logf("account quota evidence invalidated category=account_quota reason=%s", result.Reason)
 		}
-		if result.Reason == accountQuotaReasonUnsupported {
+		if result.Terminal {
 			c.disabled = true
 		}
 		c.logf("account quota refresh failed category=account_quota reason=%s failures=%d", result.Reason, c.failures)
