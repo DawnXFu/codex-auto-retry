@@ -363,10 +363,10 @@ func TestManagementSnapshotStampsConversationRootID(t *testing.T) {
 		Class: classServer, DueAt: now.Add(time.Minute), Attempt: 1, RolloutPath: matchedPath,
 	}}
 	state.Threads[cursorOnly] = ThreadState{Pending: &PendingRetry{
-		Class: classServer, DueAt: now.Add(2*time.Minute), Attempt: 1,
+		Class: classServer, DueAt: now.Add(2 * time.Minute), Attempt: 1,
 	}}
 	state.Threads[unmatched] = ThreadState{Pending: &PendingRetry{
-		Class: classServer, DueAt: now.Add(3*time.Minute), Attempt: 1, RolloutPath: outsidePath,
+		Class: classServer, DueAt: now.Add(3 * time.Minute), Attempt: 1, RolloutPath: outsidePath,
 	}}
 	if err := writeJSONAtomic(service.statePath, state); err != nil {
 		t.Fatal(err)
