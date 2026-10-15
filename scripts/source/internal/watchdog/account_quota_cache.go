@@ -215,7 +215,7 @@ func (c *accountQuotaCache) refresh(ctx context.Context) {
 		c.nextAttempt = now.Add(c.backoffDelayLocked())
 		reason := accountQuotaReasonGenerationChanged
 		if current == nil {
-			reason = accountQuotaEndpointReason(ctx, verifyErr)
+			reason, _ = accountQuotaEndpointOutcome(ctx, verifyErr)
 		}
 		if c.lastReason != reason {
 			c.lastReason = reason
@@ -284,17 +284,17 @@ func (c *accountQuotaCache) refresh(ctx context.Context) {
 }
 
 // generationDisprovedLocked reports whether a failed read proves the cached
-// generation is gone. Results that carry a Backend were verified against a
-// live record: a mismatch means the backend moved on. Verification failures
-// (no verified endpoint exists, or ownership can no longer be proven) mean no
-// generation can be claimed at all — cached freshness must not be asserted
-// for either case. Timeout and inconclusive results keep the cache.
+// generation is gone, driven entirely by the reader's typed Generation
+// verdict. Verified results carry a live Backend: a mismatch means the
+// backend moved on. Disproved results (no verified endpoint exists, or
+// ownership can no longer be proven) mean no generation can be claimed at
+// all — cached freshness must not be asserted for either case. Inconclusive
+// results keep the cache.
 func (c *accountQuotaCache) generationDisprovedLocked(result accountQuotaReadResult) bool {
-	if result.Backend.Endpoint != "" {
+	switch result.Generation {
+	case accountQuotaGenerationVerified:
 		return result.Backend != c.last.Backend
-	}
-	switch result.Reason {
-	case accountQuotaReasonNotRunning, accountQuotaReasonUnverified, accountQuotaReasonUnsupported:
+	case accountQuotaGenerationDisproved:
 		return true
 	default:
 		return false

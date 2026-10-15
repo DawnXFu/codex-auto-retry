@@ -120,6 +120,14 @@ Fields a client needs beyond the obvious counters:
   session metadata when discoverable), `due_at`/`wait_until`,
   `seconds_remaining`, attempt budgets, and capability flags
   (`can_retry_now`, `can_cancel`, `can_restart`).
+- `retries[].root_id` (omitempty) is the opaque monitored-root identity —
+  the same `root_id` the conversations catalog mints. It is present only
+  when the thread's rollout file resolves under a monitored session root,
+  and pairs with `thread_id` to form the `(root_id, thread_id)` identity a
+  client can pass straight to
+  `GET /conversations/{rootId}/{threadId}/items`. No match means the field
+  is absent — it is never guessed — so clients should treat its presence
+  as "a deep link may render", not as a guarantee the conversation exists.
 - `quota` (omitempty) is `ManagedQuota{used_percent, resets_at, binding,
   waiting}` — the binding window when one is active, else the most-used
   window. Clients display **remaining** percent (100 − `used_percent`) and a

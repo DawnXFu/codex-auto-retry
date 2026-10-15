@@ -112,30 +112,14 @@ export async function resolveConnectionAsync(
   return resolveConnection(search);
 }
 
-// ---- snapshot fetch -------------------------------------------------------
-
-export async function fetchSnapshot(conn: Connection): Promise<ManagementSnapshot> {
-  if (conn.mode === "preview") {
-    return buildPreviewSnapshot();
-  }
-  if (conn.mode === "none") {
-    throw new Error("no connection params");
-  }
-  const res = await fetch(`${conn.api}/snapshot`, {
-    headers: { Authorization: `Bearer ${conn.token}` },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!res.ok) {
-    throw new Error(`snapshot ${res.status}`);
-  }
-  return (await res.json()) as ManagementSnapshot;
-}
-
-// ---- conversations (spec #19 milestone 2) ---------------------------------
-// Read-only GETs against the same Management API. Error bodies carry a
-// machine-readable {"error": reason} — surfaced via ApiError.reason so the
-// page can react to specific reasons (e.g. 409 conversation_changed →
-// re-anchor at the latest persisted page).
+// ---- data source -----------------------------------------------------------
+// The single preview/live/none seam: callers consume a DataSource picked once
+// from the connection instead of branching on conn.mode at every fetch. The
+// fixture adapter also exposes synchronous seeds so ?preview=1 and SSR render
+// real content without a loading flash; live and none adapters have none.
+// Error bodies carry a machine-readable {"error": reason} — surfaced via
+// ApiError.reason so pages can react to specific reasons (e.g. 409
+// conversation_changed → re-anchor at the latest persisted page).
 
 export class ApiError extends Error {
   readonly status: number;
@@ -146,6 +130,40 @@ export class ApiError extends Error {
     this.status = status;
     this.reason = reason;
   }
+}
+
+export type ConversationItemsDirection = "backward" | "forward";
+
+export interface ConversationItemsOpts {
+  cursor?: string;
+  direction?: ConversationItemsDirection;
+  limit?: number;
+}
+
+export interface DataSource {
+  /** which adapter dataSource() picked: "fixture" resolves synchronously
+   * from the bundled preview data, "live" hits the Management API, "none"
+   * always rejects. Pages use kind only to choose between a synchronous
+   * seed and a loading state. */
+  readonly kind: "fixture" | "live" | "none";
+  fetchSnapshot(): Promise<ManagementSnapshot>;
+  fetchConversations(
+    filter?: ConversationListFilter,
+    cursor?: string,
+    limit?: number,
+  ): Promise<ConversationListPage>;
+  fetchConversationItems(
+    rootId: string,
+    threadId: string,
+    opts?: ConversationItemsOpts,
+  ): Promise<ConversationItemsPage>;
+  /** Synchronous first-paint seeds — present only on the fixture adapter. */
+  seedConversations?(filter?: ConversationListFilter): ConversationListPage;
+  seedConversationItems?(
+    rootId: string,
+    threadId: string,
+    opts?: ConversationItemsOpts,
+  ): ConversationItemsPage | null;
 }
 
 async function fetchAPI<T>(conn: Extract<Connection, { mode: "live" }>, path: string): Promise<T> {
@@ -166,50 +184,64 @@ async function fetchAPI<T>(conn: Extract<Connection, { mode: "live" }>, path: st
   return (await res.json()) as T;
 }
 
-export async function fetchConversations(
-  conn: Connection,
-  filter: ConversationListFilter = "ordinary",
-  cursor?: string,
-  limit = 50,
-): Promise<ConversationListPage> {
-  if (conn.mode === "preview") {
-    return buildPreviewConversations(filter, cursor, limit);
-  }
-  if (conn.mode === "none") {
-    throw new Error("no connection params");
-  }
-  const q = new URLSearchParams();
-  if (filter !== "ordinary") q.set("filter", filter);
-  if (cursor) q.set("cursor", cursor);
-  q.set("limit", String(limit));
-  return fetchAPI<ConversationListPage>(conn, `/conversations?${q.toString()}`);
+const fixtureSource: DataSource = {
+  kind: "fixture",
+  fetchSnapshot: () => Promise.resolve(buildPreviewSnapshot()),
+  fetchConversations: (filter = "ordinary", cursor, limit = 50) =>
+    Promise.resolve(buildPreviewConversations(filter, cursor, limit)),
+  fetchConversationItems: (rootId, threadId, opts = {}) => {
+    const page = buildPreviewConversationItems(rootId, threadId, opts);
+    return page
+      ? Promise.resolve(page)
+      : Promise.reject(new ApiError(404, "conversation_not_found"));
+  },
+  seedConversations: (filter = "ordinary") => buildPreviewConversations(filter),
+  seedConversationItems: (rootId, threadId, opts = {}) =>
+    buildPreviewConversationItems(rootId, threadId, opts),
+};
+
+const noSource: DataSource = {
+  kind: "none",
+  fetchSnapshot: () => Promise.reject(new Error("no connection params")),
+  fetchConversations: () => Promise.reject(new Error("no connection params")),
+  fetchConversationItems: () => Promise.reject(new Error("no connection params")),
+};
+
+function liveSource(conn: Extract<Connection, { mode: "live" }>): DataSource {
+  return {
+    kind: "live",
+    fetchSnapshot: () => fetchAPI<ManagementSnapshot>(conn, "/snapshot"),
+    fetchConversations: (filter = "ordinary", cursor, limit = 50) => {
+      const q = new URLSearchParams();
+      if (filter !== "ordinary") q.set("filter", filter);
+      if (cursor) q.set("cursor", cursor);
+      q.set("limit", String(limit));
+      return fetchAPI<ConversationListPage>(conn, `/conversations?${q.toString()}`);
+    },
+    fetchConversationItems: (rootId, threadId, opts = {}) => {
+      const q = new URLSearchParams();
+      if (opts.cursor) q.set("cursor", opts.cursor);
+      if (opts.direction) q.set("direction", opts.direction);
+      if (opts.limit) q.set("limit", String(opts.limit));
+      const qs = q.toString();
+      return fetchAPI<ConversationItemsPage>(
+        conn,
+        `/conversations/${encodeURIComponent(rootId)}/${encodeURIComponent(threadId)}/items${qs ? `?${qs}` : ""}`,
+      );
+    },
+  };
 }
 
-export type ConversationItemsDirection = "backward" | "forward";
-
-export async function fetchConversationItems(
-  conn: Connection,
-  rootId: string,
-  threadId: string,
-  opts: { cursor?: string; direction?: ConversationItemsDirection; limit?: number } = {},
-): Promise<ConversationItemsPage> {
-  if (conn.mode === "preview") {
-    const page = buildPreviewConversationItems(rootId, threadId, opts);
-    if (!page) throw new ApiError(404, "conversation_not_found");
-    return page;
+/** Pick the adapter for a connection once; consumers never branch on mode. */
+export function dataSource(conn: Connection): DataSource {
+  switch (conn.mode) {
+    case "preview":
+      return fixtureSource;
+    case "live":
+      return liveSource(conn);
+    default:
+      return noSource;
   }
-  if (conn.mode === "none") {
-    throw new Error("no connection params");
-  }
-  const q = new URLSearchParams();
-  if (opts.cursor) q.set("cursor", opts.cursor);
-  if (opts.direction) q.set("direction", opts.direction);
-  if (opts.limit) q.set("limit", String(opts.limit));
-  const qs = q.toString();
-  return fetchAPI<ConversationItemsPage>(
-    conn,
-    `/conversations/${encodeURIComponent(rootId)}/${encodeURIComponent(threadId)}/items${qs ? `?${qs}` : ""}`,
-  );
 }
 
 // ---- writes ---------------------------------------------------------------

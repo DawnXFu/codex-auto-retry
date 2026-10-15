@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, fetchConversationItems, fetchConversations, type Connection } from "../api";
-import { buildPreviewConversationItems, buildPreviewConversations } from "../fixture";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ApiError, dataSource, type Connection, type DataSource } from "../api";
 import { useI18n } from "../i18n";
 import type { StringKey } from "../strings";
 import { relAgo, dayLabel } from "../time";
@@ -69,6 +68,7 @@ export default function ConversationsPage(props: {
   openThread?: ConversationDeepLink | null;
 }) {
   const { conn, now } = props;
+  const source = useMemo(() => dataSource(conn), [conn]);
   const { t } = useI18n();
   const navSeq = useRef(0);
   const [view, setView] = useState<View>(() => {
@@ -101,21 +101,22 @@ export default function ConversationsPage(props: {
 
   // ---- list state ----------------------------------------------------------
   const [filter, setFilter] = useState<ConversationListFilter>("ordinary");
-  const [list, setList] = useState<ConversationListPage | null>(() =>
-    conn.mode === "preview" ? buildPreviewConversations("ordinary") : null,
+  const [list, setList] = useState<ConversationListPage | null>(
+    () => source.seedConversations?.("ordinary") ?? null,
   );
   const [listErr, setListErr] = useState<string | null>(() =>
-    conn.mode === "none" ? "no connection params" : null,
+    source.kind === "none" ? "no connection params" : null,
   );
-  const [listLoading, setListLoading] = useState(() => conn.mode === "live");
+  const [listLoading, setListLoading] = useState(() => source.kind === "live");
   const [loadingMore, setLoadingMore] = useState(false);
 
   const selectFilter = (f: ConversationListFilter) => {
     setFilter(f);
     setListErr(null);
-    if (conn.mode === "preview") {
+    const seeded = source.seedConversations?.(f);
+    if (seeded) {
       // Fixture resolves synchronously — swap without a loading flash.
-      setList(buildPreviewConversations(f));
+      setList(seeded);
     } else {
       setListLoading(true);
     }
@@ -125,7 +126,7 @@ export default function ConversationsPage(props: {
   useEffect(() => {
     if (!onList) return;
     let alive = true;
-    fetchConversations(conn, filter)
+    source.fetchConversations(filter)
       .then((page) => {
         if (!alive) return;
         setList(page);
@@ -141,14 +142,14 @@ export default function ConversationsPage(props: {
     return () => {
       alive = false;
     };
-  }, [conn, filter, onList]);
+  }, [source, filter, onList]);
 
   const loadMore = async () => {
     const cursor = list?.next_cursor;
     if (!cursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await fetchConversations(conn, filter, cursor);
+      const page = await source.fetchConversations(filter, cursor);
       setList((prev) => ({
         ...page,
         items: [...(prev?.items ?? []), ...page.items],
@@ -164,7 +165,7 @@ export default function ConversationsPage(props: {
     return (
       <ConversationDetail
         key={`${view.rootId}/${view.threadId}#${view.seq}`}
-        conn={conn}
+        source={source}
         now={now}
         rootId={view.rootId}
         threadId={view.threadId}
@@ -195,7 +196,7 @@ export default function ConversationsPage(props: {
           title={t("strip_refresh")}
           onClick={() => {
             setListLoading(true);
-            fetchConversations(conn, filter)
+            source.fetchConversations(filter)
               .then((page) => {
                 setList(page);
                 setListErr(null);
@@ -270,23 +271,22 @@ function ConversationRow(props: { conv: ConversationSummary; now: Date; onOpen: 
 // the latest page.
 
 function ConversationDetail(props: {
-  conn: Connection;
+  source: DataSource;
   now: Date;
   rootId: string;
   threadId: string;
   title?: string;
   onBack: () => void;
 }) {
-  const { conn, rootId, threadId } = props;
+  const { source, rootId, threadId } = props;
   const { t } = useI18n();
 
-  // Preview mode resolves synchronously so ?preview=1 and SSR verification
-  // render real content with no loading flash; live starts at "loading".
+  // The fixture source resolves synchronously so ?preview=1 and SSR
+  // verification render real content with no loading flash; live starts
+  // at "loading".
   const [seed] = useState(() => ({
     page:
-      conn.mode === "preview"
-        ? buildPreviewConversationItems(rootId, threadId, { direction: "backward" })
-        : null,
+      source.seedConversationItems?.(rootId, threadId, { direction: "backward" }) ?? null,
   }));
   const [items, setItems] = useState<ConversationItem[]>(seed.page?.items ?? []);
   const [olderCursor, setOlderCursor] = useState<string | undefined>(seed.page?.next_cursor);
@@ -296,8 +296,8 @@ function ConversationDetail(props: {
     kind: seed.page?.kind,
   }));
   const [status, setStatus] = useState<DetailStatus>(() => {
-    if (conn.mode === "preview") return seed.page ? "ready" : "not_found";
-    if (conn.mode === "none") return "error";
+    if (source.kind === "fixture") return seed.page ? "ready" : "not_found";
+    if (source.kind === "none") return "error";
     return "loading";
   });
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -309,7 +309,7 @@ function ConversationDetail(props: {
   const scrollRef = useRef<HTMLElement | null>(null);
   const tailCursorRef = useRef<string | undefined>(seed.page?.tail_cursor);
   const atBottomRef = useRef(true);
-  const stickBottom = useRef(conn.mode === "preview");
+  const stickBottom = useRef(source.kind === "fixture");
   // applied=true only once the prepended items actually committed, so a
   // concurrent forward-append can never consume the restore by accident.
   const prependRestore = useRef<{ height: number; top: number; applied: boolean } | null>(null);
@@ -336,14 +336,14 @@ function ConversationDetail(props: {
   );
 
   const reanchor = useCallback(async () => {
-    const p = await fetchConversationItems(conn, rootId, threadId, { direction: "backward" });
+    const p = await source.fetchConversationItems(rootId, threadId, { direction: "backward" });
     if (aliveRef.current) applyLatest(p);
-  }, [conn, rootId, threadId, applyLatest]);
+  }, [source, rootId, threadId, applyLatest]);
 
   // Initial load (and re-load if the connection rotates underneath us).
   useEffect(() => {
     let cancelled = false;
-    fetchConversationItems(conn, rootId, threadId, { direction: "backward" })
+    source.fetchConversationItems(rootId, threadId, { direction: "backward" })
       .then((p) => {
         if (cancelled || !aliveRef.current) return;
         applyLatest(p);
@@ -357,7 +357,7 @@ function ConversationDetail(props: {
     return () => {
       cancelled = true;
     };
-  }, [conn, rootId, threadId, applyLatest]);
+  }, [source, rootId, threadId, applyLatest]);
 
   // Resolve the scroll container (.main) once mounted.
   useEffect(() => {
@@ -396,7 +396,7 @@ function ConversationDetail(props: {
     prependRestore.current = sc ? { height: sc.scrollHeight, top: sc.scrollTop, applied: false } : null;
     setLoadingOlder(true);
     try {
-      const p = await fetchConversationItems(conn, rootId, threadId, {
+      const p = await source.fetchConversationItems(rootId, threadId, {
         direction: "backward",
         cursor,
       });
@@ -421,7 +421,7 @@ function ConversationDetail(props: {
     } finally {
       if (aliveRef.current) setLoadingOlder(false);
     }
-  }, [conn, rootId, threadId, olderCursor, loadingOlder, reanchor]);
+  }, [source, rootId, threadId, olderCursor, loadingOlder, reanchor]);
 
   // Low-rate forward poll for appended records. Drains consecutive forward
   // pages (bounded) so bursts arrive in one tick; a 409 re-anchors.
@@ -433,7 +433,7 @@ function ConversationDetail(props: {
       try {
         let appended = 0;
         for (let i = 0; i < 4 && cursor; i++) {
-          const p = await fetchConversationItems(conn, rootId, threadId, {
+          const p = await source.fetchConversationItems(rootId, threadId, {
             direction: "forward",
             cursor,
           });
@@ -473,7 +473,7 @@ function ConversationDetail(props: {
     };
     const id = window.setInterval(() => void tick(), CONV_POLL_MS);
     return () => window.clearInterval(id);
-  }, [conn, rootId, threadId, reanchor]);
+  }, [source, rootId, threadId, reanchor]);
 
   useEffect(() => {
     if (notice === null) return;

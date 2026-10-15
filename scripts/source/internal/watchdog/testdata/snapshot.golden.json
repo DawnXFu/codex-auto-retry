@@ -43,6 +43,7 @@
   "retries": [
     {
       "thread_id": "019f9d5d-9c82-75b1-b7c0-20a658af0423",
+      "root_id": "r0123456789abcdef",
       "label": "任务 019f9d5d...",
       "title": "Fix flaky auth redirect test",
       "state": "pending",

@@ -98,7 +98,7 @@ func TestManagedRetriesResolveTitle(t *testing.T) {
 			t.Fatalf("resolver got thread=%s candidates=%v", id, candidates)
 		}
 		return "Refactor the scanner loop"
-	})
+	}, nil)
 	if len(rows) != 1 || rows[0].Title != "Refactor the scanner loop" {
 		t.Fatalf("title not threaded through: %+v", rows)
 	}

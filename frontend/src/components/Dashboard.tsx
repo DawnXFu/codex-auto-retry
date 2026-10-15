@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ConversationSummary, ManagementSnapshot, RetryState } from "../types";
+import type { ManagementSnapshot, RetryState } from "../types";
 import type { ConversationDeepLink } from "./ConversationsPage";
 import { postAction } from "../api";
 import { useI18n } from "../i18n";
@@ -22,9 +22,6 @@ export default function Dashboard(props: {
   snapshot: ManagementSnapshot | null;
   now: Date;
   onRefresh: () => void;
-  /** thread_id → catalog match, built by useConversationIndex in App (C-06).
-   * Absent/empty simply means no titles link out. */
-  convIndex?: ReadonlyMap<string, ConversationSummary>;
   onOpenConversation?: (target: ConversationDeepLink) => void;
 }) {
   const snap = props.snapshot;
@@ -108,7 +105,6 @@ export default function Dashboard(props: {
               retry={r}
               now={props.now}
               onAction={act}
-              conversation={props.convIndex?.get(r.thread_id)}
               onOpenConversation={props.onOpenConversation}
             />
           ))}

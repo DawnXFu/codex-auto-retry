@@ -17,30 +17,13 @@ import {
   buildPreviewConversations,
   type PreviewQuotaVariant,
 } from "../src/fixture";
-import { useConversationIndex } from "../src/hooks";
+import { dataSource } from "../src/api";
 import { interpolate, strings, type Lang } from "../src/strings";
 import type { ManagementSnapshot } from "../src/types";
 
 function fail(msg: string): never {
   console.error(msg);
   process.exit(1);
-}
-
-// C-06 deep link: the dashboard takes a thread_id → conversation index. The
-// hook seeds it synchronously from the fixture in preview mode, so SSR shows
-// the linked-title markup for the one queue thread that exists in the
-// catalog (thread ...0006).
-function DashboardWithIndex(props: { snapshot: ManagementSnapshot; now: Date }) {
-  const convIndex = useConversationIndex({ mode: "preview" }, props.snapshot.retries);
-  return (
-    <Dashboard
-      snapshot={props.snapshot}
-      now={props.now}
-      onRefresh={() => {}}
-      convIndex={convIndex}
-      onOpenConversation={() => {}}
-    />
-  );
 }
 
 // dict parity: zh and en must cover identical key sets
@@ -73,6 +56,52 @@ if (subagentsOnly.items.some((c) => c.kind !== "subagent" || c.archived)) {
   fail("preview fixture leaked non-subagent items into the subagent filter");
 }
 
+// The data source is the single preview/live/none seam: pages consume it
+// instead of branching on conn.mode or importing the fixture directly. The
+// fixture adapter also exposes the synchronous seeds SSR relies on. Fetch
+// assertions ride .then() chains — the fixture resolves synchronously and
+// the SSR target does not allow top-level await.
+{
+  const previewSource = dataSource({ mode: "preview" });
+  if (previewSource.kind !== "fixture") {
+    fail("preview connection did not select the fixture data source");
+  }
+  const seededList = previewSource.seedConversations?.("ordinary");
+  if (!seededList || seededList.items.length === 0) {
+    fail("fixture source did not offer a synchronous list seed");
+  }
+  const seededDetail = previewSource.seedConversationItems?.(
+    previewThread.root_id,
+    previewThread.thread_id,
+    { direction: "backward" },
+  );
+  if (!seededDetail || seededDetail.items.length === 0) {
+    fail("fixture source did not offer a synchronous detail seed");
+  }
+  void previewSource.fetchConversations("ordinary").then((page) => {
+    if (page.items.length === 0) fail("fixture source returned no conversations");
+  });
+  void previewSource
+    .fetchConversationItems(previewThread.root_id, previewThread.thread_id, {
+      direction: "backward",
+    })
+    .then((page) => {
+      if (page.items.length === 0) fail("fixture source returned no detail items");
+    });
+  void previewSource.fetchSnapshot().then((snap) => {
+    if (snap.retries.length === 0) fail("fixture source returned no retries");
+  });
+  const dead = dataSource({ mode: "none" });
+  if (dead.kind !== "none") fail("unconnected mode did not select the none source");
+  if (dead.seedConversations !== undefined || dead.seedConversationItems !== undefined) {
+    fail("unconnected source offered a synchronous seed");
+  }
+  void dead.fetchSnapshot().then(
+    () => fail("unconnected source resolved a snapshot"),
+    () => undefined,
+  );
+}
+
 // The fixture cycles account_quota variants on a wall-clock timer; pin the
 // base render to the fresh variant so the assertions below stay
 // deterministic. Its primary window is used_percent=100, so the legacy
@@ -94,7 +123,12 @@ for (const lang of ["zh", "en"] as Lang[]) {
     createElement(
       LangProvider,
       { initial: lang },
-      createElement(DashboardWithIndex, { snapshot: baseSnap, now }),
+      createElement(Dashboard, {
+        snapshot: baseSnap,
+        now,
+        onRefresh: () => {},
+        onOpenConversation: () => {},
+      }),
     ),
   );
   const missingTags = required.filter((s) => !dash.includes(dict[`queue_tag_${s}` as keyof typeof dict]));
@@ -118,7 +152,8 @@ for (const lang of ["zh", "en"] as Lang[]) {
   }
   if (/relimit/i.test(dash)) fail(`${lang}: dashboard renders a relimit budget`);
 
-  // C-06 deep link: exactly one queue thread exists in the preview catalog
+  // C-06 deep link: the backend stamps root_id on a retry whose rollout
+  // resolves under a monitored root — exactly one fixture retry carries it
   // (thread ...0006). Its title renders as a button with the localized
   // open-conversation hint; the other titles stay plain spans.
   const tlinks = dash.match(/class="t tlink"/g) ?? [];
@@ -184,10 +219,26 @@ for (const lang of ["zh", "en"] as Lang[]) {
   for (const needle of [dict.quota_window, interpolate(dict.quota_left, { pct: quotaLeft })]) {
     if (!legacyDash.includes(needle)) fail(`${lang}: dashboard(legacy) output missing: ${needle}`);
   }
-  // C-06: without a conversation index every title renders as before — no
-  // linked-title markup may appear.
-  if (/class="t tlink"/.test(legacyDash)) {
-    fail(`${lang}: dashboard rendered a linked title without a conversation match`);
+  // C-06: the link is driven by the retry's own root_id — strip it from
+  // every retry and no title may render linked markup.
+  const unlinkedSnap: ManagementSnapshot = {
+    ...snap,
+    retries: snap.retries.map((r) => ({ ...r, root_id: undefined })),
+  };
+  const unlinkedDash = renderToString(
+    createElement(
+      LangProvider,
+      { initial: lang },
+      createElement(Dashboard, {
+        snapshot: unlinkedSnap,
+        now,
+        onRefresh: () => {},
+        onOpenConversation: () => {},
+      }),
+    ),
+  );
+  if (/class="t tlink"/.test(unlinkedDash)) {
+    fail(`${lang}: dashboard rendered a linked title without a root_id`);
   }
 
   for (const snapshot of [snap, null] as const) {
@@ -330,7 +381,12 @@ const enDash = renderToString(
   createElement(
     LangProvider,
     { initial: "en" },
-    createElement(DashboardWithIndex, { snapshot: baseSnap, now }),
+    createElement(Dashboard, {
+      snapshot: baseSnap,
+      now,
+      onRefresh: () => {},
+      onOpenConversation: () => {},
+    }),
   ),
 );
 const enSettings = renderToString(

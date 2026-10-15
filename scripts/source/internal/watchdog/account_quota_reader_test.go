@@ -96,18 +96,22 @@ func TestAccountQuotaReaderReportsUnavailableWithoutEndpoint(t *testing.T) {
 
 func TestAccountQuotaReaderClassifiesVerificationFailures(t *testing.T) {
 	for _, scenario := range []struct {
-		err  error
-		want string
+		err     error
+		want    string
+		wantGen accountQuotaGeneration
 	}{
-		{errSharedServerUnsupported, accountQuotaReasonUnsupported},
-		{errSharedServerOwnershipUnknown, accountQuotaReasonUnverified},
-		{errSharedServerUnavailable, accountQuotaReasonNotRunning},
-		{errors.New("corrupt shared-server.json"), accountQuotaReasonNotRunning},
+		{errSharedServerUnsupported, accountQuotaReasonUnsupported, accountQuotaGenerationDisproved},
+		{errSharedServerOwnershipUnknown, accountQuotaReasonUnverified, accountQuotaGenerationDisproved},
+		{errSharedServerUnavailable, accountQuotaReasonNotRunning, accountQuotaGenerationDisproved},
+		{errors.New("corrupt shared-server.json"), accountQuotaReasonNotRunning, accountQuotaGenerationDisproved},
 	} {
 		source := &staticAccountQuotaEndpointSource{err: scenario.err}
 		result := newAccountQuotaReader(source).ReadAccountQuota(context.Background())
 		if result.Available || result.Reason != scenario.want {
 			t.Fatalf("endpoint error %v produced %+v, want reason %q", scenario.err, result, scenario.want)
+		}
+		if result.Generation != scenario.wantGen {
+			t.Fatalf("endpoint error %v produced generation %v, want %v", scenario.err, result.Generation, scenario.wantGen)
 		}
 	}
 }
@@ -127,6 +131,11 @@ func TestAccountQuotaReaderReportsUnreachableEndpoint(t *testing.T) {
 	if result.Available || result.Reason != accountQuotaReasonUnreachable {
 		t.Fatalf("dead endpoint produced %+v, want unreachable", result)
 	}
+	// The endpoint was verified before the dial failed, so the result still
+	// carries the generation the cache compares against.
+	if result.Generation != accountQuotaGenerationVerified || result.Backend.Endpoint != endpoint {
+		t.Fatalf("verified-endpoint failure lost its generation verdict: %+v", result)
+	}
 }
 
 func TestAccountQuotaReaderReportsReadFailure(t *testing.T) {
@@ -137,6 +146,9 @@ func TestAccountQuotaReaderReportsReadFailure(t *testing.T) {
 	result := newAccountQuotaReader(source).ReadAccountQuota(context.Background())
 	if result.Available || result.Reason != accountQuotaReasonReadFailed {
 		t.Fatalf("failed account read produced %+v, want read failure", result)
+	}
+	if result.Generation != accountQuotaGenerationVerified {
+		t.Fatalf("post-verification read failure lost its generation verdict: %+v", result)
 	}
 }
 
@@ -153,6 +165,11 @@ func TestAccountQuotaReaderBoundsDisplayReadWithTimeout(t *testing.T) {
 	if result.Available || result.Reason != accountQuotaReasonTimeout {
 		t.Fatalf("slow read produced %+v, want timeout", result)
 	}
+	// The endpoint verified before the read stalled, so the generation stays
+	// verified — a timeout is only inconclusive when discovery itself died.
+	if result.Generation != accountQuotaGenerationVerified {
+		t.Fatalf("post-verification timeout lost its generation verdict: %+v", result)
+	}
 	if elapsed > time.Second {
 		t.Fatalf("display read waited %v for a hung endpoint", elapsed)
 	}
@@ -168,12 +185,18 @@ func TestAccountQuotaReaderHonorsCallerDeadlineDuringDiscovery(t *testing.T) {
 	if result.Available || result.Reason != accountQuotaReasonTimeout {
 		t.Fatalf("blocked discovery produced %+v, want timeout", result)
 	}
+	if result.Generation != accountQuotaGenerationInconclusive {
+		t.Fatalf("discovery timeout must not disprove the generation: %+v", result)
+	}
 }
 
 func TestAccountQuotaReaderUnavailableWithoutSource(t *testing.T) {
 	result := newAccountQuotaReader(nil).ReadAccountQuota(context.Background())
 	if result.Available || result.Reason != accountQuotaReasonUnsupported {
 		t.Fatalf("missing endpoint source produced %+v, want unsupported", result)
+	}
+	if result.Generation != accountQuotaGenerationDisproved {
+		t.Fatalf("unsupported source must disprove the generation: %+v", result)
 	}
 }
 

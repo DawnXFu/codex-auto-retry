@@ -58,12 +58,12 @@ func conversationItemsHandler(service *managementService, token string) http.Han
 			return
 		}
 
-		config, err := loadOrCreateConfig(service.configPath)
+		catalog, err := service.conversationCatalog()
 		if err != nil {
 			writeAPIJSON(w, http.StatusInternalServerError, map[string]string{"error": "conversations_unavailable"})
 			return
 		}
-		reader := newConversationReader(newConversationCatalog(discoverSessionRoots(config)))
+		reader := newConversationReader(catalog)
 		page, err := reader.readItems(r.Context(), rootID, threadID,
 			r.URL.Query().Get("cursor"), r.URL.Query().Get("direction"), limit)
 		if err != nil {

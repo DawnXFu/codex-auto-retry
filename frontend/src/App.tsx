@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { useConnection, useConversationIndex, useNow, useSnapshot } from "./hooks";
+import { useConnection, useNow, useSnapshot } from "./hooks";
 import { useI18n } from "./i18n";
 import Titlebar from "./components/Titlebar";
 import Sidebar, { type Page } from "./components/Sidebar";
@@ -14,10 +14,9 @@ export default function App() {
   const { snapshot, online, hasData, refresh } = useSnapshot(conn);
   const now = useNow(1000);
   const [page, setPage] = useState<Page>("dashboard");
-  // C-06 queue → conversation deep link: the index resolves queue thread_ids
-  // to catalog (root_id, thread_id) pairs; a click sets convoTarget and
+  // C-06 queue → conversation deep link: a retry's root_id + thread_id is
+  // already the catalog identity, so a click just sets convoTarget and
   // switches pages. ConversationsPage re-opens on the nonce bump.
-  const convIndex = useConversationIndex(conn, snapshot?.retries);
   const [convoTarget, setConvoTarget] = useState<ConversationDeepLink | null>(null);
   const openConversation = useCallback((target: ConversationDeepLink) => {
     setConvoTarget({ ...target, nonce: Date.now() });
@@ -45,7 +44,6 @@ export default function App() {
               snapshot={snapshot}
               now={now}
               onRefresh={refresh}
-              convIndex={convIndex}
               onOpenConversation={openConversation}
             />
           )}

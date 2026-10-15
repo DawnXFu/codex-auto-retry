@@ -63,7 +63,7 @@ func (r *scriptedQuotaReader) ReadAccountQuota(ctx context.Context) accountQuota
 			r.mu.Lock()
 			r.inFlight--
 			r.mu.Unlock()
-			return unavailableAccountQuota(accountQuotaReasonTimeout)
+			return unavailableAccountQuota(accountQuotaReasonTimeout, accountQuotaGenerationInconclusive)
 		}
 	}
 	r.mu.Lock()
@@ -222,7 +222,7 @@ func TestAccountQuotaCachePersistsAcceptedSnapshot(t *testing.T) {
 }
 
 func TestAccountQuotaCacheBackoffBoundsFailureRetries(t *testing.T) {
-	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnreachable)}
+	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive)}
 	cache := newTestQuotaCache(reader, nil)
 	now := time.Now().UTC()
 
@@ -254,8 +254,8 @@ func TestAccountQuotaCacheBackoffBoundsFailureRetries(t *testing.T) {
 func TestAccountQuotaCacheSuccessResetsBackoff(t *testing.T) {
 	backend := testQuotaBackend(13)
 	reader := &scriptedQuotaReader{results: []accountQuotaReadResult{
-		unavailableAccountQuota(accountQuotaReasonUnreachable),
-		unavailableAccountQuota(accountQuotaReasonUnreachable),
+		unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive),
+		unavailableAccountQuota(accountQuotaReasonUnreachable, accountQuotaGenerationInconclusive),
 		{Available: true, Backend: backend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
 	}}
 	cache := newTestQuotaCache(reader, nil)
@@ -278,7 +278,7 @@ func TestAccountQuotaCacheSuccessResetsBackoff(t *testing.T) {
 }
 
 func TestAccountQuotaCacheDisablesOnUnsupported(t *testing.T) {
-	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnsupported)}
+	reader := &scriptedQuotaReader{last: unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved)}
 	path := filepath.Join(t.TempDir(), "account-quota.json")
 	cache := newTestQuotaCache(reader, nil)
 	cache.persistPath = path
@@ -319,7 +319,7 @@ func TestAccountQuotaCacheInvalidatesEvidenceWhenEndpointDisappears(t *testing.T
 	backend := testQuotaBackend(17)
 	reader := &scriptedQuotaReader{results: []accountQuotaReadResult{
 		{Available: true, Backend: backend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
-		unavailableAccountQuota(accountQuotaReasonNotRunning),
+		unavailableAccountQuota(accountQuotaReasonNotRunning, accountQuotaGenerationDisproved),
 	}}
 	cache := newTestQuotaCache(reader, nil)
 	for i := 0; i < 2; i++ {
@@ -339,7 +339,7 @@ func TestAccountQuotaCacheKeepsEvidenceOnSameGenerationReadFailure(t *testing.T)
 	backend := testQuotaBackend(19)
 	reader := &scriptedQuotaReader{results: []accountQuotaReadResult{
 		{Available: true, Backend: backend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
-		{Available: false, Reason: accountQuotaReasonUnreachable, Backend: backend},
+		{Available: false, Reason: accountQuotaReasonUnreachable, Generation: accountQuotaGenerationVerified, Backend: backend},
 	}}
 	cache := newTestQuotaCache(reader, nil)
 	for i := 0; i < 2; i++ {
@@ -363,7 +363,7 @@ func TestAccountQuotaCacheInvalidatesEvidenceWhenGenerationMoves(t *testing.T) {
 		{Available: true, Backend: oldBackend, ObservedAt: time.Now().UTC(), Limits: accountLimitsForTest(t)},
 		// Verification succeeded on a different generation, then the read
 		// failed: the old evidence belongs to a dead backend.
-		{Available: false, Reason: accountQuotaReasonUnreachable, Backend: newBackend},
+		{Available: false, Reason: accountQuotaReasonUnreachable, Generation: accountQuotaGenerationVerified, Backend: newBackend},
 	}}
 	cache := newTestQuotaCache(reader, nil)
 	for i := 0; i < 2; i++ {

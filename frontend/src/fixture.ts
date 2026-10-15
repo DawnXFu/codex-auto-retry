@@ -262,6 +262,9 @@ export function buildPreviewSnapshot(): ManagementSnapshot {
       },
       {
         thread_id: "019f9d5d-0000-7000-8000-000000000006",
+        // root_id matches the first fixture conversation below (same
+        // thread_id) so the queue deep link still demos at ?preview=1.
+        root_id: previewConversations()[0].root_id,
         label: "任务 019f9d5d...",
         title: "编写订单服务单元测试",
         state: "running",
