@@ -94,5 +94,34 @@
     "resets_at": "2026-10-15T09:00:00Z",
     "binding": true,
     "waiting": 1
+  },
+  "account_quota": {
+    "status": "fresh",
+    "source": "account_read",
+    "observed_at": "2026-10-15T03:59:50Z",
+    "fresh_until": "2026-10-15T04:00:50Z",
+    "windows": [
+      {
+        "limit_id": "codex",
+        "slot": "primary",
+        "duration_minutes": 300,
+        "used_percent": 99.6,
+        "resets_at": "2026-10-15T09:00:00Z",
+        "exhausted": true,
+        "binding": true
+      },
+      {
+        "limit_id": "codex",
+        "slot": "secondary",
+        "duration_minutes": 10080,
+        "used_percent": 47,
+        "resets_at": "2026-10-16T04:00:00Z"
+      }
+    ],
+    "reset_credits": {
+      "status": "known",
+      "available_count": 3,
+      "observed_at": "2026-10-15T03:59:50Z"
+    }
   }
 }

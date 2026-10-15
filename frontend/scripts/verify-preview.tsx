@@ -10,8 +10,9 @@ import SettingsPage from "../src/components/SettingsPage";
 import AboutPage from "../src/components/AboutPage";
 import Sidebar from "../src/components/Sidebar";
 import { LangProvider } from "../src/i18n";
-import { buildPreviewSnapshot } from "../src/fixture";
+import { buildPreviewSnapshot, buildPreviewAccountQuota, type PreviewQuotaVariant } from "../src/fixture";
 import { interpolate, strings, type Lang } from "../src/strings";
+import type { ManagementSnapshot } from "../src/types";
 
 function fail(msg: string): never {
   console.error(msg);
@@ -34,6 +35,12 @@ if (zhKeys.concat(enKeys).some((k) => k.startsWith("quota_relimit"))) {
 const snap = buildPreviewSnapshot();
 const now = new Date();
 
+// The fixture cycles account_quota variants on a wall-clock timer; pin the
+// base render to the fresh variant so the assertions below stay
+// deterministic. Its primary window is used_percent=100, so the legacy
+// "0% left" needle still holds in account mode.
+const baseSnap: ManagementSnapshot = { ...snap, account_quota: buildPreviewAccountQuota("fresh") };
+
 const states = new Set(snap.retries.map((r) => r.state));
 const required = ["pending", "starting", "running", "waiting_for_reset", "reset_due", "needs_attention", "stopped"];
 const missing = required.filter((s) => !states.has(s as never));
@@ -49,7 +56,7 @@ for (const lang of ["zh", "en"] as Lang[]) {
     createElement(
       LangProvider,
       { initial: lang },
-      createElement(Dashboard, { snapshot: snap, now, onRefresh: () => {} }),
+      createElement(Dashboard, { snapshot: baseSnap, now, onRefresh: () => {} }),
     ),
   );
   const missingTags = required.filter((s) => !dash.includes(dict[`queue_tag_${s}` as keyof typeof dict]));
@@ -60,10 +67,68 @@ for (const lang of ["zh", "en"] as Lang[]) {
     dict.stats_quota_wait,
     interpolate(dict.quota_left, { pct: quotaLeft }),
     interpolate(dict.quota_waiting, { n: snap.quota?.waiting ?? 0 }),
+    // account_quota mode (fresh fixture): both window labels, credits row,
+    // exhausted tag, and the labeled source/freshness line.
+    dict.quota_acct_win_5h,
+    dict.quota_acct_win_week,
+    dict.quota_acct_exhausted,
+    dict.quota_acct_credits,
+    interpolate(dict.quota_acct_credits_n, { n: 3 }),
+    dict.quota_acct_src_account_read,
   ]) {
     if (!dash.includes(needle)) fail(`${lang}: dashboard output missing: ${needle}`);
   }
   if (/relimit/i.test(dash)) fail(`${lang}: dashboard renders a relimit budget`);
+
+  // Every account_quota state must render distinctly: stale source label,
+  // rollout fallback + duration-unknown slot label + unavailable credits,
+  // and the explicit unavailable state.
+  const variantNeedles: Record<PreviewQuotaVariant, string[]> = {
+    fresh: [], // covered by the base render above
+    stale: [
+      dict.quota_acct_src_account_read,
+      dict.quota_acct_stale,
+      interpolate(dict.quota_acct_credits_stale, { n: 1 }),
+    ],
+    rollout: [
+      dict.quota_acct_src_rollout,
+      dict.quota_acct_credits_unavailable,
+      interpolate(dict.quota_acct_win_unknown, { slot: dict.quota_acct_slot_secondary }),
+    ],
+    unavailable: [
+      dict.quota_acct_unavailable,
+      dict.quota_acct_src_none,
+      dict.quota_acct_credits_unavailable,
+    ],
+  };
+  for (const variant of Object.keys(variantNeedles) as PreviewQuotaVariant[]) {
+    if (!variantNeedles[variant].length) continue;
+    const vSnap: ManagementSnapshot = { ...snap, account_quota: buildPreviewAccountQuota(variant) };
+    const vDash = renderToString(
+      createElement(
+        LangProvider,
+        { initial: lang },
+        createElement(Dashboard, { snapshot: vSnap, now, onRefresh: () => {} }),
+      ),
+    );
+    for (const needle of variantNeedles[variant]) {
+      if (!vDash.includes(needle)) fail(`${lang}: dashboard(${variant}) output missing: ${needle}`);
+    }
+  }
+
+  // Legacy fallback: no account_quota → the old single-window summary renders.
+  const legacySnap: ManagementSnapshot = { ...snap };
+  delete legacySnap.account_quota;
+  const legacyDash = renderToString(
+    createElement(
+      LangProvider,
+      { initial: lang },
+      createElement(Dashboard, { snapshot: legacySnap, now, onRefresh: () => {} }),
+    ),
+  );
+  for (const needle of [dict.quota_window, interpolate(dict.quota_left, { pct: quotaLeft })]) {
+    if (!legacyDash.includes(needle)) fail(`${lang}: dashboard(legacy) output missing: ${needle}`);
+  }
 
   for (const snapshot of [snap, null] as const) {
     const sidebar = renderToString(
@@ -134,7 +199,7 @@ const enDash = renderToString(
   createElement(
     LangProvider,
     { initial: "en" },
-    createElement(Dashboard, { snapshot: snap, now, onRefresh: () => {} }),
+    createElement(Dashboard, { snapshot: baseSnap, now, onRefresh: () => {} }),
   ),
 );
 const enSettings = renderToString(
@@ -151,7 +216,29 @@ const enSidebar = renderToString(
     createElement(Sidebar, { page: "dashboard", onNav: () => {}, snapshot: snap }),
   ),
 );
-for (const [name, html] of [["dashboard", enDash], ["settings", enSettings], ["sidebar", enSidebar]] as const) {
+const enVariantDashes = (["stale", "rollout", "unavailable"] as PreviewQuotaVariant[]).map(
+  (v) =>
+    [
+      `dashboard(${v})`,
+      renderToString(
+        createElement(
+          LangProvider,
+          { initial: "en" },
+          createElement(Dashboard, {
+            snapshot: { ...snap, account_quota: buildPreviewAccountQuota(v) },
+            now,
+            onRefresh: () => {},
+          }),
+        ),
+      ),
+    ] as const,
+);
+for (const [name, html] of [
+  ["dashboard", enDash],
+  ["settings", enSettings],
+  ["sidebar", enSidebar],
+  ...enVariantDashes,
+] as const) {
   const scrubbed = html
     .replace(/title="[^"]*"/g, "") // fixture titles are zh data, not UI copy
     .replace(/value="[^"]*"/g, "") // retry_prompt comes from daemon config (data)

@@ -1,4 +1,4 @@
-import type { ManagementSnapshot } from "./types";
+import type { AccountQuota, ManagementSnapshot } from "./types";
 
 // Preview fixture: every retry state represented, timestamps relative to the
 // moment each snapshot is built so countdowns/relative-day labels stay live.
@@ -10,6 +10,112 @@ let scanCounter = 0;
 
 function iso(msFromNow: number): string {
   return new Date(Date.now() + msFromNow).toISOString();
+}
+
+// The account_quota view cycles through its four states on a ~15s wall-clock
+// rotation so each QuotaCard state stays demoable at ?preview=1 without
+// extra plumbing. The exported builder takes an explicit variant so the
+// SSR verify script stays deterministic.
+export type PreviewQuotaVariant = "fresh" | "stale" | "rollout" | "unavailable";
+
+const QUOTA_VARIANTS: PreviewQuotaVariant[] = ["fresh", "stale", "rollout", "unavailable"];
+
+function previewQuotaVariant(now: number): PreviewQuotaVariant {
+  return QUOTA_VARIANTS[Math.floor(now / 15_000) % QUOTA_VARIANTS.length];
+}
+
+export function buildPreviewAccountQuota(variant: PreviewQuotaVariant): AccountQuota {
+  switch (variant) {
+    case "fresh":
+      // Fresh account_read: both windows + known reset credits. The 5-hour
+      // window is exhausted/binding, matching the waiting_for_reset tasks.
+      return {
+        status: "fresh",
+        source: "account_read",
+        observed_at: iso(-90_000),
+        fresh_until: iso(60_000),
+        windows: [
+          {
+            limit_id: "codex",
+            limit_name: "codex",
+            slot: "primary",
+            duration_minutes: 300,
+            used_percent: 100,
+            resets_at: iso(2 * 3600_000 + 11 * 60_000 + 47_000),
+            exhausted: true,
+            binding: true,
+          },
+          {
+            limit_id: "codex",
+            limit_name: "codex",
+            slot: "secondary",
+            duration_minutes: 10080,
+            used_percent: 63,
+            resets_at: iso(4 * 86400_000 + 3 * 3600_000),
+          },
+        ],
+        reset_credits: { status: "known", available_count: 3, observed_at: iso(-90_000) },
+      };
+    case "stale":
+      // Stale account_read: freshness expired, credits read is stale too.
+      return {
+        status: "stale",
+        source: "account_read",
+        observed_at: iso(-3 * 3600_000),
+        windows: [
+          {
+            limit_id: "codex",
+            slot: "primary",
+            duration_minutes: 300,
+            used_percent: 100,
+            resets_at: iso(2 * 3600_000 + 11 * 60_000 + 47_000),
+            exhausted: true,
+            binding: true,
+          },
+          {
+            limit_id: "codex",
+            slot: "secondary",
+            duration_minutes: 10080,
+            used_percent: 41,
+            resets_at: iso(5 * 86400_000),
+          },
+        ],
+        reset_credits: { status: "stale", available_count: 1, observed_at: iso(-3 * 3600_000) },
+      };
+    case "rollout":
+      // Rollout fallback: stale token_count evidence. The secondary window
+      // carries no duration_minutes to exercise the "duration unknown" label;
+      // rollout can never supply reset credits.
+      return {
+        status: "stale",
+        source: "rollout",
+        observed_at: iso(-25 * 60_000),
+        windows: [
+          {
+            limit_id: "codex",
+            slot: "primary",
+            duration_minutes: 300,
+            used_percent: 100,
+            resets_at: iso(2 * 3600_000 + 11 * 60_000 + 47_000),
+            exhausted: true,
+            binding: true,
+          },
+          {
+            limit_id: "codex",
+            slot: "secondary",
+            used_percent: 87,
+          },
+        ],
+        reset_credits: { status: "unavailable" },
+      };
+    case "unavailable":
+      return {
+        status: "unavailable",
+        source: "none",
+        windows: [],
+        reset_credits: { status: "unavailable" },
+      };
+  }
 }
 
 export function buildPreviewSnapshot(): ManagementSnapshot {
@@ -67,6 +173,7 @@ export function buildPreviewSnapshot(): ManagementSnapshot {
       binding: true,
       waiting: 2,
     },
+    account_quota: buildPreviewAccountQuota(previewQuotaVariant(now)),
     retries: [
       {
         thread_id: "019f9d5d-0000-7000-8000-000000000001",
