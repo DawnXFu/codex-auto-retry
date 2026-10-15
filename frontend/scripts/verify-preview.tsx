@@ -9,7 +9,7 @@ import Dashboard from "../src/components/Dashboard";
 import SettingsPage from "../src/components/SettingsPage";
 import AboutPage from "../src/components/AboutPage";
 import Sidebar from "../src/components/Sidebar";
-import ConversationsPage from "../src/components/ConversationsPage";
+import ConversationsPage, { CONV_LIST_POLL_MS } from "../src/components/ConversationsPage";
 import { LangProvider } from "../src/i18n";
 import {
   buildPreviewSnapshot,
@@ -325,6 +325,12 @@ for (const lang of ["zh", "en"] as Lang[]) {
   }
   if (!convList.includes(previewThread.title ?? "")) {
     fail(`${lang}: conversations list did not render fixture title`);
+  }
+  // List auto-refresh seam: the mounted list view re-fetches the first page
+  // on a low-rate interval (~30 s). The interval constant is exported so the
+  // seam is verifiable without a DOM timer.
+  if (CONV_LIST_POLL_MS < 15000 || CONV_LIST_POLL_MS > 120000) {
+    fail(`${lang}: conversation list poll interval out of range: ${CONV_LIST_POLL_MS}`);
   }
 
   // Conversations detail: the deep-link prop seeds the newest persisted

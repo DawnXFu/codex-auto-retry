@@ -46,6 +46,9 @@ const FILTER_KEYS: Record<ConversationListFilter, StringKey> = {
 
 /** Detail forward-poll cadence — deliberately slower than the snapshot poll. */
 const CONV_POLL_MS = 8000;
+/** List auto-refresh cadence: the "recent" list re-fetches only its first
+ * page while the list view is mounted — cheap enough to leave running. */
+export const CONV_LIST_POLL_MS = 30_000;
 const BOTTOM_PX = 48;
 
 type DetailStatus = "loading" | "ready" | "not_found" | "error";
@@ -141,6 +144,41 @@ export default function ConversationsPage(props: {
       });
     return () => {
       alive = false;
+    };
+  }, [source, filter, onList]);
+
+  // Low-rate auto-refresh of the first page while the list view is mounted.
+  // The refresh replaces the list wholesale (pagination resets to head — this
+  // is a "recent" view), keeps the existing items rendered while fetching,
+  // and fails silently so a transient error never blanks a stale list. A
+  // detail view polls its own tail_cursor instead, so this effect is gated
+  // on onList; a hidden document skips the tick.
+  const listPollInFlight = useRef(false);
+  useEffect(() => {
+    if (!onList) return;
+    let alive = true;
+    const tick = () => {
+      if (listPollInFlight.current) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      listPollInFlight.current = true;
+      source
+        .fetchConversations(filter)
+        .then((page) => {
+          if (!alive) return;
+          setList(page);
+          setListErr(null);
+        })
+        .catch(() => {
+          /* silent: keep the stale list */
+        })
+        .finally(() => {
+          listPollInFlight.current = false;
+        });
+    };
+    const id = window.setInterval(tick, CONV_LIST_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
     };
   }, [source, filter, onList]);
 

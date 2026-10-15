@@ -292,20 +292,23 @@ func TestConversationCatalogResolveHandsOffValidatedPath(t *testing.T) {
 	if resolved.ThreadID != catalogThreadA1 || resolved.Kind != "ordinary" || resolved.Archived {
 		t.Fatalf("resolved flags wrong: %+v", resolved)
 	}
-	if !catalogPathWithin(homeA.CodexHome, resolved.Path) {
-		t.Fatalf("resolved path %q escaped root %q", resolved.Path, homeA.CodexHome)
+	if len(resolved.Files) != 1 {
+		t.Fatalf("resolve returned %d files, want the single preferred file", len(resolved.Files))
+	}
+	if !catalogPathWithin(homeA.CodexHome, resolved.Files[0].Path) {
+		t.Fatalf("resolved path %q escaped root %q", resolved.Files[0].Path, homeA.CodexHome)
 	}
 	wantSuffix := filepath.Join("homeA", "sessions", "2026", "10", "01",
 		"rollout-2026-10-01T08-00-00-"+catalogThreadA1+".jsonl")
-	if !strings.HasSuffix(resolved.Path, wantSuffix) {
-		t.Fatalf("resolved path %q, want suffix %q", resolved.Path, wantSuffix)
+	if !strings.HasSuffix(resolved.Files[0].Path, wantSuffix) {
+		t.Fatalf("resolved path %q, want suffix %q", resolved.Files[0].Path, wantSuffix)
 	}
 
 	archived, err := catalog.resolve(conversationRootID(homeA), catalogThreadA3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !archived.Archived || !strings.Contains(archived.Path, "archived_sessions") {
+	if !archived.Archived || !strings.Contains(archived.Files[0].Path, "archived_sessions") {
 		t.Fatalf("archived resolution wrong: %+v", archived)
 	}
 
@@ -361,7 +364,9 @@ func TestConversationCatalogResolvePrefersLiveOverArchivedCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Archived || !strings.Contains(resolved.Path, string(filepath.Separator)+"sessions"+string(filepath.Separator)) {
+	if resolved.Archived || len(resolved.Files) != 1 ||
+		!strings.Contains(resolved.Files[0].Path, string(filepath.Separator)+"sessions"+string(filepath.Separator)) ||
+		strings.Contains(resolved.Files[0].Path, "archived_sessions") {
 		t.Fatalf("resolve picked archived copy: %+v", resolved)
 	}
 }
