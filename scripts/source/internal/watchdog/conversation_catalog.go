@@ -66,10 +66,10 @@ var (
 	maxConversationPageLimit     = 200
 )
 
-// parseconversationFilter validates a client-supplied filter name. An empty
+// parseConversationFilter validates a client-supplied filter name. An empty
 // value selects the default ordinary view; "normal" is accepted as a legacy
 // alias for the same view.
-func parseconversationFilter(raw string) (conversationFilter, error) {
+func parseConversationFilter(raw string) (conversationFilter, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "normal":
 		return conversationFilterOrdinary, nil
@@ -87,24 +87,27 @@ func parseconversationFilter(raw string) (conversationFilter, error) {
 }
 
 // conversationSummary is one manifest entry handed to the API layer. It never
-// carries a filesystem path; identity is (root_id, thread_id) only.
+// carries a filesystem path; identity is (root_id, thread_id) only. It is an
+// internal handoff type, not a wire shape — the API maps it onto
+// conversationsListItem (api_conversations.go) for serialization.
 type conversationSummary struct {
-	RootID     string `json:"root_id"`
-	ThreadID   string `json:"thread_id"`
-	Kind       string `json:"kind"`
-	Archived   bool   `json:"archived"`
-	Title      string `json:"title,omitempty"`
-	StartedAt  string `json:"started_at,omitempty"`
-	LastActive string `json:"last_active,omitempty"`
+	RootID     string
+	ThreadID   string
+	Kind       string
+	Archived   bool
+	Title      string
+	StartedAt  string
+	LastActive string
 }
 
 // conversationListPage is one page of catalog output. NextCursor is opaque;
 // callers must treat it as an unforgeable position token. Partial reports that
-// scan bounds stopped the enumeration early.
+// scan bounds stopped the enumeration early. Like conversationSummary this is
+// an internal handoff type; conversationsListResponse is the wire shape.
 type conversationListPage struct {
-	Items      []conversationSummary `json:"items"`
-	NextCursor string                `json:"next_cursor,omitempty"`
-	Partial    bool                  `json:"partial,omitempty"`
+	Items      []conversationSummary
+	NextCursor string
+	Partial    bool
 }
 
 type conversationCatalog struct {
@@ -447,7 +450,15 @@ func inspectConversationManifest(path, threadID string) (conversationManifest, b
 		return conversationManifest{}, false
 	}
 	defer file.Close()
+	return inspectConversationManifestHandle(file, info, path, threadID)
+}
 
+// inspectConversationManifestHandle is the open-handle form of
+// inspectConversationManifest: identity is validated against the very file
+// the caller opened, so a path swap between resolve and read can never let a
+// foreign file borrow a resolved identity (TOCTOU). info must be a Stat of
+// file, and path is only used for the returned manifest's identity fields.
+func inspectConversationManifestHandle(file *os.File, info os.FileInfo, path, threadID string) (conversationManifest, bool) {
 	manifest := conversationManifest{path: filepath.Clean(path), threadID: threadID}
 	headLen := info.Size()
 	if headLen > maxCatalogHeadBytes {

@@ -207,6 +207,18 @@ func TestAccountQuotaCachePersistsAcceptedSnapshot(t *testing.T) {
 	if strings.Contains(string(raw), "acc_8f3b2d91") || strings.Contains(string(raw), "accountId") {
 		t.Fatalf("persisted record leaks the account generation handle: %s", raw)
 	}
+	// The record is trimmed to what the resolver consumes: credit detail rows,
+	// credit balances, plan types, spend-control detail, and the upsell banner
+	// stay out of the data dir.
+	for _, dropped := range []string{
+		"23.50", "10.00", "cr_01HZY4", "Rate-limit reset credit",
+		"planType", "rateLimitUpsell", "spendControlReached", "individualLimit",
+		"ordinaryUsageAllowed",
+	} {
+		if strings.Contains(string(raw), dropped) {
+			t.Fatalf("persisted record kept dropped RPC detail %q: %s", dropped, raw)
+		}
+	}
 }
 
 func TestAccountQuotaCacheBackoffBoundsFailureRetries(t *testing.T) {
@@ -418,8 +430,8 @@ func TestAccountQuotaCacheKeepsEvidenceWhenPostVerifyInconclusive(t *testing.T) 
 func TestAccountQuotaViewFreshAccountRead(t *testing.T) {
 	observed := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
 	record := &accountQuotaFileRecord{
-		Version: 1, Available: true, ObservedAt: observed,
-		FreshUntil: observed.Add(time.Minute), Limits: ptrTo(accountLimitsForTest(t)),
+		Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute), Limits: persistAccountLimits(accountLimitsForTest(t)),
 	}
 	view := resolveAccountQuotaView(record, nil, observed.Add(10*time.Second))
 	if view.Status != "fresh" || view.Source != "account_read" {
@@ -459,7 +471,7 @@ func TestAccountQuotaViewAbsentCountIsUnknownNotZero(t *testing.T) {
 	limits.RateLimitResetCredits = &appAccountResetCredits{} // count absent
 	record := &accountQuotaFileRecord{
 		Available: true, ObservedAt: time.Now().UTC(),
-		FreshUntil: time.Now().UTC().Add(time.Minute), Limits: &limits,
+		FreshUntil: time.Now().UTC().Add(time.Minute), Limits: persistAccountLimits(limits),
 	}
 	view := resolveAccountQuotaView(record, nil, time.Now().UTC())
 	if view.ResetCredits.Status != "unknown" || view.ResetCredits.AvailableCount != nil {
@@ -505,7 +517,7 @@ func TestAccountQuotaViewStaleAccountReadBeatsOlderRollout(t *testing.T) {
 	observed := now.Add(-2 * time.Minute)
 	record := &accountQuotaFileRecord{
 		Available: true, ObservedAt: observed,
-		FreshUntil: now.Add(-time.Minute), Limits: ptrTo(accountLimitsForTest(t)),
+		FreshUntil: now.Add(-time.Minute), Limits: persistAccountLimits(accountLimitsForTest(t)),
 	}
 	quota := &QuotaState{Snapshot: quotaSnapshotFixture(now.Add(-time.Hour), map[string]QuotaWindow{
 		"primary": {Key: "primary", UsedPercent: 40, WindowMinutes: 300, LimitID: "codex"},
@@ -523,7 +535,7 @@ func TestAccountQuotaViewNewerRolloutBeatsStaleAccountRead(t *testing.T) {
 	now := time.Now().UTC()
 	record := &accountQuotaFileRecord{
 		Available: true, ObservedAt: now.Add(-time.Hour),
-		FreshUntil: now.Add(-30 * time.Minute), Limits: ptrTo(accountLimitsForTest(t)),
+		FreshUntil: now.Add(-30 * time.Minute), Limits: persistAccountLimits(accountLimitsForTest(t)),
 	}
 	rolloutAt := now.Add(-time.Minute)
 	quota := &QuotaState{Snapshot: quotaSnapshotFixture(rolloutAt, map[string]QuotaWindow{
@@ -563,9 +575,9 @@ func TestAccountQuotaViewUnavailableWithoutEvidence(t *testing.T) {
 func TestAccountQuotaViewWeeklyPrimaryKeepsDurationIdentity(t *testing.T) {
 	observed := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
 	record := &accountQuotaFileRecord{
-		Version: 1, Available: true, ObservedAt: observed,
+		Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
 		FreshUntil: observed.Add(time.Minute),
-		Limits:     ptrTo(accountLimitsFixtureForTest(t, "account_rate_limits_read_weekly_primary.json")),
+		Limits:     persistAccountLimits(accountLimitsFixtureForTest(t, "account_rate_limits_read_weekly_primary.json")),
 	}
 	view := resolveAccountQuotaView(record, nil, observed.Add(10*time.Second))
 	if len(view.Windows) != 1 {
@@ -589,8 +601,8 @@ func TestAccountQuotaViewUnknownDurationKeepsSlot(t *testing.T) {
 	}
 	observed := time.Now().UTC()
 	record := &accountQuotaFileRecord{
-		Version: 1, Available: true, ObservedAt: observed,
-		FreshUntil: observed.Add(time.Minute), Limits: &limits,
+		Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute), Limits: persistAccountLimits(limits),
 	}
 	view := resolveAccountQuotaView(record, nil, observed)
 	if len(view.Windows) != 1 {
@@ -612,9 +624,9 @@ func TestAccountQuotaViewUnknownDurationKeepsSlot(t *testing.T) {
 func TestAccountQuotaViewZeroValuesAreKnownNotAbsent(t *testing.T) {
 	observed := time.Now().UTC()
 	record := &accountQuotaFileRecord{
-		Version: 1, Available: true, ObservedAt: observed,
+		Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
 		FreshUntil: observed.Add(time.Minute),
-		Limits:     ptrTo(accountLimitsFixtureForTest(t, "account_rate_limits_read_zero_values.json")),
+		Limits:     persistAccountLimits(accountLimitsFixtureForTest(t, "account_rate_limits_read_zero_values.json")),
 	}
 	view := resolveAccountQuotaView(record, nil, observed)
 	if len(view.Windows) != 2 {
@@ -642,9 +654,9 @@ func TestAccountQuotaViewZeroValuesAreKnownNotAbsent(t *testing.T) {
 func TestAccountQuotaViewAbsentWindowsSerializeEmpty(t *testing.T) {
 	observed := time.Now().UTC()
 	record := &accountQuotaFileRecord{
-		Version: 1, Available: true, ObservedAt: observed,
+		Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
 		FreshUntil: observed.Add(time.Minute),
-		Limits:     ptrTo(accountLimitsFixtureForTest(t, "account_rate_limits_read_minimal.json")),
+		Limits:     persistAccountLimits(accountLimitsFixtureForTest(t, "account_rate_limits_read_minimal.json")),
 	}
 	view := resolveAccountQuotaView(record, nil, observed)
 	if view.Status != "fresh" || len(view.Windows) != 0 {
@@ -656,6 +668,65 @@ func TestAccountQuotaViewAbsentWindowsSerializeEmpty(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"windows":[]`) {
 		t.Fatalf("absent windows must serialize as an empty array: %s", data)
+	}
+}
+
+// rateLimitReachedType is a space-level flag: the account read cannot say
+// which window binds, so a space where only the 5-hour window is reached must
+// not render its weekly sibling exhausted or binding.
+func TestAccountQuotaViewReachedMarksOnlyEvidencedWindows(t *testing.T) {
+	observed := time.Now().UTC()
+	limits := appAccountRateLimitsReadResult{
+		RateLimitsByLimitID: map[string]appAccountRateLimitSnapshot{
+			quotaCodexLimitID: {
+				LimitID:              ptrTo("codex"),
+				RateLimitReachedType: ptrTo("rate_limit_reached"),
+				Primary:              &appAccountRateLimitWindow{UsedPercent: ptrTo(100.0), WindowDurationMins: ptrTo(int64(300))},
+				Secondary:            &appAccountRateLimitWindow{UsedPercent: ptrTo(47.0), WindowDurationMins: ptrTo(int64(10080))},
+			},
+		},
+	}
+	record := &accountQuotaFileRecord{
+		Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute), Limits: persistAccountLimits(limits),
+	}
+	view := resolveAccountQuotaView(record, nil, observed)
+	if len(view.Windows) != 2 {
+		t.Fatalf("windows = %+v, want 2", view.Windows)
+	}
+	primary, secondary := view.Windows[0], view.Windows[1]
+	if !primary.Exhausted || !primary.Binding {
+		t.Fatalf("reached+exhausted primary window lost its marks: %+v", primary)
+	}
+	if secondary.Exhausted || secondary.Binding {
+		t.Fatalf("weekly window over-marked by the space-level reached flag: %+v", secondary)
+	}
+}
+
+// When a space reports reached but no window reads past the exhaustion
+// threshold, the payload cannot name the binding window: exhausted stays
+// evidenced-only and binding stays unset rather than marking both slots.
+func TestAccountQuotaViewReachedWithoutEvidencedWindowMarksNothing(t *testing.T) {
+	observed := time.Now().UTC()
+	limits := appAccountRateLimitsReadResult{
+		RateLimitsByLimitID: map[string]appAccountRateLimitSnapshot{
+			quotaCodexLimitID: {
+				LimitID:              ptrTo("codex"),
+				RateLimitReachedType: ptrTo("workspace_member_credits_depleted"),
+				Primary:              &appAccountRateLimitWindow{UsedPercent: ptrTo(42.0), WindowDurationMins: ptrTo(int64(300))},
+				Secondary:            &appAccountRateLimitWindow{UsedPercent: ptrTo(13.0), WindowDurationMins: ptrTo(int64(10080))},
+			},
+		},
+	}
+	record := &accountQuotaFileRecord{
+		Version: accountQuotaFileVersion, Available: true, ObservedAt: observed,
+		FreshUntil: observed.Add(time.Minute), Limits: persistAccountLimits(limits),
+	}
+	view := resolveAccountQuotaView(record, nil, observed)
+	for _, window := range view.Windows {
+		if window.Exhausted || window.Binding {
+			t.Fatalf("unidentified reached window was over-marked: %+v", window)
+		}
 	}
 }
 
@@ -684,9 +755,9 @@ func TestAccountQuotaFileRoundTripAndBounds(t *testing.T) {
 		t.Fatal("corrupt record was silently accepted")
 	}
 	write := &accountQuotaFileRecord{
-		Version: 1, Available: true, Reason: "",
+		Version: accountQuotaFileVersion, Available: true, Reason: "",
 		ObservedAt: time.Now().UTC(), FreshUntil: time.Now().UTC().Add(time.Minute),
-		Limits: ptrTo(accountLimitsForTest(t)),
+		Limits: persistAccountLimits(accountLimitsForTest(t)),
 	}
 	if err := writeJSONAtomic(path, write); err != nil {
 		t.Fatal(err)
@@ -697,6 +768,22 @@ func TestAccountQuotaFileRoundTripAndBounds(t *testing.T) {
 	}
 	if record.Limits.RateLimitsByLimitID["codex"].Primary == nil {
 		t.Fatalf("record lost rateLimitsByLimitId across the file round-trip")
+	}
+}
+
+func TestAccountQuotaFileStaleVersionIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "account-quota.json")
+	// Version-1 records held the raw RPC result; they read as "no usable
+	// evidence" rather than being partially decoded into the trimmed shape.
+	legacy := `{"version":1,"available":true,"observed_at":"` +
+		time.Now().UTC().Format(time.RFC3339Nano) +
+		`","limits":{"rateLimits":{"planType":"pro","primary":{"usedPercent":42}}}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if record, err := loadAccountQuotaFile(path); err != nil || record != nil {
+		t.Fatalf("stale-version record must be ignored: record=%v err=%v", record, err)
 	}
 }
 
@@ -759,5 +846,3 @@ func TestDaemonWithoutQuotaCapabilityLeavesNoAccountQuotaFile(t *testing.T) {
 		t.Fatalf("capability-less daemon produced account quota evidence: %v", err)
 	}
 }
-
-func ptrTo[T any](value T) *T { return &value }

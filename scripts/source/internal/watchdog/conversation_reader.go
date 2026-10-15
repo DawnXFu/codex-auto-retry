@@ -35,7 +35,10 @@ const (
 	conversationItemUnknown          = "unknown"
 )
 
-// Boundary markers for recognized lifecycle/boundary records.
+// Boundary markers for recognized lifecycle/boundary records. There is
+// deliberately no "archived" marker: archiving is a file move that writes no
+// rollout record, so the page-level Archived flag (plus the UI banner it
+// drives) already covers it.
 const (
 	conversationBoundarySession       = "session"
 	conversationBoundarySubagent      = "subagent"
@@ -50,6 +53,23 @@ const (
 	conversationBoundaryError         = "error"
 	conversationBoundaryWarning       = "warning"
 )
+
+// Record families a projected item can come from. Rollouts persist one
+// logical chat message twice — once as an event_msg
+// user_message/agent_message and once as a response_item message — so the
+// family tag feeds the projection's duplicate collapse
+// (dedupeConversationMessages).
+const (
+	conversationFamilyEventMessage = "event_msg"
+	conversationFamilyResponseItem = "response_item"
+)
+
+// conversationMessageDedupSpan bounds the duplicate-collapse window in
+// emitted items. The two records of one logical message are persisted within
+// a few lines of each other; two genuinely repeated identical messages — a
+// user sending "ok" twice — survive because they land further apart or arrive
+// from the same family.
+const conversationMessageDedupSpan = 8
 
 // Completeness states for a page of items.
 const (
@@ -97,6 +117,9 @@ type conversationItem struct {
 	Marker    string `json:"marker,omitempty"`
 	Collapsed bool   `json:"collapsed,omitempty"`
 	Omitted   bool   `json:"omitted,omitempty"`
+	// family records which persisted record family produced the item
+	// (conversationFamily*); it feeds message dedup and is internal-only.
+	family string
 }
 
 // conversationItemPage is one page of projected items in chronological order.
@@ -224,9 +247,11 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 		Kind:     resolved.Kind,
 	}
 	// Identity is only trustworthy if the file still carries a session_meta
-	// for this thread. Anything else is an unsupported projection, not an
-	// empty conversation.
-	if _, ok := inspectConversationManifest(resolved.Path, threadID); !ok {
+	// for this thread. The check runs on the already-open handle — never a
+	// second path open — so a swapped file cannot borrow the resolved
+	// identity between resolve and read. Anything else is an unsupported
+	// projection, not an empty conversation.
+	if _, ok := inspectConversationManifestHandle(file, info, resolved.Path, threadID); !ok {
 		page.State = conversationStateUnsupported
 		return page, nil
 	}
@@ -265,7 +290,7 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 		if err != nil {
 			return conversationItemPage{}, err
 		}
-		page.Items = items
+		page.Items = dedupeConversationMessages(items)
 		if partial {
 			page.State = conversationStatePartial
 		}
@@ -286,7 +311,7 @@ func (r *conversationReader) readResolvedItems(ctx context.Context, resolved res
 	if err != nil {
 		return conversationItemPage{}, err
 	}
-	page.Items = items
+	page.Items = dedupeConversationMessages(items)
 	if partial {
 		page.State = conversationStatePartial
 	}
@@ -752,6 +777,7 @@ func projectMessageItem(item conversationItem, payload conversationItemPayload) 
 	}
 	item.Text = text
 	item.Omitted = omitted
+	item.family = conversationFamilyResponseItem
 	return item, true
 }
 
@@ -796,12 +822,14 @@ func projectEventMessage(item conversationItem, raw json.RawMessage) (conversati
 		item.Kind = conversationItemUserMessage
 		item.Text = text
 		item.Omitted = truncated || len(payload.Images) > 0
+		item.family = conversationFamilyEventMessage
 		return item, true, false, nil
 	case "agent_message":
 		text, truncated := clampItemText(payload.Message)
 		item.Kind = conversationItemAssistantMessage
 		item.Text = text
 		item.Omitted = truncated
+		item.family = conversationFamilyEventMessage
 		return item, true, false, nil
 	}
 	marker, ok := eventBoundaryMarkers[payload.Type]
@@ -884,6 +912,72 @@ func toolOutputText(raw json.RawMessage) string {
 		return strings.Join(parts, "\n")
 	}
 	return rawToText(structured.Output)
+}
+
+// dedupeConversationMessages collapses the double persistence of one logical
+// chat message. Codex rollouts write each user/assistant message twice — an
+// event_msg user_message/agent_message record and a response_item message
+// record carrying the same content — so emitting both families renders every
+// message twice. The heuristic is deliberately narrow and stays a heuristic:
+// only message items with identical clamped text, from different families,
+// within conversationMessageDedupSpan emitted items of each other collapse.
+// The first record's position (and ID) is kept for stable chronology; when
+// the later record is the canonical response_item its projected fields win.
+// Two genuinely repeated identical messages — same text sent twice — survive:
+// they arrive from the same family or land outside the nearby window.
+// Residual: a duplicate pair split across a page boundary or an incremental
+// forward poll can still emit twice; collapsing across pages would require
+// carrying dedup state in the cursor and is not worth it for a display path.
+func dedupeConversationMessages(items []conversationItem) []conversationItem {
+	if len(items) < 2 {
+		return items
+	}
+	type sighting struct {
+		ordinal int
+		out     int
+		family  string
+		// paired marks a kept message that already absorbed its cross-family
+		// twin; it cannot pair again, so a genuinely repeated identical
+		// message is never eaten by its predecessor's duplicate.
+		paired bool
+	}
+	recent := map[string][]sighting{}
+	kept := make([]conversationItem, 0, len(items))
+	for _, item := range items {
+		ordinal := len(kept)
+		if item.Kind != conversationItemUserMessage && item.Kind != conversationItemAssistantMessage {
+			kept = append(kept, item)
+			continue
+		}
+		key := item.Kind + "\x00" + item.Text
+		duplicate := -1
+		fresh := recent[key][:0]
+		for _, s := range recent[key] {
+			if ordinal-s.ordinal > conversationMessageDedupSpan {
+				continue
+			}
+			fresh = append(fresh, s)
+			if duplicate < 0 && !s.paired && s.family != item.family {
+				duplicate = s.out
+				fresh[len(fresh)-1].paired = true
+			}
+		}
+		recent[key] = fresh
+		if duplicate >= 0 {
+			// Same logical message already shown: keep the earlier position,
+			// but let the canonical response_item projection upgrade the kept
+			// item's content fields (it carries the richer per-part flags).
+			if item.family == conversationFamilyResponseItem && kept[duplicate].family != conversationFamilyResponseItem {
+				id := kept[duplicate].ID
+				kept[duplicate] = item
+				kept[duplicate].ID = id
+			}
+			continue
+		}
+		recent[key] = append(recent[key], sighting{ordinal: ordinal, out: len(kept), family: item.family})
+		kept = append(kept, item)
+	}
+	return kept
 }
 
 // clampItemText bounds display text at a rune boundary. The second result

@@ -220,10 +220,10 @@ func TestManagementSnapshotProjectsAccountQuotaEvidence(t *testing.T) {
 	service := newManagementService(dataDir)
 	now := time.Now().UTC()
 	observed := now.Add(-10 * time.Second)
-	limits := accountLimitsFixtureForTest(t, "account_rate_limits_read_full.json")
+	limits := persistAccountLimits(accountLimitsFixtureForTest(t, "account_rate_limits_read_full.json"))
 	if err := writeJSONAtomic(filepath.Join(dataDir, accountQuotaFileName), &accountQuotaFileRecord{
 		Version: accountQuotaFileVersion, Available: true,
-		ObservedAt: observed, FreshUntil: observed.Add(time.Minute), Limits: &limits,
+		ObservedAt: observed, FreshUntil: observed.Add(time.Minute), Limits: limits,
 	}); err != nil {
 		t.Fatal(err)
 	}

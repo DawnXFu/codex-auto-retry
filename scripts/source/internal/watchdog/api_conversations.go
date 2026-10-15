@@ -43,18 +43,17 @@ type conversationsListItem struct {
 
 // conversationsListHandler serves GET /conversations. It is registered on the
 // management mux in api.go and follows the same per-handler bearer contract
-// as /snapshot; Cache-Control: no-store is set before any response write so
-// it covers errors too.
+// as /snapshot; writeAPIJSON attaches Cache-Control: no-store to every
+// response, including errors.
 func conversationsListHandler(service *managementService, token string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
 		if !bearerAuthorized(r, token) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeAPIJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
 		query := r.URL.Query()
-		filter, err := parseconversationFilter(query.Get("filter"))
+		filter, err := parseConversationFilter(query.Get("filter"))
 		if err != nil {
 			writeAPIJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_filter"})
 			return
