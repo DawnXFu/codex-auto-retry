@@ -17,6 +17,7 @@ import {
   buildPreviewConversations,
   type PreviewQuotaVariant,
 } from "../src/fixture";
+import { dataSource } from "../src/api";
 import { interpolate, strings, type Lang } from "../src/strings";
 import type { ManagementSnapshot } from "../src/types";
 
@@ -53,6 +54,52 @@ if (archivedOnly.items.some((c) => !c.archived)) {
 const subagentsOnly = buildPreviewConversations("subagent");
 if (subagentsOnly.items.some((c) => c.kind !== "subagent" || c.archived)) {
   fail("preview fixture leaked non-subagent items into the subagent filter");
+}
+
+// The data source is the single preview/live/none seam: pages consume it
+// instead of branching on conn.mode or importing the fixture directly. The
+// fixture adapter also exposes the synchronous seeds SSR relies on. Fetch
+// assertions ride .then() chains — the fixture resolves synchronously and
+// the SSR target does not allow top-level await.
+{
+  const previewSource = dataSource({ mode: "preview" });
+  if (previewSource.kind !== "fixture") {
+    fail("preview connection did not select the fixture data source");
+  }
+  const seededList = previewSource.seedConversations?.("ordinary");
+  if (!seededList || seededList.items.length === 0) {
+    fail("fixture source did not offer a synchronous list seed");
+  }
+  const seededDetail = previewSource.seedConversationItems?.(
+    previewThread.root_id,
+    previewThread.thread_id,
+    { direction: "backward" },
+  );
+  if (!seededDetail || seededDetail.items.length === 0) {
+    fail("fixture source did not offer a synchronous detail seed");
+  }
+  void previewSource.fetchConversations("ordinary").then((page) => {
+    if (page.items.length === 0) fail("fixture source returned no conversations");
+  });
+  void previewSource
+    .fetchConversationItems(previewThread.root_id, previewThread.thread_id, {
+      direction: "backward",
+    })
+    .then((page) => {
+      if (page.items.length === 0) fail("fixture source returned no detail items");
+    });
+  void previewSource.fetchSnapshot().then((snap) => {
+    if (snap.retries.length === 0) fail("fixture source returned no retries");
+  });
+  const dead = dataSource({ mode: "none" });
+  if (dead.kind !== "none") fail("unconnected mode did not select the none source");
+  if (dead.seedConversations !== undefined || dead.seedConversationItems !== undefined) {
+    fail("unconnected source offered a synchronous seed");
+  }
+  void dead.fetchSnapshot().then(
+    () => fail("unconnected source resolved a snapshot"),
+    () => undefined,
+  );
 }
 
 // The fixture cycles account_quota variants on a wall-clock timer; pin the

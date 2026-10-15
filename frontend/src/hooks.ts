@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "./api";
-import { fetchSnapshot, resolveConnection, resolveConnectionAsync } from "./api";
+import { dataSource, resolveConnection, resolveConnectionAsync } from "./api";
 import type { ManagementSnapshot } from "./types";
 
 const POLL_MS = 3000;
@@ -59,10 +59,11 @@ export function useSnapshot(conn: Connection): SnapshotState {
   const [online, setOnline] = useState(false);
   const [hasData, setHasData] = useState(false);
   const timer = useRef<number | undefined>(undefined);
+  const source = useMemo(() => dataSource(conn), [conn]);
 
   const poll = useCallback(async () => {
     try {
-      const snap = await fetchSnapshot(conn);
+      const snap = await source.fetchSnapshot();
       setSnapshot(snap);
       setOnline(true);
       setHasData(true);
@@ -70,7 +71,7 @@ export function useSnapshot(conn: Connection): SnapshotState {
       // keep last good data; flip to offline
       setOnline(false);
     }
-  }, [conn]);
+  }, [source]);
 
   useEffect(() => {
     void poll();
