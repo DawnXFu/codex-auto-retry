@@ -62,6 +62,28 @@ type accountQuotaEndpointSource interface {
 	VerifiedEndpoint(context.Context) (verifiedSharedEndpoint, error)
 }
 
+// accountQuotaGeneration is the typed verdict one read result carries about
+// the endpoint generation it ran against. The reader stamps it at result
+// construction so the cache layer decides evidence invalidation from the
+// field instead of re-deriving it from the diagnostics Reason string.
+type accountQuotaGeneration int
+
+const (
+	// accountQuotaGenerationInconclusive is the zero value: the result says
+	// nothing about the endpoint generation (timeouts and other undecidable
+	// failures), so cached evidence must be kept.
+	accountQuotaGenerationInconclusive accountQuotaGeneration = iota
+	// accountQuotaGenerationVerified means the read ran against a verified
+	// endpoint recorded in Backend — including reads that then failed at the
+	// dial or call stage. The cache compares Backend against the cached
+	// generation to decide.
+	accountQuotaGenerationVerified
+	// accountQuotaGenerationDisproved means verification proved no usable
+	// endpoint generation exists now (not running, ownership unverifiable,
+	// or unsupported): cached freshness cannot be claimed.
+	accountQuotaGenerationDisproved
+)
+
 // accountQuotaReadResult is the typed outcome of one attach-only read. Every
 // failure mode lands in Reason with Available false rather than surfacing as
 // an error, so the cache layer (single-flight refresh, generation
@@ -70,6 +92,9 @@ type accountQuotaEndpointSource interface {
 type accountQuotaReadResult struct {
 	Available bool
 	Reason    string
+	// Generation records what this result proves about the endpoint
+	// generation it ran against; see accountQuotaGeneration.
+	Generation accountQuotaGeneration
 	// Limits is the decoded account/rateLimits/read response; it is zero
 	// unless Available is true.
 	Limits appAccountRateLimitsReadResult
@@ -111,7 +136,7 @@ func newAccountQuotaReader(source accountQuotaEndpointSource) *sharedAccountQuot
 
 func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) accountQuotaReadResult {
 	if r == nil || r.source == nil {
-		return unavailableAccountQuota(accountQuotaReasonUnsupported)
+		return unavailableAccountQuota(accountQuotaReasonUnsupported, accountQuotaGenerationDisproved)
 	}
 	timeout := r.timeout
 	if timeout <= 0 {
@@ -121,10 +146,11 @@ func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) account
 	defer cancel()
 	endpoint, err := r.source.VerifiedEndpoint(readCtx)
 	if err != nil {
-		return unavailableAccountQuota(accountQuotaEndpointReason(readCtx, err))
+		reason, generation := accountQuotaEndpointOutcome(readCtx, err)
+		return unavailableAccountQuota(reason, generation)
 	}
 	if strings.TrimSpace(endpoint.Endpoint) == "" {
-		return unavailableAccountQuota(accountQuotaReasonNotRunning)
+		return unavailableAccountQuota(accountQuotaReasonNotRunning, accountQuotaGenerationDisproved)
 	}
 	client, err := dialAppServerRPC(readCtx, endpoint.Endpoint)
 	if err != nil {
@@ -137,44 +163,66 @@ func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) account
 	}
 	return accountQuotaReadResult{
 		Available:  true,
+		Generation: accountQuotaGenerationVerified,
 		Limits:     limits,
 		Backend:    endpoint,
 		ObservedAt: time.Now().UTC(),
 	}
 }
 
-func unavailableAccountQuota(reason string) accountQuotaReadResult {
-	return accountQuotaReadResult{Available: false, Reason: reason}
+func unavailableAccountQuota(reason string, generation accountQuotaGeneration) accountQuotaReadResult {
+	return accountQuotaReadResult{Available: false, Reason: reason, Generation: generation}
 }
 
 // unavailableAccountQuotaAt marks a failure that occurred after the endpoint
 // generation was verified, so callers can still compare generations.
 func unavailableAccountQuotaAt(endpoint verifiedSharedEndpoint, reason string) accountQuotaReadResult {
-	return accountQuotaReadResult{Available: false, Reason: reason, Backend: endpoint}
+	return accountQuotaReadResult{
+		Available:  false,
+		Reason:     reason,
+		Generation: accountQuotaGenerationVerified,
+		Backend:    endpoint,
+	}
 }
 
-func accountQuotaEndpointReason(ctx context.Context, err error) string {
+// accountQuotaEndpointOutcome classifies an endpoint-discovery failure into
+// the diagnostics reason plus the generation verdict. Unsupported and
+// ownership-unverifiable sources prove no usable endpoint generation exists;
+// a spent deadline proves nothing. The verdict is decided here, at result
+// construction — the cache never re-derives it from the reason string.
+func accountQuotaEndpointOutcome(ctx context.Context, err error) (string, accountQuotaGeneration) {
 	switch {
 	case errors.Is(err, errSharedServerUnsupported):
-		return accountQuotaReasonUnsupported
+		return accountQuotaReasonUnsupported, accountQuotaGenerationDisproved
 	case errors.Is(err, errSharedServerOwnershipUnknown):
-		return accountQuotaReasonUnverified
+		return accountQuotaReasonUnverified, accountQuotaGenerationDisproved
+	case accountQuotaDeadlineSpent(ctx, err):
+		return accountQuotaReasonTimeout, accountQuotaGenerationInconclusive
 	default:
-		return accountQuotaCallReason(ctx, err, accountQuotaReasonNotRunning)
+		return accountQuotaReasonNotRunning, accountQuotaGenerationDisproved
 	}
 }
 
-// accountQuotaCallReason treats a spent deadline uniformly across the
+// accountQuotaDeadlineSpent treats a spent deadline uniformly across the
 // discovery, dial, and read stages: a caller-supplied context error, a
-// wrapped deadline, or an elapsed deadline all classify as the display-read
-// timeout. The deadline comparison covers the gap where the connection dies
-// from a slammed socket deadline before the context timer marks the context
-// done — the timeout must not flakily classify as a read failure.
-func accountQuotaCallReason(ctx context.Context, err error, fallback string) string {
+// wrapped deadline, or an elapsed deadline all count. The deadline
+// comparison covers the gap where the connection dies from a slammed socket
+// deadline before the context timer marks the context done — the timeout
+// must not flakily classify as a read failure.
+func accountQuotaDeadlineSpent(ctx context.Context, err error) bool {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-		return accountQuotaReasonTimeout
+		return true
 	}
 	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return true
+	}
+	return false
+}
+
+// accountQuotaCallReason maps a call-stage failure to its diagnostics reason;
+// the generation verdict is attached separately by the result constructor.
+func accountQuotaCallReason(ctx context.Context, err error, fallback string) string {
+	if accountQuotaDeadlineSpent(ctx, err) {
 		return accountQuotaReasonTimeout
 	}
 	return fallback

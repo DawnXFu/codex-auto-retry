@@ -107,16 +107,25 @@ func conversationsParseLimit(raw string) (int, error) {
 	return limit, nil
 }
 
-// conversationsList builds a per-request catalog over the session roots the
-// config currently monitors and returns one bounded page. Rebuilding per call
-// keeps the whitelist in step with config.json; the scan itself is bounded by
-// the catalog's file/time budgets.
-func (m *managementService) conversationsList(ctx context.Context, filter conversationFilter, cursor string, limit int) (conversationListPage, error) {
+// conversationCatalog builds a whitelist catalog over the session roots the
+// config currently monitors. Both conversations endpoints share this
+// construction so the whitelist always reflects config.json; rebuilding per
+// call is deliberate — the scan itself is bounded by the catalog's file/time
+// budgets.
+func (m *managementService) conversationCatalog() (*conversationCatalog, error) {
 	config, err := loadOrCreateConfig(m.configPath)
+	if err != nil {
+		return nil, err
+	}
+	return newConversationCatalog(discoverSessionRoots(config)), nil
+}
+
+// conversationsList returns one bounded page from the shared catalog.
+func (m *managementService) conversationsList(ctx context.Context, filter conversationFilter, cursor string, limit int) (conversationListPage, error) {
+	catalog, err := m.conversationCatalog()
 	if err != nil {
 		return conversationListPage{}, err
 	}
-	catalog := newConversationCatalog(discoverSessionRoots(config))
 	return catalog.list(ctx, filter, cursor, limit)
 }
 
