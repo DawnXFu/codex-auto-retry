@@ -85,6 +85,7 @@ type fakeAppServer struct {
 	providerRequests  int
 	rateLimitsResult  json.RawMessage
 	rateLimitsParams  []string
+	rateLimitsDelay   time.Duration
 }
 
 func newFakeAppServer(t *testing.T, threadID string) *fakeAppServer {
@@ -216,6 +217,9 @@ func (f *fakeAppServer) handle(method string, raw json.RawMessage) (any, string)
 		return map[string]any{}, ""
 	case "account/rateLimits/read":
 		f.rateLimitsParams = append(f.rateLimitsParams, string(raw))
+		if f.rateLimitsDelay > 0 {
+			time.Sleep(f.rateLimitsDelay)
+		}
 		if len(f.rateLimitsResult) == 0 {
 			return nil, "rate limits unavailable"
 		}

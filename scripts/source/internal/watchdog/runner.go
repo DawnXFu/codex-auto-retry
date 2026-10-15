@@ -151,6 +151,17 @@ func (r *appResumeRunner) SharedBackendMemory(ctx context.Context) (memorySample
 	return reader.SharedBackendMemory(ctx)
 }
 
+// ReadAccountQuota is the attach-only account quota read for the display
+// path. Controllers without a verified shared endpoint report unavailable;
+// the typed result never fails, so callers can wrap it in cache/fallback.
+func (r *appResumeRunner) ReadAccountQuota(ctx context.Context) accountQuotaReadResult {
+	reader, ok := r.controller.(accountQuotaReader)
+	if !ok {
+		return unavailableAccountQuota(accountQuotaReasonUnsupported)
+	}
+	return reader.ReadAccountQuota(ctx)
+}
+
 func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {
 	if !threadIDPattern.MatchString(job.ThreadID + ".jsonl") {
 		return DispatchResult{}, errors.New("invalid thread id")

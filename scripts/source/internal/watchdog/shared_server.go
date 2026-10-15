@@ -17,6 +17,7 @@ var (
 	errSharedServerPortConflict      = errors.New("shared Codex app-server port is occupied")
 	errSharedServerPortReserved      = errors.New("shared Codex app-server port is reserved by Windows")
 	errSharedServerMigrationDeferred = errors.New("shared Codex app-server migration is waiting for Codex to close")
+	errSharedServerUnsupported       = errors.New("shared Codex app-server is not supported on this platform")
 )
 
 // sharedFailOpenMarkerName is written before the persisted shared-backend
