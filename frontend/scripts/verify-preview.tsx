@@ -56,6 +56,24 @@ if (subagentsOnly.items.some((c) => c.kind !== "subagent" || c.archived)) {
   fail("preview fixture leaked non-subagent items into the subagent filter");
 }
 
+// Root scoping: the fixture carries several monitored roots and the page
+// always reports all of them (stable filter list), while a root-scoped
+// query only returns that root's items.
+if (!previewConvs.roots || previewConvs.roots.length < 2) {
+  fail("preview fixture reports fewer than two monitored roots — the directory filter cannot demo");
+}
+const previewRoot = previewConvs.roots![0];
+const rootScoped = buildPreviewConversations("all", { rootId: previewRoot.root_id });
+if (rootScoped.items.length === 0 || rootScoped.items.some((c) => c.root_id !== previewRoot.root_id)) {
+  fail("preview fixture root scoping returned the wrong items");
+}
+if (rootScoped.items.length === buildPreviewConversations("all").items.length) {
+  fail("preview fixture root scoping did not narrow the list");
+}
+if ((rootScoped.roots?.length ?? 0) !== previewConvs.roots!.length) {
+  fail("preview fixture roots list changed under root scoping");
+}
+
 // The data source is the single preview/live/none seam: pages consume it
 // instead of branching on conn.mode or importing the fixture directly. The
 // fixture adapter also exposes the synchronous seeds SSR relies on. Fetch
@@ -81,6 +99,13 @@ if (subagentsOnly.items.some((c) => c.kind !== "subagent" || c.archived)) {
   void previewSource.fetchConversations("ordinary").then((page) => {
     if (page.items.length === 0) fail("fixture source returned no conversations");
   });
+  void previewSource
+    .fetchConversations("ordinary", { rootId: previewRoot.root_id })
+    .then((page) => {
+      if (page.items.some((c) => c.root_id !== previewRoot.root_id)) {
+        fail("fixture source leaked items outside the requested root");
+      }
+    });
   void previewSource
     .fetchConversationItems(previewThread.root_id, previewThread.thread_id, {
       direction: "backward",
@@ -317,6 +342,10 @@ for (const lang of ["zh", "en"] as Lang[]) {
     dict.conv_filter_subagent,
     dict.conv_filter_archived,
     dict.conv_filter_all,
+    dict.conv_root_all,
+    `aria-label="${dict.conv_root_filter}"`,
+    "conv-root-select",
+    previewRoot.label,
     "conv-item",
     "conv-list",
     dict.conv_last_active.split("{ago}")[0].trim(),

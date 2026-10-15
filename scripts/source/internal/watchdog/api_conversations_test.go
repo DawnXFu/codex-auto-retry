@@ -73,6 +73,10 @@ type conversationsListBody struct {
 		StartedAt    string `json:"started_at"`
 		LastActivity string `json:"last_activity"`
 	} `json:"items"`
+	Roots []struct {
+		RootID string `json:"root_id"`
+		Label  string `json:"label"`
+	} `json:"roots"`
 	NextCursor string `json:"next_cursor"`
 	Partial    bool   `json:"partial"`
 	State      string `json:"state"`
@@ -204,6 +208,8 @@ func TestConversationsAPIRejectsBadParams(t *testing.T) {
 		code  string
 	}{
 		{"unknown filter", "?filter=bogus", "invalid_filter"},
+		{"unknown root", "?root=rdeadbeefdeadbeef", "invalid_root"},
+		{"path-shaped root", "?root=..%2f..%2fetc", "invalid_root"},
 		{"garbage cursor", "?cursor=not-a-cursor", "invalid_cursor"},
 		{"non-integer limit", "?limit=abc", "invalid_limit"},
 		{"zero limit", "?limit=0", "invalid_limit"},
@@ -276,6 +282,84 @@ func TestConversationsAPIPaginatesWithOpaqueCursor(t *testing.T) {
 	page := conversationsAPIList(t, descriptor, "?filter=all&limit=9999")
 	if len(page.Items) != 6 {
 		t.Fatalf("clamped-limit items = %d, want 6", len(page.Items))
+	}
+}
+
+// The root query parameter scopes the list to one monitored root and the
+// response always carries the monitored-root refs (id + compact label) so a
+// client can render a stable directory filter.
+func TestConversationsAPIRootFilterAndRoots(t *testing.T) {
+	descriptor, dataDir := startTestAPI(t)
+	homeA, homeB := conversationsFixtureHomes(t)
+	configureConversationsRoots(t, dataDir, homeA, homeB)
+
+	config, err := loadOrCreateConfig(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rootAID, rootBID string
+	for _, root := range discoverSessionRoots(config) {
+		switch filepath.Base(root.CodexHome) {
+		case "homeA":
+			rootAID = conversationRootID(root)
+		case "homeB":
+			rootBID = conversationRootID(root)
+		}
+	}
+	if rootAID == "" || rootBID == "" {
+		t.Fatalf("fixture roots not discovered: %q %q", rootAID, rootBID)
+	}
+
+	page := conversationsAPIList(t, descriptor, "?filter=all&root="+rootBID)
+	if len(page.Items) != 2 {
+		t.Fatalf("root-scoped items = %+v, want 2", page.Items)
+	}
+	for _, item := range page.Items {
+		if item.RootID != rootBID {
+			t.Fatalf("root filter leaked item from %q", item.RootID)
+		}
+	}
+	// Both monitored roots are reported even though only one matched.
+	if len(page.Roots) != 2 {
+		t.Fatalf("roots = %+v, want both monitored roots", page.Roots)
+	}
+	labels := map[string]string{}
+	for _, ref := range page.Roots {
+		if ref.Label == "" {
+			t.Fatalf("root %q carries an empty label", ref.RootID)
+		}
+		labels[ref.RootID] = ref.Label
+	}
+	if labels[rootAID] != "homeA" || labels[rootBID] != "homeB" {
+		t.Fatalf("root labels = %+v, want home basenames", page.Roots)
+	}
+
+	// A cursor minted under one root cannot be replayed under another.
+	scoped := conversationsAPIList(t, descriptor, "?filter=all&root="+rootBID+"&limit=1")
+	if scoped.NextCursor == "" {
+		t.Fatal("expected a scoped next cursor")
+	}
+	status, _, body := conversationsAPIRequest(t, descriptor,
+		"/conversations?filter=all&root="+rootAID+"&cursor="+scoped.NextCursor, descriptor.Token)
+	if status != http.StatusBadRequest {
+		t.Fatalf("cross-root cursor status = %d body=%s", status, body)
+	}
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Error != "invalid_cursor" {
+		t.Fatalf("cross-root cursor body = %s, want invalid_cursor", body)
+	}
+	// And replaying the scoped cursor without the root is rejected too.
+	status, _, body = conversationsAPIRequest(t, descriptor,
+		"/conversations?filter=all&cursor="+scoped.NextCursor, descriptor.Token)
+	if status != http.StatusBadRequest {
+		t.Fatalf("descoped cursor status = %d body=%s", status, body)
+	}
+	// Same-root replay continues fine.
+	next := conversationsAPIList(t, descriptor, "?filter=all&root="+rootBID+"&cursor="+scoped.NextCursor)
+	if len(next.Items) != 1 {
+		t.Fatalf("continuation items = %+v, want the remaining 1", next.Items)
 	}
 }
 

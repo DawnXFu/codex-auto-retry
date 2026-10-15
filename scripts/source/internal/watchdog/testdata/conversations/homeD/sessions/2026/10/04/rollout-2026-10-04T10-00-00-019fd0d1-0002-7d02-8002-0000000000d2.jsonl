@@ -1,0 +1,5 @@
+{"timestamp":"2026-10-04T10:00:00.000Z","type":"session_meta","payload":{"id":"019fd0d1-0002-7d02-8002-0000000000d2","timestamp":"2026-10-04T10:00:00.000Z","cwd":"C:\\repo","originator":"codex_cli_rs","cli_version":"0.56.0","source":"cli"}}
+{"timestamp":"2026-10-04T10:00:05.000Z","type":"event_msg","payload":{"type":"user_message","message":"# AGENTS.md instructions for C:\\repo\n\n<INSTRUCTIONS>\n- Run tests with go test ./...\n</INSTRUCTIONS>\n\nUpdate the dashboard quota card"}}
+{"timestamp":"2026-10-04T10:00:30.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Draft ready"}]}}
+{"timestamp":"2026-10-04T10:05:00.000Z","type":"event_msg","payload":{"type":"thread_name_updated","name":"Polish quota card"}}
+{"timestamp":"2026-10-04T10:06:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Renamed noted"}]}}

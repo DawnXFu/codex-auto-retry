@@ -158,8 +158,18 @@ export interface ConversationSummary {
   last_activity?: string;
 }
 
+/** One monitored session root as the API reports it: opaque id plus a
+ * compact display label (home basename, parent-disambiguated on collision). */
+export interface ConversationRootRef {
+  root_id: string;
+  label: string;
+}
+
 export interface ConversationListPage {
   items: ConversationSummary[];
+  /** every monitored root — stable regardless of filter/root scoping, so the
+   * directory filter's option list never flickers between views */
+  roots?: ConversationRootRef[];
   next_cursor?: string;
   /** true when the server-side scan budget truncated enumeration */
   partial: boolean;

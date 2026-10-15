@@ -20,8 +20,11 @@ var conversationsScanSlots = make(chan struct{}, 4)
 // and State are always serialized so clients can rely on them; State reports
 // whether the catalog scan completed within its bounds
 // (complete_persisted | partial), mirroring the detail endpoint's page state.
+// Roots lists every monitored session root (id + compact label) so a client
+// can render a stable directory filter even for roots with no matching items.
 type conversationsListResponse struct {
 	Items      []conversationsListItem `json:"items"`
+	Roots      []conversationRootRef   `json:"roots"`
 	NextCursor string                  `json:"next_cursor,omitempty"`
 	Partial    bool                    `json:"partial"`
 	State      string                  `json:"state"`
@@ -71,7 +74,7 @@ func conversationsListHandler(service *managementService, token string) http.Han
 			return
 		}
 
-		page, err := service.conversationsList(r.Context(), filter, query.Get("cursor"), limit)
+		page, err := service.conversationsList(r.Context(), filter, query.Get("root"), query.Get("cursor"), limit)
 		if err != nil {
 			if r.Context().Err() != nil {
 				return // client is gone; nothing to write to
@@ -79,6 +82,8 @@ func conversationsListHandler(service *managementService, token string) http.Han
 			switch {
 			case errors.Is(err, errConversationFilterUnknown):
 				writeAPIJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_filter"})
+			case errors.Is(err, errConversationRootUnknown):
+				writeAPIJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_root"})
 			case errors.Is(err, errConversationCursorInvalid):
 				writeAPIJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_cursor"})
 			default:
@@ -121,20 +126,24 @@ func (m *managementService) conversationCatalog() (*conversationCatalog, error) 
 }
 
 // conversationsList returns one bounded page from the shared catalog.
-func (m *managementService) conversationsList(ctx context.Context, filter conversationFilter, cursor string, limit int) (conversationListPage, error) {
+func (m *managementService) conversationsList(ctx context.Context, filter conversationFilter, rootID, cursor string, limit int) (conversationListPage, error) {
 	catalog, err := m.conversationCatalog()
 	if err != nil {
 		return conversationListPage{}, err
 	}
-	return catalog.list(ctx, filter, cursor, limit)
+	return catalog.list(ctx, filter, rootID, cursor, limit)
 }
 
 func conversationsListResponseFor(page conversationListPage) conversationsListResponse {
 	response := conversationsListResponse{
 		Items:      make([]conversationsListItem, 0, len(page.Items)),
+		Roots:      page.Roots,
 		NextCursor: page.NextCursor,
 		Partial:    page.Partial,
 		State:      conversationStateCompletePersisted,
+	}
+	if response.Roots == nil {
+		response.Roots = []conversationRootRef{}
 	}
 	if page.Partial {
 		response.State = conversationStatePartial
