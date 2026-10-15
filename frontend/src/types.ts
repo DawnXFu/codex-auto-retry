@@ -58,6 +58,36 @@ export interface ManagedQuota {
   waiting: number;
 }
 
+// Account quota view (spec #19) — mirrors accountQuotaView and friends in
+// account_quota_cache.go. Nullable fields stay optional: an absent reading
+// is never coerced to zero (0 is a valid known value for both used_percent
+// and available_count).
+export interface AccountQuotaWindow {
+  limit_id?: string;
+  limit_name?: string;
+  slot: "primary" | "secondary";
+  duration_minutes?: number; // 300 = 5-hour, 10080 = weekly; absent = unknown
+  used_percent?: number;
+  resets_at?: string;
+  exhausted?: boolean;
+  binding?: boolean;
+}
+
+export interface AccountResetCredits {
+  status: "known" | "unknown" | "stale" | "unavailable";
+  available_count?: number;
+  observed_at?: string;
+}
+
+export interface AccountQuota {
+  status: "fresh" | "stale" | "unavailable";
+  source: "account_read" | "rollout" | "none";
+  observed_at?: string;
+  fresh_until?: string;
+  windows: AccountQuotaWindow[];
+  reset_credits: AccountResetCredits;
+}
+
 export interface ManagementSnapshot {
   version: string;
   running: boolean;
@@ -102,4 +132,5 @@ export interface ManagementSnapshot {
   notice?: string;
   retries: ManagedRetry[];
   quota?: ManagedQuota;
+  account_quota?: AccountQuota;
 }
