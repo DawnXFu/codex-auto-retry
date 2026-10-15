@@ -44,6 +44,7 @@ var (
 	errConversationFilterUnknown = errors.New("unknown conversation filter")
 	errConversationCursorInvalid = errors.New("invalid conversation cursor")
 	errConversationNotFound      = errors.New("conversation not found")
+	errConversationRootUnknown   = errors.New("unknown conversation root")
 )
 
 // Scan bounds keep a list call cheap and bounded regardless of how much data
@@ -100,12 +101,25 @@ type conversationSummary struct {
 	LastActive string
 }
 
+// conversationRootRef is the client-facing identity of one monitored
+// session root: the opaque root_id plus a compact display label derived from
+// the Codex home path. Labels are the home basename, extended with the
+// parent directory name (joined by "/") only when two monitored homes share
+// a basename — enough to tell roots apart without echoing a full path.
+type conversationRootRef struct {
+	RootID string `json:"root_id"`
+	Label  string `json:"label"`
+}
+
 // conversationListPage is one page of catalog output. NextCursor is opaque;
 // callers must treat it as an unforgeable position token. Partial reports that
-// scan bounds stopped the enumeration early. Like conversationSummary this is
-// an internal handoff type; conversationsListResponse is the wire shape.
+// scan bounds stopped the enumeration early. Roots carries every monitored
+// root — regardless of filter or root scoping — so a client's filter list
+// stays stable. Like conversationSummary this is an internal handoff type;
+// conversationsListResponse is the wire shape.
 type conversationListPage struct {
 	Items      []conversationSummary
+	Roots      []conversationRootRef
 	NextCursor string
 	Partial    bool
 }
@@ -143,15 +157,21 @@ func conversationRootID(root sessionRoot) string {
 }
 
 // conversationManifest is the per-file inspection result before merging.
+// Title keeps the text derived from user messages; ExplicitTitle keeps a
+// persisted naming signal (session_meta title/thread_name or a
+// thread_name_updated rename). The explicit tier always wins when present —
+// a rename is the user's own naming act and outranks derived text even when
+// the derived text survived boilerplate stripping.
 type conversationManifest struct {
-	rootID     string
-	threadID   string
-	path       string
-	archived   bool
-	kind       string
-	title      string
-	startedAt  time.Time
-	lastActive time.Time
+	rootID        string
+	threadID      string
+	path          string
+	archived      bool
+	kind          string
+	title         string
+	explicitTitle string
+	startedAt     time.Time
+	lastActive    time.Time
 }
 
 // resolvedConversationFile is one whitelisted rollout file belonging to a
@@ -179,7 +199,38 @@ type resolvedConversation struct {
 	Kind     string
 }
 
-func (c *conversationCatalog) list(ctx context.Context, filter conversationFilter, cursor string, limit int) (conversationListPage, error) {
+// rootLabels returns the client-facing ref of every monitored root with
+// disambiguated display labels. The label is the Codex home basename; when
+// two homes share it, the parent directory name is prepended (joined by "/")
+// so the pair stays distinguishable without echoing a full path. A home with
+// no usable basename labels as "root" — it stays opaque, never an error.
+func (c *conversationCatalog) rootLabels() []conversationRootRef {
+	bases := make([]string, len(c.roots))
+	shared := make(map[string]int, len(c.roots))
+	for i, root := range c.roots {
+		base := filepath.Base(filepath.Clean(strings.TrimSpace(root.CodexHome)))
+		if base == "." || base == string(filepath.Separator) || base == "" {
+			base = "root"
+		}
+		bases[i] = base
+		shared[strings.ToLower(base)]++
+	}
+	refs := make([]conversationRootRef, 0, len(c.roots))
+	for i, root := range c.roots {
+		label := bases[i]
+		if shared[strings.ToLower(label)] > 1 {
+			parent := filepath.Base(filepath.Dir(filepath.Clean(strings.TrimSpace(root.CodexHome))))
+			if parent != "." && parent != string(filepath.Separator) && parent != "" && parent != label {
+				label = parent + "/" + label
+			}
+		}
+		refs = append(refs, conversationRootRef{RootID: conversationRootID(root), Label: label})
+	}
+	return refs
+}
+
+func (c *conversationCatalog) list(ctx context.Context, filter conversationFilter, rootID, cursor string, limit int) (conversationListPage, error) {
+	rootID = strings.TrimSpace(rootID)
 	after, err := decodeConversationCursor(cursor)
 	if err != nil {
 		return conversationListPage{}, err
@@ -189,7 +240,12 @@ func (c *conversationCatalog) list(ctx context.Context, filter conversationFilte
 	default:
 		return conversationListPage{}, fmt.Errorf("%w", errConversationFilterUnknown)
 	}
-	if after != nil && after.Filter != string(filter) {
+	if rootID != "" {
+		if _, ok := c.byID[rootID]; !ok {
+			return conversationListPage{}, fmt.Errorf("%w", errConversationRootUnknown)
+		}
+	}
+	if after != nil && (after.Filter != string(filter) || after.Scope != rootID) {
 		return conversationListPage{}, fmt.Errorf("%w: filter changed between pages", errConversationCursorInvalid)
 	}
 	if limit <= 0 {
@@ -218,6 +274,9 @@ func (c *conversationCatalog) list(ctx context.Context, filter conversationFilte
 	var last conversationManifest
 	remaining := 0
 	for _, manifest := range merged {
+		if rootID != "" && manifest.rootID != rootID {
+			continue
+		}
 		if !filterMatches(filter, manifest) {
 			continue
 		}
@@ -231,10 +290,11 @@ func (c *conversationCatalog) list(ctx context.Context, filter conversationFilte
 		items = append(items, manifest.toSummary())
 		last = manifest
 	}
-	page := conversationListPage{Items: items, Partial: partial}
+	page := conversationListPage{Items: items, Roots: c.rootLabels(), Partial: partial}
 	if remaining > 0 {
 		page.NextCursor = encodeConversationCursor(conversationCursor{
 			Filter: string(filter),
+			Scope:  rootID,
 			Last:   last.lastActive.UTC().Format(time.RFC3339Nano),
 			Root:   last.rootID,
 			Thread: last.threadID,
@@ -278,6 +338,9 @@ func (s conversationManifest) toSummary() conversationSummary {
 		Archived: s.archived,
 		Title:    s.title,
 	}
+	if s.explicitTitle != "" {
+		summary.Title = s.explicitTitle
+	}
 	if !s.startedAt.IsZero() {
 		summary.StartedAt = s.startedAt.UTC().Format(time.RFC3339Nano)
 	}
@@ -288,11 +351,12 @@ func (s conversationManifest) toSummary() conversationSummary {
 }
 
 // conversationCursor is a keyset position: the (activity, root, thread) of the
-// last emitted item. It encodes the filter so a cursor cannot be replayed
-// against a different view.
+// last emitted item. It encodes the filter and the root scope so a cursor
+// cannot be replayed against a different view.
 type conversationCursor struct {
 	V      int    `json:"v"`
 	Filter string `json:"f"`
+	Scope  string `json:"s,omitempty"`
 	Last   string `json:"ts"`
 	Root   string `json:"r"`
 	Thread string `json:"t"`
@@ -424,6 +488,11 @@ func mergeConversationManifests(manifests []conversationManifest) []conversation
 		} else if current.title == "" {
 			current.title = m.title
 		}
+		// An explicit naming signal on any segment wins for the merged
+		// thread regardless of which file is the preferred manifest.
+		if m.explicitTitle != "" {
+			current.explicitTitle = m.explicitTitle
+		}
 		merged[index] = current
 	}
 	return merged
@@ -513,13 +582,24 @@ func inspectConversationManifestHandle(file *os.File, info os.FileInfo, path, th
 				meta = parsed
 			}
 		}
+		if title := explicitTitleFromRolloutLine(line); title != "" {
+			// Latest explicit signal wins: a rename record is a later naming
+			// act than the session_meta that opened the file.
+			manifest.explicitTitle = title
+		}
 		if manifest.title == "" {
-			manifest.title = titleFromRolloutLine(line)
+			manifest.title = derivedTitleFromRolloutLine(line)
 		}
 	}
 	if info.Size() > int64(read) {
-		if ts, ok := tailTimestamp(file, info.Size()); ok && ts.After(manifest.lastActive) {
-			manifest.lastActive = ts
+		latest, renamed := inspectTailWindow(file, info.Size())
+		if latest.After(manifest.lastActive) {
+			manifest.lastActive = latest
+		}
+		// A rename persisted past the head window still wins: tail records
+		// are the newest persisted content in the file.
+		if renamed != "" {
+			manifest.explicitTitle = renamed
 		}
 	}
 	if meta == nil || strings.ToLower(strings.TrimSpace(meta.ID)) != threadID {
@@ -593,9 +673,11 @@ func rolloutLineTimestamp(line []byte) (time.Time, bool) {
 	return ts.UTC(), true
 }
 
-// tailTimestamp finds the newest persisted record timestamp in the bounded
-// tail window of the file.
-func tailTimestamp(file *os.File, size int64) (time.Time, bool) {
+// inspectTailWindow finds the newest persisted record timestamp and the
+// latest persisted rename signal in the bounded tail window of the file.
+// Rename records are gated behind a cheap substring pre-filter so the scan
+// stays timestamp-cheap for files that never carry one.
+func inspectTailWindow(file *os.File, size int64) (time.Time, string) {
 	window := size
 	if window > maxCatalogTailBytes {
 		window = maxCatalogTailBytes
@@ -604,10 +686,11 @@ func tailTimestamp(file *os.File, size int64) (time.Time, bool) {
 	buffer := make([]byte, window)
 	read, err := file.ReadAt(buffer, start)
 	if err != nil && read == 0 {
-		return time.Time{}, false
+		return time.Time{}, ""
 	}
 	tail := buffer[:read]
 	var latest time.Time
+	var renamed string
 	lines := bytes.Split(tail, []byte{'\n'})
 	for i, raw := range lines {
 		if start > 0 && i == 0 {
@@ -623,8 +706,13 @@ func tailTimestamp(file *os.File, size int64) (time.Time, bool) {
 		if ts, ok := rolloutLineTimestamp(line); ok && ts.After(latest) {
 			latest = ts
 		}
+		if bytes.Contains(line, []byte(`"thread_name_updated"`)) {
+			if title := explicitTitleFromRolloutLine(line); title != "" {
+				renamed = title
+			}
+		}
 	}
-	return latest, !latest.IsZero()
+	return latest, renamed
 }
 
 // resolveCandidates walks the whitelisted directories of one root and

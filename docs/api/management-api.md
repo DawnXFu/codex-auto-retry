@@ -65,9 +65,13 @@ Query parameters:
   `subagent`, `archived`, or `all`. Archived is a separate axis: `subagent`
   excludes archived entries, `archived` returns any kind. Unknown values →
   `400 {"error": "invalid_filter"}`.
+- `root` — optional `root_id` scoping the list to one monitored session
+  root. Composes with `filter`/`cursor`/`limit`. An unknown or malformed
+  root id → `400 {"error": "invalid_root"}`.
 - `cursor` — opaque keyset token from a previous page's `next_cursor`. It is
-  bound to the filter that issued it; replaying it under a different filter
-  is an error. Malformed or mismatched → `400 {"error": "invalid_cursor"}`.
+  bound to the filter **and** root scope that issued it; replaying it under
+  a different filter or root is an error. Malformed or mismatched →
+  `400 {"error": "invalid_cursor"}`.
 - `limit` — positive integer page size. Values above the maximum (200) are
   clamped, never an error; zero, negative, or non-integer →
   `400 {"error": "invalid_limit"}`. Default page size is 50.
@@ -81,15 +85,29 @@ Response `200` body:
     thread_id: string;      // persisted thread id; identity is the pair
     kind: "ordinary" | "subagent";
     archived: boolean;
-    title?: string;         // session metadata, only when cheaply derivable
+    title?: string;         // persisted naming signal (session_meta /
+                            // thread_name_updated rename) when one exists,
+                            // else the first meaningful user text with
+                            // Codex-injected boilerplate stripped
     started_at?: string;    // RFC 3339, earliest persisted record time
     last_activity?: string; // RFC 3339, latest persisted record time
+  }];
+  roots: [{
+    root_id: string;        // same opaque identity items carry
+    label: string;          // compact display name — see below
   }];
   next_cursor?: string;     // present only while more items follow
   partial: boolean;         // scan bounds stopped enumeration early
   state: "complete_persisted" | "partial"; // same fact, mirrors detail pages
 }
 ```
+
+`roots` always lists **every** monitored session root — including roots with
+no matching items under the current filter/scope — so a client's directory
+filter stays stable across views. `label` is compact display text derived
+from the root's Codex home path: the home basename (e.g. `.codex`,
+`project-home`), extended with the parent directory name joined by `/` only
+when two monitored homes share a basename. It never echoes a full path.
 
 Ordering is latest persisted record activity, with a stable
 `(root_id, thread_id)` tie-break; file mtime and rename time never feed the
@@ -189,7 +207,8 @@ Fields a client needs beyond the obvious counters:
 | Status | Body | Meaning |
 | --- | --- | --- |
 | 400 | `{"error": "invalid_filter"}` | `/conversations`: unknown `filter` value |
-| 400 | `{"error": "invalid_cursor"}` | `/conversations`: malformed cursor or one issued under a different filter |
+| 400 | `{"error": "invalid_cursor"}` | `/conversations`: malformed cursor or one issued under a different filter/root scope |
+| 400 | `{"error": "invalid_root"}` | `/conversations`: `root` is not a discovered monitored root |
 | 400 | `{"error": "invalid_limit"}` | `/conversations`: `limit` is zero, negative, or not an integer |
 | 401 | `{"error": "unauthorized"}` | missing/wrong bearer token |
 | 405 | Go `net/http` default | wrong method (routes are `GET`-only) |

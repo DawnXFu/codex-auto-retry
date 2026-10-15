@@ -140,6 +140,15 @@ export interface ConversationItemsOpts {
   limit?: number;
 }
 
+export interface ConversationListOpts {
+  /** opaque position token from a previous page's next_cursor — bound to the
+   * filter AND root scope that issued it, so callers must pass both back */
+  cursor?: string;
+  limit?: number;
+  /** monitored-root identity from the page's roots[]; absent = all roots */
+  rootId?: string;
+}
+
 export interface DataSource {
   /** which adapter dataSource() picked: "fixture" resolves synchronously
    * from the bundled preview data, "live" hits the Management API, "none"
@@ -149,8 +158,7 @@ export interface DataSource {
   fetchSnapshot(): Promise<ManagementSnapshot>;
   fetchConversations(
     filter?: ConversationListFilter,
-    cursor?: string,
-    limit?: number,
+    opts?: ConversationListOpts,
   ): Promise<ConversationListPage>;
   fetchConversationItems(
     rootId: string,
@@ -158,7 +166,7 @@ export interface DataSource {
     opts?: ConversationItemsOpts,
   ): Promise<ConversationItemsPage>;
   /** Synchronous first-paint seeds — present only on the fixture adapter. */
-  seedConversations?(filter?: ConversationListFilter): ConversationListPage;
+  seedConversations?(filter?: ConversationListFilter, rootId?: string): ConversationListPage;
   seedConversationItems?(
     rootId: string,
     threadId: string,
@@ -187,15 +195,16 @@ async function fetchAPI<T>(conn: Extract<Connection, { mode: "live" }>, path: st
 const fixtureSource: DataSource = {
   kind: "fixture",
   fetchSnapshot: () => Promise.resolve(buildPreviewSnapshot()),
-  fetchConversations: (filter = "ordinary", cursor, limit = 50) =>
-    Promise.resolve(buildPreviewConversations(filter, cursor, limit)),
+  fetchConversations: (filter = "ordinary", opts = {}) =>
+    Promise.resolve(buildPreviewConversations(filter, opts)),
   fetchConversationItems: (rootId, threadId, opts = {}) => {
     const page = buildPreviewConversationItems(rootId, threadId, opts);
     return page
       ? Promise.resolve(page)
       : Promise.reject(new ApiError(404, "conversation_not_found"));
   },
-  seedConversations: (filter = "ordinary") => buildPreviewConversations(filter),
+  seedConversations: (filter = "ordinary", rootId) =>
+    buildPreviewConversations(filter, { rootId }),
   seedConversationItems: (rootId, threadId, opts = {}) =>
     buildPreviewConversationItems(rootId, threadId, opts),
 };
@@ -211,11 +220,12 @@ function liveSource(conn: Extract<Connection, { mode: "live" }>): DataSource {
   return {
     kind: "live",
     fetchSnapshot: () => fetchAPI<ManagementSnapshot>(conn, "/snapshot"),
-    fetchConversations: (filter = "ordinary", cursor, limit = 50) => {
+    fetchConversations: (filter = "ordinary", opts = {}) => {
       const q = new URLSearchParams();
       if (filter !== "ordinary") q.set("filter", filter);
-      if (cursor) q.set("cursor", cursor);
-      q.set("limit", String(limit));
+      if (opts.rootId) q.set("root", opts.rootId);
+      if (opts.cursor) q.set("cursor", opts.cursor);
+      q.set("limit", String(opts.limit ?? 50));
       return fetchAPI<ConversationListPage>(conn, `/conversations?${q.toString()}`);
     },
     fetchConversationItems: (rootId, threadId, opts = {}) => {

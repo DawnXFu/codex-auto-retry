@@ -330,6 +330,22 @@ export function buildPreviewSnapshot(): ManagementSnapshot {
 let previewConvsCache: ConversationSummary[] | null = null;
 let previewAppendAfter = 0;
 
+// Display labels for the fixture's three monitored roots — mirrors the
+// API's basename-style root labels so the directory filter demos at
+// ?preview=1.
+const PREVIEW_ROOT_LABELS: Record<string, string> = {
+  a1: ".codex",
+  b2: "project-home",
+  c3: "archive-home",
+};
+
+function previewRoots(): { root_id: string; label: string }[] {
+  return Object.entries(PREVIEW_ROOT_LABELS).map(([suffix, label]) => ({
+    root_id: `r${suffix}${"0".repeat(13)}`,
+    label,
+  }));
+}
+
 function previewConversations(): ConversationSummary[] {
   if (previewConvsCache) return previewConvsCache;
   const t = (idx: number, minsAgo: number) => {
@@ -423,11 +439,11 @@ function decodePreviewCursor(raw: string | undefined, prefix: string): number | 
 
 export function buildPreviewConversations(
   filter: ConversationListFilter = "ordinary",
-  cursor?: string,
-  limit = 50,
+  opts: { cursor?: string; limit?: number; rootId?: string } = {},
 ): ConversationListPage {
   const all = previewConversations();
   const filtered = all.filter((c) => {
+    if (opts.rootId && c.root_id !== opts.rootId) return false;
     switch (filter) {
       case "archived":
         return c.archived;
@@ -439,9 +455,9 @@ export function buildPreviewConversations(
         return !c.archived;
     }
   });
-  const start = decodePreviewCursor(cursor, "c:");
+  const start = decodePreviewCursor(opts.cursor, "c:");
   const from = start === undefined ? 0 : Number.isNaN(start) ? filtered.length : start;
-  const page = filtered.slice(from, from + Math.max(1, limit));
+  const page = filtered.slice(from, from + Math.max(1, opts.limit ?? 50));
   const next = from + page.length;
   return {
     items: page.map(({ root_id, thread_id, kind, archived, title, started_at, last_activity }) => ({
@@ -453,6 +469,9 @@ export function buildPreviewConversations(
       started_at,
       last_activity,
     })),
+    // Like the API, the root list is stable across filter/root scoping so
+    // the directory filter's options never flicker between views.
+    roots: previewRoots(),
     next_cursor: next < filtered.length ? `c:${next}` : undefined,
     partial: false,
     state: "complete_persisted",

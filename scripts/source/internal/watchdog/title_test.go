@@ -82,6 +82,45 @@ func TestReadThreadTitleSkipsToolWrapperTags(t *testing.T) {
 	}
 }
 
+func TestReadThreadTitleSkipsAgentsInjection(t *testing.T) {
+	// Real-machine rollouts: Codex injects the AGENTS.md header +
+	// <INSTRUCTIONS> envelope and the environment_context block into the
+	// first persisted user message. The title must be the typed prompt,
+	// never the injection header.
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0429"
+	path := writeRollout(t, t.TempDir(), threadID+".jsonl", []string{
+		`{"timestamp":"2026-10-15T03:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for C:\\repo\n\n<INSTRUCTIONS>\n- keep changes scoped\n</INSTRUCTIONS>"},{"type":"input_text","text":"<environment_context>\n<cwd>C:\\repo</cwd>\n</environment_context>"}]}}`,
+		`{"timestamp":"2026-10-15T03:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"Fix the tray countdown drift"}}`,
+	})
+	if title := readThreadTitle(path); title != "Fix the tray countdown drift" {
+		t.Fatalf("title = %q", title)
+	}
+}
+
+func TestReadThreadTitleRecoversTypedTextPastInjection(t *testing.T) {
+	// Injection and typed text in one message: the boilerplate block is cut
+	// and the tail of the same message still supplies the title.
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0430"
+	path := writeRollout(t, t.TempDir(), threadID+".jsonl", []string{
+		`{"timestamp":"2026-10-15T03:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n<cwd>C:\\repo</cwd>\n</environment_context>\n\nRestart the stalled sync worker"}]}}`,
+	})
+	if title := readThreadTitle(path); title != "Restart the stalled sync worker" {
+		t.Fatalf("title = %q", title)
+	}
+}
+
+func TestReadThreadTitlePrefersRenameRecord(t *testing.T) {
+	// A persisted rename is an explicit title signal and outranks user text.
+	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0431"
+	path := writeRollout(t, t.TempDir(), threadID+".jsonl", []string{
+		`{"timestamp":"2026-10-15T03:00:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"rough first prompt"}}`,
+		`{"timestamp":"2026-10-15T03:00:05.000Z","type":"event_msg","payload":{"type":"thread_name_updated","name":"Renamed by the user"}}`,
+	})
+	if title := readThreadTitle(path); title != "Renamed by the user" {
+		t.Fatalf("title = %q", title)
+	}
+}
+
 func TestManagedRetriesResolveTitle(t *testing.T) {
 	threadID := "019f9d5d-9c82-75b1-b7c0-20a658af0426"
 	rollout := writeRollout(t, t.TempDir(), threadID+".jsonl", []string{

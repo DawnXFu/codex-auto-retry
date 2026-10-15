@@ -1,0 +1,4 @@
+{"timestamp":"2026-10-04T09:00:00.000Z","type":"session_meta","payload":{"id":"019fd0d1-0001-7d01-8001-0000000000d1","timestamp":"2026-10-04T09:00:00.000Z","cwd":"C:\\repo","originator":"codex_cli_rs","cli_version":"0.56.0","source":"cli"}}
+{"timestamp":"2026-10-04T09:00:05.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for C:\\repo\n\n<INSTRUCTIONS>\n- Run tests with go test ./...\n- Keep changes scoped to the worktree\n</INSTRUCTIONS>"},{"type":"input_text","text":"<environment_context>\n  <cwd>C:\\repo</cwd>\n  <shell>powershell</shell>\n</environment_context>"}]}}
+{"timestamp":"2026-10-04T09:00:10.000Z","type":"event_msg","payload":{"type":"user_message","message":"Investigate the flaky retry poll"}}
+{"timestamp":"2026-10-04T09:00:20.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"On it"}]}}

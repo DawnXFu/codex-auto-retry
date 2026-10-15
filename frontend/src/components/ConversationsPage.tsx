@@ -104,6 +104,10 @@ export default function ConversationsPage(props: {
 
   // ---- list state ----------------------------------------------------------
   const [filter, setFilter] = useState<ConversationListFilter>("ordinary");
+  // Root scope: "" = all directories; a root_id from the page's roots[].
+  // Cursors bind to (filter, root) server-side, so changing either resets
+  // pagination — the list is always re-anchored at its first page.
+  const [root, setRoot] = useState("");
   const [list, setList] = useState<ConversationListPage | null>(
     () => source.seedConversations?.("ordinary") ?? null,
   );
@@ -113,10 +117,8 @@ export default function ConversationsPage(props: {
   const [listLoading, setListLoading] = useState(() => source.kind === "live");
   const [loadingMore, setLoadingMore] = useState(false);
 
-  const selectFilter = (f: ConversationListFilter) => {
-    setFilter(f);
-    setListErr(null);
-    const seeded = source.seedConversations?.(f);
+  const reseed = (f: ConversationListFilter, r: string) => {
+    const seeded = source.seedConversations?.(f, r || undefined);
     if (seeded) {
       // Fixture resolves synchronously — swap without a loading flash.
       setList(seeded);
@@ -125,11 +127,23 @@ export default function ConversationsPage(props: {
     }
   };
 
+  const selectFilter = (f: ConversationListFilter) => {
+    setFilter(f);
+    setListErr(null);
+    reseed(f, root);
+  };
+
+  const selectRoot = (r: string) => {
+    setRoot(r);
+    setListErr(null);
+    reseed(filter, r);
+  };
+
   const onList = view.name === "list";
   useEffect(() => {
     if (!onList) return;
     let alive = true;
-    source.fetchConversations(filter)
+    source.fetchConversations(filter, { rootId: root || undefined })
       .then((page) => {
         if (!alive) return;
         setList(page);
@@ -145,7 +159,7 @@ export default function ConversationsPage(props: {
     return () => {
       alive = false;
     };
-  }, [source, filter, onList]);
+  }, [source, filter, root, onList]);
 
   // Low-rate auto-refresh of the first page while the list view is mounted.
   // The refresh replaces the list wholesale (pagination resets to head — this
@@ -162,7 +176,7 @@ export default function ConversationsPage(props: {
       if (typeof document !== "undefined" && document.hidden) return;
       listPollInFlight.current = true;
       source
-        .fetchConversations(filter)
+        .fetchConversations(filter, { rootId: root || undefined })
         .then((page) => {
           if (!alive) return;
           setList(page);
@@ -180,14 +194,19 @@ export default function ConversationsPage(props: {
       alive = false;
       window.clearInterval(id);
     };
-  }, [source, filter, onList]);
+  }, [source, filter, root, onList]);
 
   const loadMore = async () => {
     const cursor = list?.next_cursor;
     if (!cursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await source.fetchConversations(filter, cursor);
+      // Cursors bind to the (filter, root) scope that minted them — replay
+      // under the current scope verbatim.
+      const page = await source.fetchConversations(filter, {
+        cursor,
+        rootId: root || undefined,
+      });
       setList((prev) => ({
         ...page,
         items: [...(prev?.items ?? []), ...page.items],
@@ -228,13 +247,26 @@ export default function ConversationsPage(props: {
             </button>
           ))}
         </div>
+        <select
+          className="conv-root-select"
+          aria-label={t("conv_root_filter")}
+          value={root}
+          onChange={(e) => selectRoot(e.target.value)}
+        >
+          <option value="">{t("conv_root_all")}</option>
+          {(list?.roots ?? []).map((r) => (
+            <option key={r.root_id} value={r.root_id}>
+              {r.label}
+            </option>
+          ))}
+        </select>
         <span className="spacer" />
         <button
           className="mini-btn"
           title={t("strip_refresh")}
           onClick={() => {
             setListLoading(true);
-            source.fetchConversations(filter)
+            source.fetchConversations(filter, { rootId: root || undefined })
               .then((page) => {
                 setList(page);
                 setListErr(null);
