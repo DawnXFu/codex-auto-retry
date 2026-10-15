@@ -73,7 +73,10 @@ type accountQuotaReadResult struct {
 	// Limits is the decoded account/rateLimits/read response; it is zero
 	// unless Available is true.
 	Limits appAccountRateLimitsReadResult
-	// Backend is the verified endpoint generation that produced Limits.
+	// Backend is the verified endpoint generation that produced Limits. It is
+	// also populated on failures that happen after endpoint verification (dial
+	// or read), so the cache layer can tell "same generation, transient
+	// failure" apart from "the verified endpoint moved to a new generation".
 	Backend verifiedSharedEndpoint
 	// ObservedAt is when the verified endpoint produced this evidence.
 	ObservedAt time.Time
@@ -125,12 +128,12 @@ func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) account
 	}
 	client, err := dialAppServerRPC(readCtx, endpoint.Endpoint)
 	if err != nil {
-		return unavailableAccountQuota(accountQuotaCallReason(readCtx, err, accountQuotaReasonUnreachable))
+		return unavailableAccountQuotaAt(endpoint, accountQuotaCallReason(readCtx, err, accountQuotaReasonUnreachable))
 	}
 	defer client.Close()
 	limits, err := readAppAccountRateLimits(readCtx, client)
 	if err != nil {
-		return unavailableAccountQuota(accountQuotaCallReason(readCtx, err, accountQuotaReasonReadFailed))
+		return unavailableAccountQuotaAt(endpoint, accountQuotaCallReason(readCtx, err, accountQuotaReasonReadFailed))
 	}
 	return accountQuotaReadResult{
 		Available:  true,
@@ -142,6 +145,12 @@ func (r *sharedAccountQuotaReader) ReadAccountQuota(ctx context.Context) account
 
 func unavailableAccountQuota(reason string) accountQuotaReadResult {
 	return accountQuotaReadResult{Available: false, Reason: reason}
+}
+
+// unavailableAccountQuotaAt marks a failure that occurred after the endpoint
+// generation was verified, so callers can still compare generations.
+func unavailableAccountQuotaAt(endpoint verifiedSharedEndpoint, reason string) accountQuotaReadResult {
+	return accountQuotaReadResult{Available: false, Reason: reason, Backend: endpoint}
 }
 
 func accountQuotaEndpointReason(ctx context.Context, err error) string {
@@ -156,10 +165,16 @@ func accountQuotaEndpointReason(ctx context.Context, err error) string {
 }
 
 // accountQuotaCallReason treats a spent deadline uniformly across the
-// discovery, dial, and read stages: a caller-supplied context error and a
-// wrapped deadline both classify as the display-read timeout.
+// discovery, dial, and read stages: a caller-supplied context error, a
+// wrapped deadline, or an elapsed deadline all classify as the display-read
+// timeout. The deadline comparison covers the gap where the connection dies
+// from a slammed socket deadline before the context timer marks the context
+// done — the timeout must not flakily classify as a read failure.
 func accountQuotaCallReason(ctx context.Context, err error, fallback string) string {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return accountQuotaReasonTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
 		return accountQuotaReasonTimeout
 	}
 	return fallback

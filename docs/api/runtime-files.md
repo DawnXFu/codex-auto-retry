@@ -394,6 +394,45 @@ legacy fields rather than rejecting the file; `QuotaSnapshot.UnmarshalJSON`
 }
 ```
 
+## `account-quota.json` — account quota cache record
+
+- **Producer:** worker only, written by the single-flight account quota cache
+  (`accountQuotaCache.refresh`, `account_quota_cache.go`) via
+  `writeJSONAtomic` after every accepted `account/rateLimits/read` and after
+  evidence invalidation. The file is never written when the runner lacks the
+  attach-only quota capability, and is removed at daemon construction when the
+  capability is absent, so its presence means "this worker once produced a
+  verdict".
+- **Consumers:** the management surface resolves `record` + `state.json`'s
+  `quota` field into the snapshot's `account_quota` view
+  (`resolveAccountQuotaView`, `account_quota_cache.go`). Consumers never read
+  it for recovery decisions.
+- **Freshness:** `fresh_until` bounds display freshness — the account read is
+  `fresh` only while `now < fresh_until`; after that it is `stale` evidence.
+  Endpoint/backend/account generation changes invalidate it on the worker
+  side (the file is rewritten `available:false`), but a file left behind by a
+  dead worker still decays via `fresh_until`.
+- **Schema** (`accountQuotaFileRecord`, `account_quota_cache.go`):
+
+```json
+{
+  "type": "object",
+  "required": ["version", "available"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "available": { "type": "boolean" },
+    "reason": { "type": "string", "description": "privacy-safe last failure reason (accountQuotaReason* taxonomy)" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "fresh_until": { "type": "string", "format": "date-time" },
+    "limits": { "$comment": "appAccountRateLimitsReadResult verbatim; accountId is never serialized" }
+  }
+}
+```
+
+- **Privacy:** the backend `accountId` generation handle and the verified
+  endpoint coordinates are deliberately never written; readers that need
+  generation checks re-verify `shared-server.json` instead.
+
 ## `shared-recovery-request.json` — launcher → worker request
 
 - **Producer:** `launch-codex.ps1:159-166` — writes a temp file then

@@ -162,6 +162,18 @@ func (r *appResumeRunner) ReadAccountQuota(ctx context.Context) accountQuotaRead
 	return reader.ReadAccountQuota(ctx)
 }
 
+// VerifiedEndpoint mirrors ReadAccountQuota's optional-capability style: it
+// exposes the attach-only generation check so the account quota cache can
+// invalidate late responses. Runners without a shared endpoint report
+// unsupported instead of failing.
+func (r *appResumeRunner) VerifiedEndpoint(ctx context.Context) (verifiedSharedEndpoint, error) {
+	source, ok := r.controller.(accountQuotaEndpointSource)
+	if !ok {
+		return verifiedSharedEndpoint{}, errSharedServerUnsupported
+	}
+	return source.VerifiedEndpoint(ctx)
+}
+
 func (r *appResumeRunner) Resume(ctx context.Context, job RetryJob) (DispatchResult, error) {
 	if !threadIDPattern.MatchString(job.ThreadID + ".jsonl") {
 		return DispatchResult{}, errors.New("invalid thread id")

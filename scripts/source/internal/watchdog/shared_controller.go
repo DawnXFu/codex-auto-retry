@@ -159,6 +159,18 @@ func (c *sharedAppServerController) ReadAccountQuota(ctx context.Context) accoun
 	return newAccountQuotaReader(source).ReadAccountQuota(ctx)
 }
 
+// VerifiedEndpoint lets the account quota cache re-check the backend
+// generation after a read so a late response from a dead generation is never
+// installed. Controllers whose server cannot verify an endpoint report the
+// attach-only capability as unsupported.
+func (c *sharedAppServerController) VerifiedEndpoint(ctx context.Context) (verifiedSharedEndpoint, error) {
+	source, ok := c.server.(accountQuotaEndpointSource)
+	if !ok {
+		return verifiedSharedEndpoint{}, errSharedServerUnsupported
+	}
+	return source.VerifiedEndpoint(ctx)
+}
+
 func (c *sharedAppServerController) SharedBackendMemory(ctx context.Context) (memorySample, error) {
 	reader, ok := c.server.(interface {
 		PrivateMemoryBytes(context.Context) (uint64, error)
