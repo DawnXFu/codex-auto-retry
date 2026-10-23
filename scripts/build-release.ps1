@@ -99,6 +99,13 @@ try {
         Remove-Item -LiteralPath $entry.FullName -Recurse -Force
     }
 
+    # Dev-only Go test fixtures never ship: the conversation rollout fixtures
+    # are deep enough that staging them pushes installer verification past the
+    # Windows MAX_PATH limit in the PowerShell 5.1 runtime users actually run.
+    Get-ChildItem -LiteralPath (Join-Path $payloadRoot 'scripts\source') -Directory -Recurse -Force |
+        Where-Object { $_.Name -eq 'testdata' } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+
     $releaseManifest = [pscustomobject][ordered]@{
         schemaVersion = 1
         product = 'Codex Auto Resume'

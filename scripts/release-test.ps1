@@ -83,7 +83,8 @@ try {
     foreach ($removed in @(
         'payload\codex-auto-retry\.mcp.json',
         'payload\codex-auto-retry\scripts\bin\codex-auto-retry-mcp.exe',
-        'payload\codex-auto-retry\scripts\source\internal\watchdog\ui'
+        'payload\codex-auto-retry\scripts\source\internal\watchdog\ui',
+        'payload\codex-auto-retry\scripts\source\internal\watchdog\testdata'
     )) {
         if (Test-Path -LiteralPath (Join-Path $root $removed)) {
             throw "Release archive still contains a retired surface: $removed"

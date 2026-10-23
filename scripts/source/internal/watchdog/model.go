@@ -2,7 +2,7 @@ package watchdog
 
 import "time"
 
-const appVersion = "0.7.12"
+const appVersion = "0.8.0"
 
 var buildSourceHash = "development"
 

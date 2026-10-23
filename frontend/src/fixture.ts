@@ -137,7 +137,7 @@ export function buildPreviewSnapshot(): ManagementSnapshot {
   const now = Date.now();
 
   return {
-    version: "0.7.12",
+    version: "0.8.0",
     running: true,
     heartbeat_stale: false,
     paused: false,
@@ -368,7 +368,7 @@ function previewConversations(): ConversationSummary[] {
     ["019f9d5d-0000-7000-8000-000000000101", "Design a quota-window backoff policy", "ordinary", false, "a1", PREVIEW_CWDS.autoRetry],
     ["019f9d5d-0000-7000-8000-000000000102", "Subagent: scan log rotation edge cases", "subagent", false, "a1", PREVIEW_CWDS.autoRetry],
     ["019f9d5d-0000-7000-8000-000000000103", "Refactor the quota evidence cache", "ordinary", false, "b2", PREVIEW_CWDS.autoRetry],
-    ["019f9d5d-0000-7000-8000-000000000104", "Draft release notes for 0.7.12", "ordinary", true, "b2", PREVIEW_CWDS.orderService],
+    ["019f9d5d-0000-7000-8000-000000000104", "Draft release notes for 0.8.0", "ordinary", true, "b2", PREVIEW_CWDS.orderService],
     ["019f9d5d-0000-7000-8000-000000000105", "Subagent: fixture audit", "subagent", true, "c3", PREVIEW_CWDS.logkit],
     ["019f9d5d-0000-7000-8000-000000000106", "", "ordinary", false, "c3", PREVIEW_CWDS.logkit],
   ];
